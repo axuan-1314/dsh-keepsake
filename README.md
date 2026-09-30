@@ -25,7 +25,7 @@ DSH（DeepSeek Harness）0.2.0-rc.2 cordis 插件：**项目记忆自动提取 +
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `enabled` | `true`（patch 显式声明） | 总开关。**代码缺省为关，patch 显式开**：安装即启用且开关可见于 YAML |
+| `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
 | `provider` / `model` | 空（跟随会话路由） | 提取调用的模型路由；成对出现，否则报错。缺省时自动捕获本会话 `request/header` 的路由（同 session-title 策略） |
 | `minUserWords` | 3 | skip 条件的散文词数下限 |
@@ -38,7 +38,7 @@ DSH（DeepSeek Harness）0.2.0-rc.2 cordis 插件：**项目记忆自动提取 +
 
 ## 回滚
 
-1. **停功能不卸包**：把 profile 的 `cordis.patch.yml`（或 bundle patch）里 `enabled` 改为 `false`，HMR 自动生效（headless/desktop 需重启该 profile）。
+1. **停功能不卸包**：把 profile 的 `cordis.patch.yml`（或 bundle patch）里 `enabled` 改为 `false`。生效方式分 profile：**web profile 由 HMR 自动生效；desktop/headless 改 config 后需重启对应实例**（桌面端重启应用；headless 本就每次启动新进程）。不存在"改完即热生效"的统一行为，以上为各 profile 的实际生效路径。
 2. **整包卸载**：`dsh plugin --profile <name> remove dsh-memory`。
 3. **清数据**：删 `~/.dsh/memory/`（自有目录，不影响其他组件）。
 
@@ -49,14 +49,18 @@ dsh plugin --profile web add D:\dsh-keepsake       # 或 headless / desktop
 dsh --profile web --dump-config                  # 验证 entry 入树
 ```
 
+三个 profile 的安装均为 **symlink（link:D:\dsh-keepsake）**，源码改动无需同步拷贝；但运行中的 desktop 实例吃到新代码需 HMR 重载或重启应用（headless 每次启动天然取最新）。
+
 ## 测试
 
 ```bash
-npm test    # node --test，42 项断言
+npm test    # node --test，49 项断言
 ```
 
-## v1 简化决策与已知边界
+## 已知限制
 
-- **单次 LLM 调用**（非 ZCode 的提取子任务 loop）：DSH 插件内子任务 loop 的 API 面未实证，单次调用零依赖最稳。后果：更新已有记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附带正文（≤3000 字符 × 最近 10 文件）缓解。
-- 提取调用为 request-only 输入、不向任何 session append 事件——天然防自反馈。
-- 记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
+- **规格 taskType 过滤未移植**：ZCode 侧按任务类型（interactive/fork/…）过滤提取资格；本插件对所有会话生效，依赖 skip 双门槛（无 ≥3 词散文 / 直写轮）兜底抑制噪声。
+- **相对路径 file_path 的直写判定偏保守**：`transcript.js` 对 write/edit 的 `file_path` 以 memoryRoot 为基解析相对路径，恰好落在记忆目录内的相对路径会判为"直写轮"而 skip 提取——方向保守（多 skip、不漏存），安全。
+- **单次 LLM 调用**（非 ZCode 的提取子任务 loop，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
+- **防自反馈与检索**：提取调用为 request-only 输入、不向任何 session append 事件；记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
+- **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。

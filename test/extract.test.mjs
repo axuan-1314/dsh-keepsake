@@ -4,7 +4,45 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { NOTHING_TO_SAVE, applyOps, parseExtractionOutput, renderMemoryFile } from "../lib/extract.js";
+import { NOTHING_TO_SAVE, applyOps, isValidModelIndexLine, parseExtractionOutput, renderMemoryFile } from "../lib/extract.js";
+
+test("isValidModelIndexLine（审查 P3-8）：格式/长度/文件名一致性", () => {
+  assert.equal(isValidModelIndexLine("- [Uses pnpm](uses-pnpm.md) — 包管理器选择", "uses-pnpm.md"), true);
+  assert.equal(isValidModelIndexLine("- [T](x.md) — hook", "x.md"), true);
+  // 非法：空/超长/无 em dash/普通文本/文件名不匹配/路径越界
+  assert.equal(isValidModelIndexLine("", "a.md"), false);
+  assert.equal(isValidModelIndexLine("- [T](a.md) — " + "d".repeat(200), "a.md"), false);
+  assert.equal(isValidModelIndexLine("- [T](a.md) : hook", "a.md"), false);
+  assert.equal(isValidModelIndexLine("随手一行", "a.md"), false);
+  assert.equal(isValidModelIndexLine("- [T](other.md) — hook", "a.md"), false);
+  assert.equal(isValidModelIndexLine("- [T](../escape.md) — hook", "a.md"), false);
+});
+
+test("applyOps: 非法 indexLine 回退规范行（防索引重复累积）", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-test-"));
+  try {
+    const log = { warn: () => {} };
+    applyOps(
+      root,
+      [{ action: "write", name: "a.md", type: "project", title: "A", description: "描述", indexLine: "随手写的非法行", content: "b" }],
+      { originSessionId: "s1", log },
+    );
+    const first = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.match(first, /^- \[A\]\(a\.md\) — 描述$/m); // 规范行
+    // 第二轮再写同一文件：若首轮写入了不可解析行，此处会累积 preamble——断言不累积
+    applyOps(
+      root,
+      [{ action: "write", name: "a.md", type: "project", title: "A2", description: "描述2", indexLine: "还是非法", content: "b2" }],
+      { originSessionId: "s1", log },
+    );
+    const second = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.match(second, /^- \[A2\]\(a\.md\) — 描述2$/m);
+    assert.equal(second.split("\n").filter((l) => l.includes("(a.md)")).length, 1); // 恰一行
+    assert.doesNotMatch(second, /非法/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("parseExtractionOutput: Nothing to save 各形态", () => {
   assert.deepEqual(parseExtractionOutput(NOTHING_TO_SAVE), { kind: "nothing" });

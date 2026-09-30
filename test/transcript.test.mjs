@@ -1,7 +1,7 @@
 // transcript：触发门槛（边界⑤：≥3 词用户散文 / 直写记忆跳过）与摘录渲染
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { renderTranscript, skipReason } from "../lib/transcript.js";
+import { clipTail, renderTranscript, skipReason } from "../lib/transcript.js";
 
 const ROOT = "C:\\mem\\x\\memory";
 
@@ -82,6 +82,17 @@ test("skipReason: 参数非 JSON 的 write 不误判", () => {
     { type: "tool/call", seq: 2, data: { name: "write", arguments: "{broken" } },
   ];
   assert.equal(skipReason(events, ROOT), null);
+});
+
+test("clipTail 保最新丢最旧（审查 P3-7）", () => {
+  const lines = Array.from({ length: 10 }, (_, i) => `[seq ${i}] User: m${i}`);
+  const text = lines.join("\n");
+  const cut = clipTail(text, 40);
+  assert.ok(cut.length <= 40);
+  assert.match(cut, /m9$/); // 最新保留
+  assert.doesNotMatch(cut, /m0 /); // 最旧丢弃
+  assert.match(cut, /^\[seq /); // 无残行
+  assert.equal(clipTail(text, 100000), text); // 未超预算原样
 });
 
 test("renderTranscript: 摘录含用户/助手/工具行并截断", () => {

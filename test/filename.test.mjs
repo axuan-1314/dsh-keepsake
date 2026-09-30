@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { INDEX_FILENAME, isInsideRoot, resolveSafeMemoryTarget, sanitizeMemoryName } from "../lib/filename.js";
+import { INDEX_FILENAME, isInsideRoot, isReservedDeviceSegment, resolveSafeMemoryTarget, sanitizeMemoryName } from "../lib/filename.js";
 
 const ROOT = "C:\\mem\\projects\\x\\memory";
 
@@ -40,6 +40,18 @@ test("sanitizeMemoryName: 越界/点段/黑名单/控制符/冒号", () => {
   assert.equal(sanitizeMemoryName(""), null);
   assert.equal(sanitizeMemoryName("///"), null);
   assert.equal(sanitizeMemoryName("."), null);
+});
+
+test("Windows 保留设备名段（审查 P3-6）：含带扩展名形态", () => {
+  for (const name of ["con.md", "CON.MD", "prn.md", "aux.md", "nul.md", "com1.md", "com9.md", "lpt1.md", "lpt9.md", "nul"]) {
+    assert.equal(sanitizeMemoryName(name), null, `应拒绝保留名: ${name}`);
+  }
+  assert.equal(isReservedDeviceSegment("sub/con.md".split("/").pop()), true);
+  // 非保留名不受影响
+  assert.equal(sanitizeMemoryName("console.md"), "console.md");
+  assert.equal(sanitizeMemoryName("acon.md"), "acon.md");
+  assert.equal(sanitizeMemoryName("com10.md"), "com10.md");
+  assert.equal(sanitizeMemoryName("x/con-n.md"), "x/con-n.md");
 });
 
 test("resolveSafeMemoryTarget: 三道闸合成", () => {

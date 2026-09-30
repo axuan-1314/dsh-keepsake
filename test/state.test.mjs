@@ -100,6 +100,20 @@ test("首见判定：小 seq 新会话 cursor=0 全量纳入；大 seq 恢复会
   void scheduler.dispose();
 });
 
+test("drop 清除强持有（审查 P3-5）：drop 后 see 重新首见生效", async () => {
+  const scheduler = createScheduler({ extract: async () => "ok" });
+  const session = fakeSession(7);
+  scheduler.see(session, { seq: 0 }); // cursor=0
+  scheduler.onTurnCompleted(session, 7);
+  await scheduler.quiesce();
+  assert.equal(scheduler.stateOf(session).cursor, 7);
+  scheduler.drop(session);
+  // 若 Map 未清，see() 是 no-op（cursor 仍 7）；已清则按"恢复会话"重建为 seq+1=51
+  scheduler.see(session, { seq: 50 });
+  assert.equal(scheduler.stateOf(session).cursor, 51);
+  await scheduler.dispose();
+});
+
 test("已覆盖区间（toSeq ≤ cursor）不重复调度", async () => {
   const calls = [];
   const scheduler = createScheduler({

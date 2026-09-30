@@ -60,6 +60,8 @@ test("入口元数据与注入段注册", () => {
   const { ctx, sections } = fakeCtx();
   apply(ctx, { enabled: false });
   assert.equal(sections.length, 0); // 关闭时不注入
+  apply(ctx, {}); // 审查 P2-1：缺省关（fail-closed），无显式 enabled: true 不启用
+  assert.equal(sections.length, 0);
   apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry") });
   assert.equal(sections.length, 2);
   assert.equal(sections[0].interpolate, false);

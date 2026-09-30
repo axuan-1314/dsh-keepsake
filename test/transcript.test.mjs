@@ -13,6 +13,17 @@ test("skipReason: no-user-prose（<3 词）", () => {
   assert.equal(skipReason(events, ROOT), "no-user-prose");
 });
 
+test("skipReason: CJK 按 2 字≈1 词折算（纯中文 ≥6 字即合格）", () => {
+  const qualify = [
+    { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "我们团队决定统一使用 pnpm 管理所有依赖" }] } },
+  ];
+  assert.equal(skipReason(qualify, ROOT), null); // 空格词+CJK 折算
+  const short = [
+    { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "继续吧" }] } },
+  ];
+  assert.equal(skipReason(short, ROOT), "no-user-prose"); // 1 词 + 3 字→1 = 2 < 3
+});
+
 test("skipReason: 有 ≥3 词散文则不跳过", () => {
   const events = [
     { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "我们团队决定统一用 pnpm 管理依赖" }] } },
@@ -28,8 +39,22 @@ test("skipReason: direct-memory-write 优先（write 落 memoryRoot）", () => {
       seq: 2,
       data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: "C:\\mem\\x\\memory\\uses-pnpm.md", content: "---\n---\n" }) },
     },
+    { type: "tool/result", seq: 3, data: { message: { role: "tool", source: { callId: "c1" }, isError: false, content: [{ type: "text", text: "ok" }] } } },
   ];
   assert.equal(skipReason(events, ROOT), "direct-memory-write");
+});
+
+test("skipReason: 直写被拒（isError）不算直写，正常提取", () => {
+  const events = [
+    { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "记住 我们 用 pnpm 管依赖" }] } },
+    {
+      type: "tool/call",
+      seq: 2,
+      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: "C:\\mem\\x\\memory\\uses-pnpm.md", content: "x" }) },
+    },
+    { type: "tool/result", seq: 3, data: { message: { role: "tool", source: { callId: "c1" }, isError: true, content: [{ type: "text", text: "denied" }] } } },
+  ];
+  assert.equal(skipReason(events, ROOT), null);
 });
 
 test("skipReason: write 落根外不算直写", () => {

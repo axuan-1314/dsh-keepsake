@@ -1,0 +1,19 @@
+# dsh-memory — 项目记忆自动提取+注入 cordis 插件的 loader 配置。
+# 插入为独立 entry；config 为插件唯一配置面（apply(ctx, config) 第二参）。
+# enabled 默认显式开：安装即启用；回滚 = 把 enabled 改 false（HMR 生效）
+# 或 dsh plugin --profile <name> remove dsh-memory（整包卸载）。
+- insert:
+    - id: dsh-memory
+      name: dsh-memory
+      config:
+        enabled: true
+        provider: null
+        model: null
+        minUserWords: 3
+        timeoutMs: 120000
+        maxOutputTokens: 4096
+        maxIndexLines: 200
+        maxIndexChars: 25000
+        maxManifestFiles: 200
+        maxPromptChars: 48000
+        maxOps: 20

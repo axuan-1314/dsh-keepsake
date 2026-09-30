@@ -1,0 +1,33 @@
+{
+  "name": "dsh-memory",
+  "version": "0.1.0",
+  "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 ctx.systemPrompt 注入使用说明与索引。移植自 ZCode 项目记忆子系统 T2 规格，v1 单次调用简化。",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "for f in lib/*.js; do node --check \"$f\" || exit 1; done"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "memory"
+  ],
+  "license": "MIT",
+  "dependencies": {},
+  "dsh": {
+    "bundle": {
+      "patch": "cordis.patch.yml"
+    }
+  }
+}

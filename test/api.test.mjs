@@ -157,6 +157,9 @@ test("persona：GET 默认模板 → PUT 写入 → POST reset 恢复", async ()
     const reset = await callApi(root, { method: "POST", path: `${API_PREFIX}persona/reset` });
     assert.equal(reset.status, 200);
     assert.match(reset.json.content, /补充人设/);
+    assert.ok(reset.json.backupId, "persona reset 前应自动留档备份（方案C §5）");
+    const after = await callApi(root, { method: "GET", path: `${API_PREFIX}persona` });
+    assert.equal(after.json.isDefault, true, "reset 后 GET 应回到默认态（回归）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

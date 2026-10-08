@@ -252,6 +252,21 @@ test("persona：写入后读回（stripFrontmatter）；reset 恢复默认模板
   }
 });
 
+test("persona isDefault：reset 后回到默认态；PUT 与模板同文 = 默认；改动一字 = 非默认", () => {
+  const root = freshRoot();
+  try {
+    writePersona(root, "# 我的人设\n直接一点。");
+    resetPersona(root);
+    assert.equal(readPersona(root).isDefault, true, "reset 后应视为默认（回归：曾按文件存在判 false）");
+    writePersona(root, stripFrontmatter(DEFAULT_PERSONA));
+    assert.equal(readPersona(root).isDefault, true, "内容等于出厂模板应视为默认");
+    writePersona(root, stripFrontmatter(DEFAULT_PERSONA) + "\n多一个字。");
+    assert.equal(readPersona(root).isDefault, false, "内容偏离模板应视为非默认");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- 称呼 ----
 
 test("addressing：缺省空；写入读回；部分更新；40 字符截断", () => {

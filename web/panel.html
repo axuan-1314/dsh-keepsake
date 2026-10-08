@@ -5,64 +5,77 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>记忆管理</title>
 <style>
-  /* 自带深浅双档兜底（方案C §1.3 降级）：桥成功时由主题桥覆写 --dsw-alias-* */
   body { --fb-bg: #f7f8fa; --fb-panel: #ffffff; --fb-label: #1f2328; --fb-label2: #59636e; --fb-border: rgba(27,31,36,.12); }
   body.theme-dark { --fb-bg: #17181c; --fb-panel: #1f2126; --fb-label: #e6e8eb; --fb-label2: #9aa2ab; --fb-border: rgba(240,244,248,.14); }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
-    background: var(--dsw-alias-bg-layer-1, var(--fb-bg));
-    color: var(--dsw-alias-label-primary, var(--fb-label));
-    display: flex; min-height: 100vh;
-  }
-  aside {
-    width: 200px; flex: none; padding: 18px 12px; border-right: 1px solid var(--dsw-alias-border-l2, var(--fb-border));
-    background: var(--dsw-alias-bg-layer-2, var(--fb-panel));
-    display: flex; flex-direction: column; gap: 2px;
-  }
+  body { margin: 0; font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--dsw-alias-bg-layer-1, var(--fb-bg)); color: var(--dsw-alias-label-primary, var(--fb-label)); display: flex; min-height: 100vh; }
+  aside { width: 200px; flex: none; padding: 18px 12px; border-right: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); display: flex; flex-direction: column; gap: 2px; }
   aside .brand { font-weight: 700; font-size: 15px; padding: 2px 10px 12px; }
   aside .group { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); padding: 10px 10px 4px; font-weight: 600; }
-  aside a {
-    display: flex; align-items: center; justify-content: space-between; gap: 6px;
-    padding: 6px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; user-select: none;
-    color: var(--dsw-alias-label-primary, var(--fb-label)); text-decoration: none;
-  }
+  aside a { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; user-select: none; color: inherit; text-decoration: none; }
   aside a:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
   aside a.on { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.16)); font-weight: 600; }
   aside a .cnt { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); font-weight: 400; }
   main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .topbar {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 12px 20px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border));
-    background: var(--dsw-alias-bg-layer-2, var(--fb-panel));
-  }
-  .topbar h1 { font-size: 16px; margin: 0; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); }
+  .topbar h1 { font-size: 16px; margin: 0; display: inline; }
   .topbar .sub { font-size: 12px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); margin-left: 8px; }
-  .btn {
-    border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit;
-    border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer;
-  }
+  .btn { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
   .btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
-  .notice {
-    margin: 12px 20px 0; border-radius: 6px; padding: 6px 10px; font-size: 12px;
-    background: rgba(204,153,102,.16); display: none;
-  }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn.primary { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.2)); font-weight: 600; }
+  .btn.danger { color: #d5564d; border-color: rgba(221,85,85,.5); }
+  .btn.sm { padding: 1px 8px; font-size: 11px; }
+  .notice { margin: 12px 20px 0; border-radius: 6px; padding: 6px 10px; font-size: 12px; background: rgba(204,153,102,.16); display: none; }
   .notice.show { display: block; }
+  .notice.err { background: rgba(221,85,85,.14); }
+  .notice.ok { background: rgba(80,160,90,.14); }
   #page { padding: 18px 20px; overflow: auto; }
-  .card {
-    border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 10px;
-    background: var(--dsw-alias-bg-layer-2, var(--fb-panel));
-    padding: 12px 14px; margin-bottom: 10px;
-  }
-  .card h3 { margin: 0 0 6px; font-size: 13.5px; }
+  .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar .spacer { flex: 1; }
+  .card { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); padding: 12px 14px; margin-bottom: 10px; }
+  .card h3 { margin: 0 0 6px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .card h3 .ops { margin-left: auto; display: flex; gap: 6px; }
   .meta { font-size: 12px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
   .entry-body { margin-top: 6px; font-size: 13px; white-space: pre-wrap; word-break: break-word; }
   .empty { color: var(--dsw-alias-label-secondary, var(--fb-label2)); font-size: 13px; padding: 24px 0; text-align: center; }
-  .kv { display: flex; gap: 8px; align-items: baseline; margin: 6px 0; font-size: 13px; }
-  .kv b { min-width: 110px; font-weight: 600; }
-  code { font-family: Consolas, monospace; font-size: 12px; background: rgba(128,128,128,.12); border-radius: 4px; padding: 0 4px; }
+  .kv { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
+  .kv b { min-width: 120px; font-weight: 600; }
   .badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
-  .m1tag { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
+  .badge.warn { color: #c98a3d; border-color: rgba(204,153,102,.55); }
+  .inp, .ta { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; font-family: inherit; width: 100%; }
+  .inp:focus, .ta:focus { outline: none; border-color: var(--dsw-alias-state-business-primary, #4176e6); }
+  .ta { min-height: 90px; resize: vertical; font-family: ui-monospace, Consolas, monospace; line-height: 1.5; }
+  .ta.tall { min-height: 300px; }
+  .field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+  .field label { font-size: 12px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
+  .switchWrap { display: inline-flex; align-items: center; gap: 8px; }
+  .switch { position: relative; width: 34px; height: 19px; flex: none; display: inline-block; }
+  .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .slider { position: absolute; inset: 0; border-radius: 99px; background: rgba(128,128,128,.4); transition: .15s; pointer-events: none; }
+  .slider::after { content: ''; position: absolute; top: 2.5px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #c8cdd4; transition: .15s; }
+  .switch input:checked + .slider { background: var(--dsw-alias-state-business-primary, #4176e6); }
+  .switch input:checked + .slider::after { left: 17px; background: #fff; }
+  .mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
+  .dialog { background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); color: inherit; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); box-shadow: 0 0 16px rgba(0,0,0,.25); border-radius: 10px; padding: 16px; width: min(720px, 94vw); max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  .dialog h2 { font-size: 14px; margin: 0; }
+  .dialog .foot { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px dashed var(--dsw-alias-border-l2, var(--fb-border)); padding-top: 10px; }
+  table.preview { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.preview th, table.preview td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); vertical-align: top; }
+  table.preview tr.danger td { background: rgba(221,85,85,.1); }
+  table.preview tr.danger td:first-child { border-left: 3px solid #d5564d; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .mdprev h1, .mdprev h2, .mdprev h3 { margin: 8px 0 4px; }
+  .mdprev h1 { font-size: 17px; } .mdprev h2 { font-size: 15px; } .mdprev h3 { font-size: 13.5px; }
+  .mdprev p { margin: 6px 0; }
+  .mdprev code { font-family: Consolas, monospace; font-size: 12px; background: rgba(128,128,128,.14); border-radius: 4px; padding: 0 4px; }
+  .mdprev ul { margin: 4px 0; padding-left: 20px; }
+  .presetRow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .pill { display: inline-flex; align-items: center; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none; background: transparent; color: inherit; }
+  .pill:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+  .pill.on { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.18)); font-weight: 600; }
+  .search { max-width: 320px; }
+  code.k { font-family: Consolas, monospace; font-size: 12px; background: rgba(128,128,128,.12); border-radius: 4px; padding: 0 4px; }
 </style>
 </head>
 <body>
@@ -82,283 +95,747 @@
   </aside>
   <main>
     <div class="topbar">
-      <div><h1 id="pageTitle">记忆管理</h1><span class="sub" id="pageSub">M1 只读视图</span></div>
+      <div><h1 id="pageTitle">记忆管理</h1><span class="sub" id="pageSub"></span></div>
       <div style="display:flex;gap:8px;">
         <button class="btn" id="themeToggle" title="主题桥失败时的手动降级开关">◐ 手动深浅</button>
         <button class="btn" id="backBtn">← 返回设置</button>
       </div>
     </div>
     <div class="notice" id="bridgeNotice">未能自动跟随主题（主题桥不可用）——已切换为手动深浅档，右上角可切换。</div>
+    <div class="notice" id="toast"></div>
     <div id="page"></div>
   </main>
+  <div id="dialogHost"></div>
 
-<script>
-(function () {
-  "use strict";
-  var state = null; // /api/state 轻态
-  var page = document.getElementById("page");
-  var pageTitle = document.getElementById("pageTitle");
+<script type="module">
+import * as L from "/dsh-memory/panel/panel-logic.js";
 
-  // ============ 主题桥（M0 P7 已验：postMessage 主路径 + 直读兜底 + Observer 跟色） ============
-  var hostWindow = (function () {
-    try { if (window.opener && window.opener !== window) return window.opener; } catch (e) {}
-    try { if (window.parent && window.parent !== window) return window.parent; } catch (e) {}
-    return null;
-  })();
-  var manualTheme = false;
+const $ = (id) => document.getElementById(id);
+const page = $("page");
+const pageTitle = $("pageTitle");
+const pageSub = $("pageSub");
+const dialogHost = $("dialogHost");
 
-  function applyVars(vars) {
-    var applied = 0;
-    for (var name in vars) {
-      if (Object.prototype.hasOwnProperty.call(vars, name) && name.indexOf("--dsw-alias-") === 0) {
-        document.body.style.setProperty(name, vars[name]);
-        applied += 1;
-      }
-    }
-    if (applied > 0 && !manualTheme) {
-      document.getElementById("bridgeNotice").classList.remove("show");
-      document.getElementById("themeToggle").style.display = "none";
-    }
-    return applied;
+// ============ 主题桥（M0 P7 定案机制） ============
+const hostWindow = (() => {
+  try { if (window.opener && window.opener !== window) return window.opener; } catch (e) {}
+  try { if (window.parent && window.parent !== window) return window.parent; } catch (e) {}
+  return null;
+})();
+let manualTheme = false;
+
+function bridgeApply(vars) {
+  const n = L.applyThemeVars(document.body.style, vars);
+  if (n > 0 && !manualTheme) {
+    $("bridgeNotice").classList.remove("show");
+    $("themeToggle").style.display = "none";
   }
+  return n;
+}
+function startThemeBridge() {
+  if (!hostWindow) { $("bridgeNotice").classList.add("show"); return; }
+  const vars = L.collectThemeVarsFromDoc(hostWindow.document);
+  if (Object.keys(vars).length > 0) bridgeApply(vars);
+  else $("bridgeNotice").classList.add("show");
+  window.addEventListener("message", (ev) => {
+    if (ev && ev.data && ev.data.type === "dsh-memory:theme" && ev.data.vars) bridgeApply(ev.data.vars);
+  });
+  try {
+    let pending = false;
+    const observer = new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      setTimeout(() => { pending = false; bridgeApply(L.collectThemeVarsFromDoc(hostWindow.document)); }, 50);
+    });
+    const filter = ["style", "class", "data-ds-dark-theme", "data-ds-theme-source"];
+    observer.observe(hostWindow.document.body, { attributes: true, attributeFilter: filter });
+    observer.observe(hostWindow.document.documentElement, { attributes: true, attributeFilter: filter });
+  } catch (e) { /* 保留静态变量 */ }
+  try { hostWindow.postMessage({ type: "dsh-memory:panel-ready" }, "*"); } catch (e) {}
+}
+$("themeToggle").addEventListener("click", () => {
+  manualTheme = true;
+  document.body.classList.toggle("theme-dark");
+});
+$("backBtn").addEventListener("click", () => {
+  if (window.history.length > 1) window.history.back();
+  else window.location.href = "/";
+});
 
-  function collectForeignVars(hostDoc) {
-    var vars = {};
-    try {
-      var computed = hostDoc.defaultView.getComputedStyle(hostDoc.body);
-      var names = {};
-      Array.from(hostDoc.styleSheets).forEach(function (sheet) {
-        var rules;
-        try { rules = sheet.cssRules; } catch (e) { return; }
-        Array.from(rules).forEach(function (rule) {
-          if (!rule || !rule.style) return;
-          for (var i = 0; i < rule.style.length; i += 1) {
-            var n = rule.style[i];
-            if (typeof n === "string" && n.indexOf("--dsw-alias-") === 0) names[n] = true;
-          }
+// ============ 基础 helper ============
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+async function api(path, options) {
+  const res = await fetch("/dsh-memory/api/" + path, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || "HTTP " + res.status);
+  return body;
+}
+const apiPut = (path, obj) => api(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
+const apiPost = (path, obj) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(obj ?? {}) });
+const apiDel = (path, obj) => api(path, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
+
+let toastTimer = null;
+function toast(text, kind = "ok") {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = "notice show " + kind;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = "notice"; }, 3200);
+}
+function fmtTime(ms) {
+  if (!ms) return "—";
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// 迷你 markdown 渲染（人设预览用：标题/粗体/行内码/列表/段落）
+function mdRender(text) {
+  const lines = String(text ?? "").split("\n");
+  let html = "";
+  let inList = false;
+  const inline = (s) => esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  for (const line of lines) {
+    const t = line.trimEnd();
+    let m;
+    if ((m = t.match(/^###\s+(.*)$/))) { if (inList) { html += "</ul>"; inList = false; } html += `<h3>${inline(m[1])}</h3>`; }
+    else if ((m = t.match(/^##\s+(.*)$/))) { if (inList) { html += "</ul>"; inList = false; } html += `<h2>${inline(m[1])}</h2>`; }
+    else if ((m = t.match(/^#\s+(.*)$/))) { if (inList) { html += "</ul>"; inList = false; } html += `<h1>${inline(m[1])}</h1>`; }
+    else if ((m = t.match(/^[-*]\s+(.*)$/))) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(m[1])}</li>`; }
+    else if (t.trim() === "") { if (inList) { html += "</ul>"; inList = false; } }
+    else { if (inList) { html += "</ul>"; inList = false; } html += `<p>${inline(t)}</p>`; }
+  }
+  if (inList) html += "</ul>";
+  return html;
+}
+
+// ============ 确认弹窗 ============
+function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
+  dialogHost.innerHTML = `
+    <div class="mask">
+      <div class="dialog" style="width:min(440px,92vw)">
+        <h2>${esc(title)}</h2>
+        <div style="font-size:13px;white-space:pre-wrap">${body}</div>
+        <div class="foot">
+          <button class="btn" data-x>取消</button>
+          <button class="btn danger" data-ok>${esc(dangerText)}</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  dialogHost.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) dialogHost.innerHTML = ""; });
+  dialogHost.querySelector("[data-ok]").addEventListener("click", async () => {
+    dialogHost.innerHTML = "";
+    await onConfirm();
+  });
+}
+
+// ============ 条目编辑卡片（分类页/长期页共用） ============
+function entryCard(cat, e, reload) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const ageBadge = cat === "recent-activity" ? `<span class="badge">${esc(L.recentAgeOf(e.timestamp).text)} · ${L.recentExpireDays(e.timestamp)} 天后过期</span> ` : "";
+  card.innerHTML = `
+    <h3>${ageBadge}<span>${esc(e.title)}</span>
+      <span class="ops">
+        <button class="btn sm" data-edit>编辑</button>
+        <button class="btn sm danger" data-del>删除</button>
+      </span>
+    </h3>
+    ${e.description ? `<div class="meta">${esc(e.description)}</div>` : ""}
+    <div class="meta">${esc(e.name)} · ${esc(fmtTime(e.mtimeMs))}</div>
+    <div class="entry-body">${esc(e.content)}</div>`;
+  card.querySelector("[data-del]").addEventListener("click", () => {
+    confirmDialog({
+      title: "删除条目",
+      body: `确定删除「${esc(e.title)}」吗？此操作不可撤销（重置/导入才有备份）。`,
+      dangerText: "删除",
+      onConfirm: async () => {
+        try {
+          await apiDel("entry", { category: cat, name: e.name });
+          toast("已删除");
+          reload();
+        } catch (err) { toast("删除失败：" + err.message, "err"); }
+      },
+    });
+  });
+  card.querySelector("[data-edit]").addEventListener("click", () => {
+    card.innerHTML = `
+      <div class="field"><label>标题</label><input class="inp" data-t value="${esc(e.title)}"></div>
+      <div class="field"><label>描述（一行钩子，可选）</label><input class="inp" data-d value="${esc(e.description)}"></div>
+      <div class="field"><label>正文</label><textarea class="ta" data-c>${esc(e.content)}</textarea></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn sm" data-x>取消</button>
+        <button class="btn sm primary" data-s>保存</button>
+      </div>`;
+    card.querySelector("[data-x]").addEventListener("click", reload);
+    card.querySelector("[data-s]").addEventListener("click", async () => {
+      try {
+        await apiPut("entry", {
+          category: cat,
+          name: e.name,
+          title: card.querySelector("[data-t]").value,
+          description: card.querySelector("[data-d]").value,
+          content: card.querySelector("[data-c]").value,
         });
-      });
-      Object.keys(names).forEach(function (n) {
-        var v = computed.getPropertyValue(n);
-        if (typeof v === "string" && v.length > 0) vars[n] = v.trim();
-      });
-    } catch (e) { /* 跨文档拒绝：桥失败降级 */ }
-    return vars;
-  }
+        toast("已保存");
+        reload();
+      } catch (err) { toast("保存失败：" + err.message, "err"); }
+    });
+  });
+  return card;
+}
 
-  function startThemeBridge() {
-    if (!hostWindow) {
-      document.getElementById("bridgeNotice").classList.add("show");
+// ============ 新增条目弹窗 ============
+function newEntryDialog(cat, reload) {
+  dialogHost.innerHTML = `
+    <div class="mask">
+      <div class="dialog">
+        <h2>新增条目</h2>
+        <div class="field"><label>标题</label><input class="inp" data-t placeholder="一句话说清这条记忆"></div>
+        <div class="field"><label>描述（一行钩子，可选）</label><input class="inp" data-d></div>
+        <div class="field"><label>正文</label><textarea class="ta tall" data-c></textarea></div>
+        <div class="foot">
+          <button class="btn" data-x>取消</button>
+          <button class="btn primary" data-s>保存</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  dialogHost.querySelector("[data-s]").addEventListener("click", async () => {
+    const title = dialogHost.querySelector("[data-t]").value.trim();
+    const content = dialogHost.querySelector("[data-c]").value.trim();
+    if (!title || !content) { toast("标题与正文必填", "err"); return; }
+    try {
+      await apiPost(`category/${cat}/entries`, { title, description: dialogHost.querySelector("[data-d]").value, content });
+      dialogHost.innerHTML = "";
+      toast("已新增");
+      reload();
+    } catch (err) { toast("新增失败：" + err.message, "err"); }
+  });
+}
+
+// ============ 源码模式（整类直接编辑：序列化 → 编辑 → reset+import 重建） ============
+function serializeEntries(entries) {
+  return entries.map((e) => `## ${e.title}\n<!-- name: ${e.name} -->\n${e.content}`).join("\n\n---\n\n");
+}
+function parseSourceText(text) {
+  const entries = [];
+  const blocks = String(text ?? "").split(/\n---\n/);
+  for (const block of blocks) {
+    const m = block.match(/^##\s+([^\n]+)\n(?:<!--\s*name:\s*(\S+)\s*-->\n)?([\s\S]*)$/);
+    if (!m) continue;
+    const content = m[3].trim();
+    if (content.length === 0) continue;
+    entries.push({ title: m[1].trim(), name: m[2] ?? void 0, content });
+  }
+  return entries;
+}
+function sourceModeDialog(cat, entries, reload) {
+  dialogHost.innerHTML = `
+    <div class="mask">
+      <div class="dialog" style="width:min(860px,96vw)">
+        <h2>源码模式——直接编辑整类</h2>
+        <div class="meta">每条 = <code class="k">## 标题</code> + 可选 <code class="k">&lt;!-- name: file.md --&gt;</code> + 正文；条目间用 <code class="k">---</code> 分隔。保存 = 整类替换（先自动备份再重建）。</div>
+        <textarea class="ta tall" data-src style="min-height:46vh">${esc(serializeEntries(entries))}</textarea>
+        <div class="foot">
+          <button class="btn" data-x>取消</button>
+          <button class="btn danger" data-s>保存整类（先备份）</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  dialogHost.querySelector("[data-s]").addEventListener("click", () => {
+    const parsed = parseSourceText(dialogHost.querySelector("[data-src]").value);
+    confirmDialog({
+      title: "整类替换确认",
+      body: `将解析出 ${parsed.length} 条。\n操作会先自动备份当前内容，再清空整类并写入这些条目。确定继续吗？`,
+      dangerText: "备份并替换",
+      onConfirm: async () => {
+        try {
+          await apiPost(`category/${cat}/reset`);
+          if (parsed.length > 0) {
+            await apiPost("import", { category: cat, format: "json", payload: { entries: parsed } });
+          }
+          toast(`整类已替换（${parsed.length} 条，已自动备份）`);
+          reload();
+        } catch (err) { toast("整类替换失败：" + err.message, "err"); }
+      },
+    });
+  });
+}
+
+// ============ 导入向导（上传/粘贴 → 格式 → dryRun 冲突标红 → 确认） ============
+function importDialog(cat, reload) {
+  let fileText = "";
+  dialogHost.innerHTML = `
+    <div class="mask">
+      <div class="dialog">
+        <h2>导入到「${esc(cat)}」</h2>
+        <div class="field"><label>① 选择文件（.json / .md）或直接在下方粘贴</label>
+          <input type="file" data-file accept=".json,.md,.txt">
+        </div>
+        <div class="field"><label>② 内容（可粘贴/编辑）</label>
+          <textarea class="ta tall" data-text placeholder='JSON：{"entries":[{"title":"…","content":"…"}]}；或 Markdown（## 拆条 / 整段）'></textarea>
+        </div>
+        <div class="kv"><b>格式</b>
+          <select class="inp" data-fmt style="width:auto">
+            <option value="json">JSON（结构化逐条）</option>
+            <option value="markdown-split">Markdown 拆条（按 ## 标题）</option>
+            <option value="markdown-whole">Markdown 整段（整条一条）</option>
+          </select>
+          <span class="meta" data-fmtHint></span>
+        </div>
+        <div data-previewHost></div>
+        <div class="foot">
+          <button class="btn" data-x>取消</button>
+          <button class="btn primary" data-dry>预览将要写入的内容</button>
+          <button class="btn danger" data-confirm style="display:none">确认写入</button>
+        </div>
+      </div>
+    </div>`;
+  const $fmt = dialogHost.querySelector("[data-fmt]");
+  const $text = dialogHost.querySelector("[data-text]");
+  const $dry = dialogHost.querySelector("[data-dry]");
+  const $confirm = dialogHost.querySelector("[data-confirm]");
+  const $preview = dialogHost.querySelector("[data-previewHost]");
+  let lastPlans = null;
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  dialogHost.querySelector("[data-file]").addEventListener("change", (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      fileText = String(reader.result ?? "");
+      $text.value = fileText;
+      $fmt.value = L.detectImportFormat(file.name, fileText);
+      $preview.innerHTML = "";
+      $confirm.style.display = "none";
+    };
+    reader.readAsText(file);
+  });
+  $text.addEventListener("input", () => { $preview.innerHTML = ""; $confirm.style.display = "none"; });
+  $dry.addEventListener("click", async () => {
+    const req = L.buildImportRequest(cat, $fmt.value, $text.value);
+    if (!req.ok) { toast(req.error, "err"); return; }
+    try {
+      const out = await apiPost("import?dryRun=1", req.body);
+      lastPlans = out.plans ?? [];
+      const rows = L.previewRowsOf(out.plans);
+      if (rows.length === 0) { $preview.innerHTML = '<div class="empty">没有可导入的条目</div>'; return; }
+      $preview.innerHTML = `
+        <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:#d5564d">${rows.filter((r) => r.danger).length} 条与现有内容冲突，确认后覆盖</b>）：</div>
+        <table class="preview">
+          <tr><th style="width:90px">动作</th><th>标题</th><th>文件</th><th style="width:40%">内容预览</th></tr>
+          ${rows.map((r) => `<tr class="${r.danger ? "danger" : ""}"><td>${r.danger ? "覆盖" : "新增"}</td><td>${esc(r.title)}</td><td class="meta">${esc(r.name)}</td><td class="meta">${esc(r.preview)}</td></tr>`).join("")}
+        </table>
+        ${(out.errors ?? []).length > 0 ? `<div class="notice show err" style="margin:8px 0">${(out.errors ?? []).map(esc).join("<br>")}</div>` : ""}`;
+      $confirm.style.display = "";
+    } catch (err) { toast("预览失败：" + err.message, "err"); }
+  });
+  $confirm.addEventListener("click", async () => {
+    const req = L.buildImportRequest(cat, $fmt.value, $text.value);
+    if (!req.ok) { toast(req.error, "err"); return; }
+    try {
+      const out = await apiPost("import", req.body);
+      dialogHost.innerHTML = "";
+      toast(`导入完成：写入 ${out.written} 条（覆盖 ${out.overwritten} 条，已自动备份 ${out.backupId}）`);
+      reload();
+    } catch (err) { toast("导入失败：" + err.message, "err"); }
+  });
+}
+
+// ============ 页面：四分类 / 长期记忆 ============
+async function renderCategoryPage(cat, title) {
+  pageTitle.textContent = title;
+  pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天）" : "";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("category/" + cat);
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  const reload = () => { renderCategoryPage(cat, title); refreshCounts(); };
+  page.innerHTML = `
+    <div class="toolbar">
+      <button class="btn danger" data-reset>重置</button>
+      <button class="btn" data-source>源码模式</button>
+      <button class="btn" data-import>导入</button>
+      <span class="spacer"></span>
+      <button class="btn primary" data-new>＋ 新增条目</button>
+    </div>
+    <div data-list></div>`;
+  const list = page.querySelector("[data-list]");
+  const entries = data.entries ?? [];
+  if (entries.length === 0) {
+    list.innerHTML = '<div class="empty">暂无条目。对话中聊到相关信息后，DSH 会自动归类到这里；也可以手动新增或导入。</div>';
+  } else {
+    for (const e of entries) list.appendChild(entryCard(cat, e, reload));
+  }
+  page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog(cat, reload));
+  page.querySelector("[data-import]").addEventListener("click", () => importDialog(cat, reload));
+  page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog(cat, entries, reload));
+  page.querySelector("[data-reset]").addEventListener("click", () => {
+    confirmDialog({
+      title: `重置「${title}」`,
+      body: `将清空该分类全部 ${entries.length} 条。\n清空前系统会自动把当前内容存一份备份（可在「设置」页恢复）。`,
+      dangerText: "备份并清空",
+      onConfirm: async () => {
+        try {
+          const out = await apiPost(`category/${cat}/reset`);
+          toast(`已清空（${out.removed} 条，备份 ${out.backupId}）`);
+          reload();
+        } catch (err) { toast("重置失败：" + err.message, "err"); }
+      },
+    });
+  });
+}
+
+// ============ 页面：长期记忆（检索增强） ============
+async function renderLongTermPage() {
+  pageTitle.textContent = "长期记忆";
+  pageSub.textContent = "跨会话保存的重要信息与结论，不会过期";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("category/long-term");
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  const all = data.entries ?? [];
+  const reload = () => { renderLongTermPage(); refreshCounts(); };
+  page.innerHTML = `
+    <div class="toolbar">
+      <input class="inp search" data-q placeholder="检索：标题 / 描述 / 正文即时过滤">
+      <button class="btn danger" data-reset>重置</button>
+      <button class="btn" data-source>源码模式</button>
+      <button class="btn" data-import>导入</button>
+      <span class="spacer"></span>
+      <button class="btn primary" data-new>＋ 新增条目</button>
+    </div>
+    <div data-list></div>`;
+  const list = page.querySelector("[data-list]");
+  const renderList = (entries) => {
+    list.innerHTML = "";
+    if (entries.length === 0) {
+      list.innerHTML = '<div class="empty">无匹配条目。</div>';
       return;
     }
-    // 直读（window.open/iframe 同源场景）
-    var vars = collectForeignVars(hostWindow.document);
-    if (Object.keys(vars).length > 0) applyVars(vars);
-    else document.getElementById("bridgeNotice").classList.add("show");
-    // postMessage 握手（门牌回递）
-    window.addEventListener("message", function (ev) {
-      if (ev && ev.data && ev.data.type === "dsh-memory:theme" && ev.data.vars) applyVars(ev.data.vars);
-    });
-    // Observer 跟色（M0 实测变更点：body data-ds-dark-theme / html data-ds-theme-source 等）
-    try {
-      var pending = false;
-      var observer = new MutationObserver(function () {
-        if (pending) return;
-        pending = true;
-        setTimeout(function () {
-          pending = false;
-          applyVars(collectForeignVars(hostWindow.document));
-        }, 50);
-      });
-      var filter = ["style", "class", "data-ds-dark-theme", "data-ds-theme-source"];
-      observer.observe(hostWindow.document.body, { attributes: true, attributeFilter: filter });
-      observer.observe(hostWindow.document.documentElement, { attributes: true, attributeFilter: filter });
-    } catch (e) { /* Observer 挂载失败：保留静态变量 */ }
-    // 握手回执
-    try { hostWindow.postMessage({ type: "dsh-memory:panel-ready" }, "*"); } catch (e) {}
-  }
-
-  document.getElementById("themeToggle").addEventListener("click", function () {
-    manualTheme = true;
-    document.body.classList.toggle("theme-dark");
-  });
-  document.getElementById("backBtn").addEventListener("click", function () {
-    if (window.history.length > 1) window.history.back();
-    else window.location.href = "/";
-  });
-
-  // ============ API helper（M1：逻辑全走 API，本地无状态层） ============
-  function api(path) {
-    return fetch("/dsh-memory/api/" + path).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    });
-  }
-  function esc(s) {
-    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function fmtTime(ms) {
-    if (!ms) return "—";
-    var d = new Date(ms);
-    var pad = function (n) { return String(n).padStart(2, "0"); };
-    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
-  }
-  function fmtAge(entry) {
-    var ts = entry.timestamp ? Date.parse(entry.timestamp) : entry.mtimeMs;
-    if (!isFinite(ts)) return "";
-    var days = Math.floor((Date.now() - ts) / 86400000);
-    return days <= 0 ? "今天" : days === 1 ? "1 天前" : days + " 天前";
-  }
-
-  // ============ 路由与页面（M1 只读视图；写交互 M2 填充） ============
-  var ROUTES = {
-    "category/work-profile": { title: "工作背景", category: "work-profile" },
-    "category/user-profile": { title: "用户个人背景", category: "user-profile" },
-    "category/current-focus": { title: "当前关注", category: "current-focus" },
-    "category/recent-activity": { title: "近期动态", category: "recent-activity" },
-    "long-term": { title: "长期记忆", category: "long-term" },
-    "persona": { title: "人设" },
-    "addressing": { title: "称呼" },
-    "projects": { title: "项目记忆" },
-    "settings": { title: "设置" },
+    for (const e of entries) list.appendChild(entryCard("long-term", e, reload));
   };
-
-  function renderCategoryPage(cfg) {
-    pageTitle.textContent = cfg.title;
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    api("category/" + cfg.category).then(function (data) {
-      if (!data.entries || data.entries.length === 0) {
-        page.innerHTML = '<div class="empty">暂无条目。对话中聊到相关信息后，DSH 会自动归类到这里。</div>';
-        return;
-      }
-      page.innerHTML = data.entries.map(function (e) {
-        var age = cfg.category === "recent-activity" ? '<span class="badge">' + esc(fmtAge(e)) + '</span> ' : "";
-        return '<div class="card">' +
-          '<h3>' + age + esc(e.title) + '</h3>' +
-          (e.description ? '<div class="meta">' + esc(e.description) + '</div>' : "") +
-          '<div class="meta">' + esc(e.name) + ' · ' + esc(fmtTime(e.mtimeMs)) + '</div>' +
-          '<div class="entry-body">' + esc(e.content) + '</div>' +
-          '</div>';
-      }).join("") + '<div class="m1tag">M1 只读视图——编辑 / 重置 / 导入 三按钮将在 M2 提供。</div>';
-    }).catch(function (err) {
-      page.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
-    });
-  }
-
-  function renderPersonaPage() {
-    pageTitle.textContent = "人设";
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    api("persona").then(function (data) {
-      page.innerHTML =
-        '<div class="card"><h3>当前人设' + (data.isDefault ? ' <span class="badge">出厂默认</span>' : "") + '</h3>' +
-        '<div class="entry-body">' + esc(data.content) + '</div></div>' +
-        '<div class="m1tag">M1 只读视图——分栏编辑 / 预设模板 / 恢复默认 将在 M2 提供。</div>';
-    }).catch(function (err) {
-      page.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
-    });
-  }
-
-  function renderAddressingPage() {
-    pageTitle.textContent = "称呼";
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    api("addressing").then(function (data) {
-      page.innerHTML =
-        '<div class="card">' +
-        '<div class="kv"><b>DSH 的名字</b><span>' + (data.dshName ? esc(data.dshName) : '<span class="meta">（未设置）</span>') + '</span></div>' +
-        '<div class="kv"><b>对我的称呼</b><span>' + (data.userAlias ? esc(data.userAlias) : '<span class="meta">（未设置）</span>') + '</span></div>' +
-        '</div>' +
-        '<div class="m1tag">M1 只读视图——门牌上的两个输入框（即时保存）将在 M2 提供。</div>';
-    }).catch(function (err) {
-      page.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
-    });
-  }
-
-  function renderProjectsPage() {
-    pageTitle.textContent = "项目记忆";
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    api("state").then(function (data) {
-      var projects = data.projects || [];
-      if (projects.length === 0) {
-        page.innerHTML = '<div class="empty">暂无项目记忆。项目记忆由对话自动维护（只读）。</div>';
-        return;
-      }
-      page.innerHTML = projects.map(function (p) {
-        return '<div class="card"><h3><code>' + esc(p.id) + '</code></h3>' +
-          '<div class="meta">' + p.entries + ' 条 · 最后更新 ' + esc(fmtTime(p.lastMtimeMs)) + '</div></div>';
-      }).join("") + '<div class="m1tag">项目记忆只读——由对话自动维护；单项目导出将在 M2 提供。</div>';
-    }).catch(function (err) {
-      page.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
-    });
-  }
-
-  function renderSettingsPage() {
-    pageTitle.textContent = "设置";
-    page.innerHTML = '<div class="empty">加载中…</div>';
-    api("state").then(function (data) {
-      var s = data.settings || {};
-      var row = function (label, on) {
-        return '<div class="kv"><b>' + label + '</b><span class="badge">' + (on ? "已开启" : "已关闭") + '</span></div>';
-      };
-      page.innerHTML =
-        '<div class="card"><h3>开关</h3>' +
-        row("对话记忆（总开关）", s.conversationMemory) +
-        row("项目记忆", s.projectMemory) +
-        row("全局自动提取", s.globalExtraction) +
-        '</div>' +
-        (data.corrupt ? '<div class="card" style="border-color:rgba(221,85,85,.5)">settings.json 解析失败，已按缺省（全开）运行。</div>' : "") +
-        '<div class="m1tag">M1 只读视图——开关切换 / 导出全部 / 清空全部（带备份）将在 M2 提供。</div>';
-    }).catch(function (err) {
-      page.innerHTML = '<div class="empty">加载失败：' + esc(err.message) + '</div>';
-    });
-  }
-
-  function currentRoute() {
-    var hash = location.hash.replace(/^#\/?/, "");
-    return ROUTES[hash] ? hash : "category/work-profile";
-  }
-
-  function render() {
-    var route = currentRoute();
-    var cfg = ROUTES[route];
-    Array.from(document.querySelectorAll("aside a")).forEach(function (a) {
-      a.classList.toggle("on", a.getAttribute("data-route") === route);
-    });
-    if (cfg.category) renderCategoryPage(cfg);
-    else if (route === "persona") renderPersonaPage();
-    else if (route === "addressing") renderAddressingPage();
-    else if (route === "projects") renderProjectsPage();
-    else if (route === "settings") renderSettingsPage();
-  }
-
-  Array.from(document.querySelectorAll("aside a")).forEach(function (a) {
-    a.addEventListener("click", function () {
-      location.hash = "#/" + a.getAttribute("data-route");
+  renderList(all);
+  page.querySelector("[data-q]").addEventListener("input", (ev) => renderList(L.filterEntries(all, ev.target.value)));
+  page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog("long-term", reload));
+  page.querySelector("[data-import]").addEventListener("click", () => importDialog("long-term", reload));
+  page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog("long-term", all, reload));
+  page.querySelector("[data-reset]").addEventListener("click", () => {
+    confirmDialog({
+      title: "重置「长期记忆」",
+      body: `将清空全部 ${all.length} 条。\n清空前系统会自动备份（可在「设置」页恢复）。`,
+      dangerText: "备份并清空",
+      onConfirm: async () => {
+        try {
+          const out = await apiPost("category/long-term/reset");
+          toast(`已清空（${out.removed} 条，备份 ${out.backupId}）`);
+          reload();
+        } catch (err) { toast("重置失败：" + err.message, "err"); }
+      },
     });
   });
-  window.addEventListener("hashchange", render);
+}
 
-  // 导航计数（state 轻态）
-  function refreshCounts() {
-    api("state").then(function (data) {
-      state = data;
-      var byCat = (data.counts && data.counts.byCategory) || {};
-      Array.from(document.querySelectorAll("[data-cnt]")).forEach(function (el) {
-        var key = el.getAttribute("data-cnt");
-        var n = key === "projects" ? (data.counts ? data.counts.projects : 0) : (byCat[key] || 0);
-        el.textContent = n > 0 ? String(n) : "";
+// ============ 页面：人设（左右分栏 + 五模板 + 恢复默认） ============
+async function renderPersonaPage() {
+  pageTitle.textContent = "人设";
+  pageSub.textContent = "设定 DSH 的身份、性格与表达风格，对所有回复生效";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("persona");
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  page.innerHTML = `
+    <div class="presetRow" data-presets></div>
+    <div class="split">
+      <div class="field"><label>编辑（markdown）</label><textarea class="ta tall" data-editor style="min-height:52vh">${esc(data.content)}</textarea></div>
+      <div class="field"><label>预览</label><div class="card mdprev" data-preview style="min-height:52vh;overflow:auto"></div></div>
+    </div>
+    <div class="toolbar">
+      <span class="meta" data-dirty></span>
+      <span class="spacer"></span>
+      <button class="btn" data-reset>恢复默认</button>
+      <button class="btn primary" data-save>保存人设</button>
+    </div>`;
+  const editor = page.querySelector("[data-editor]");
+  const preview = page.querySelector("[data-preview]");
+  const dirty = page.querySelector("[data-dirty]");
+  let savedContent = data.content;
+  const renderPreview = () => { preview.innerHTML = mdRender(editor.value); };
+  renderPreview();
+  editor.addEventListener("input", () => {
+    renderPreview();
+    dirty.textContent = editor.value !== savedContent ? "未保存" : "";
+  });
+  const presetsHost = page.querySelector("[data-presets]");
+  for (const preset of L.PERSONA_PRESETS) {
+    const btn = document.createElement("button");
+    btn.className = "pill";
+    btn.textContent = preset.label;
+    btn.addEventListener("click", () => {
+      if (preset.id === "custom") { editor.focus(); return; } // 自定义 = 保留当前文本
+      editor.value = preset.content;
+      renderPreview();
+      dirty.textContent = "未保存";
+    });
+    presetsHost.appendChild(btn);
+  }
+  page.querySelector("[data-save]").addEventListener("click", async () => {
+    try {
+      await apiPut("persona", { content: editor.value });
+      savedContent = editor.value;
+      dirty.textContent = "";
+      toast("人设已保存，下一轮对话生效");
+    } catch (err) { toast("保存失败：" + err.message, "err"); }
+  });
+  page.querySelector("[data-reset]").addEventListener("click", () => {
+    confirmDialog({
+      title: "恢复默认人设",
+      body: "将恢复为出厂默认模板（补充设定，不会清空官方人格）。当前内容会被覆盖。",
+      dangerText: "恢复默认",
+      onConfirm: async () => {
+        try {
+          const out = await apiPost("persona/reset");
+          editor.value = out.content;
+          savedContent = out.content;
+          renderPreview();
+          dirty.textContent = "";
+          toast("已恢复默认人设");
+        } catch (err) { toast("恢复失败：" + err.message, "err"); }
+      },
+    });
+  });
+}
+
+// ============ 页面：称呼 ============
+async function renderAddressingPage() {
+  pageTitle.textContent = "称呼";
+  pageSub.textContent = "门牌上的两个输入框同一份数据（即时保存）";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("addressing");
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  page.innerHTML = `
+    <div class="card" style="max-width:520px">
+      <div class="field"><label>DSH 的名字</label><input class="inp" data-name value="${esc(data.dshName)}" placeholder="例如：小舟（留空则不称呼）"></div>
+      <div class="field"><label>对我的称呼</label><input class="inp" data-alias value="${esc(data.userAlias)}" placeholder="例如：老板（留空则不称呼）"></div>
+      <div class="meta" data-hint>改动自动保存，下一轮对话生效。</div>
+    </div>`;
+  let timer = null;
+  const save = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        await apiPut("addressing", {
+          dshName: page.querySelector("[data-name]").value,
+          userAlias: page.querySelector("[data-alias]").value,
+        });
+        page.querySelector("[data-hint]").textContent = "已保存，下一轮对话生效。";
+      } catch (err) {
+        page.querySelector("[data-hint]").textContent = "保存失败：" + err.message;
+      }
+    }, 600);
+  };
+  page.querySelector("[data-name]").addEventListener("input", save);
+  page.querySelector("[data-alias]").addEventListener("input", save);
+}
+
+// ============ 页面：项目记忆（只读概览） ============
+async function renderProjectsPage() {
+  pageTitle.textContent = "项目记忆";
+  pageSub.textContent = "按工作区自动维护（只读）";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data;
+  try {
+    data = await api("state");
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  const projects = data.projects ?? [];
+  if (projects.length === 0) {
+    page.innerHTML = '<div class="empty">暂无项目记忆。项目记忆由对话自动维护。</div>';
+    return;
+  }
+  page.innerHTML = projects.map((p) => `
+    <div class="card"><h3><code class="k">${esc(p.id)}</code></h3>
+    <div class="meta">${p.entries} 条 · 最后更新 ${esc(fmtTime(p.lastMtimeMs))}</div></div>`).join("")
+    + '<div class="meta">项目记忆只读——由对话自动维护；全量导出走「设置」页。</div>';
+}
+
+// ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
+async function renderSettingsPage() {
+  pageTitle.textContent = "设置";
+  pageSub.textContent = "";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let data, backupsData;
+  try {
+    data = await api("state");
+    backupsData = await api("backup/list");
+  } catch (err) {
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  const s = data.settings ?? {};
+  const switchRow = (key, label, hint) => `
+    <div class="kv"><b>${label}</b>
+      <span class="switchWrap"><label class="switch"><input type="checkbox" data-sw="${key}" ${s[key] !== false ? "checked" : ""}><span class="slider"></span></label></span>
+      <span class="meta">${hint}</span>
+    </div>`;
+  const backups = backupsData.backups ?? [];
+  page.innerHTML = `
+    <div class="card"><h3>开关</h3>
+      ${switchRow("conversationMemory", "对话记忆（总开关）", "关闭后不带任何记忆、也不再自动记录")}
+      ${switchRow("projectMemory", "项目记忆", "关闭后不再注入/记录项目记忆")}
+      ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
+      <div class="meta" data-swHint>改动即时生效（下一轮对话）。</div>
+    </div>
+    ${data.corrupt ? '<div class="card" style="border-color:rgba(221,85,85,.5)">settings.json 解析失败，已按缺省（全开）运行——点任意开关重写即可修复。</div>' : ""}
+    <div class="card"><h3>数据</h3>
+      <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
+      <div class="kv"><b>清空</b><button class="btn danger" data-clearAll>清空全部记忆（逐类自动备份）</button></div>
+    </div>
+    <div class="card"><h3>备份（重置/导入/恢复前自动留档）</h3>
+      ${backups.length === 0 ? '<div class="meta">暂无备份。</div>' : backups.slice(0, 20).map((b) => `
+        <div class="kv"><b><code class="k">${esc(b.id)}</code></b>
+          <span class="meta">${esc(b.reason ?? "")}</span><span class="spacer"></span>
+          <button class="btn sm" data-restore="${esc(b.id)}">恢复此备份</button>
+        </div>`).join("")}
+    </div>`;
+  for (const input of Array.from(page.querySelectorAll("[data-sw]"))) {
+    input.addEventListener("change", async () => {
+      const key = input.getAttribute("data-sw");
+      try {
+        await apiPut("settings", { [key]: input.checked });
+        page.querySelector("[data-swHint]").textContent = "已保存，下一轮对话生效。";
+        refreshCounts();
+      } catch (err) {
+        input.checked = !input.checked;
+        toast("开关保存失败：" + err.message, "err");
+      }
+    });
+  }
+  page.querySelector("[data-export]").addEventListener("click", async () => {
+    try {
+      const out = await api("export");
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `dsh-memory-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("已导出");
+    } catch (err) { toast("导出失败：" + err.message, "err"); }
+  });
+  page.querySelector("[data-clearAll]").addEventListener("click", () => {
+    confirmDialog({
+      title: "清空全部记忆",
+      body: "将依次清空五个全局分类（每个分类清空前都会自动备份）。人设与称呼保留。\n确定继续吗？",
+      dangerText: "逐类备份并清空",
+      onConfirm: async () => {
+        try {
+          let total = 0;
+          for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
+            const out = await apiPost(`category/${cat}/reset`);
+            total += out.removed ?? 0;
+          }
+          toast(`已清空全部（共 ${total} 条，逐类备份）`);
+          renderSettingsPage();
+          refreshCounts();
+        } catch (err) { toast("清空失败：" + err.message, "err"); }
+      },
+    });
+  });
+  for (const btn of Array.from(page.querySelectorAll("[data-restore]"))) {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-restore");
+      confirmDialog({
+        title: "从备份恢复",
+        body: `将用备份 ${id} 全量覆盖当前全局记忆与人设/称呼。\n恢复前系统会先把当前状态再备份一次。确定继续吗？`,
+        dangerText: "恢复",
+        onConfirm: async () => {
+          try {
+            await apiPost("backup/restore", { id });
+            toast("已恢复（恢复前现态已自动备份）");
+            renderSettingsPage();
+            refreshCounts();
+          } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        },
       });
-    }).catch(function () { /* 计数失败不炸导航 */ });
+    });
   }
+}
 
-  // ============ 启动 ============
-  window.addEventListener("load", function () {
-    startThemeBridge();
-    refreshCounts();
-    render();
-  });
-})();
+// ============ 路由 ============
+const ROUTES = {
+  "category/work-profile": { title: "工作背景", cat: "work-profile" },
+  "category/user-profile": { title: "用户个人背景", cat: "user-profile" },
+  "category/current-focus": { title: "当前关注", cat: "current-focus" },
+  "category/recent-activity": { title: "近期动态", cat: "recent-activity" },
+  "long-term": { title: "长期记忆" },
+  "persona": { title: "人设" },
+  "addressing": { title: "称呼" },
+  "projects": { title: "项目记忆" },
+  "settings": { title: "设置" },
+};
+function currentRoute() {
+  const hash = location.hash.replace(/^#\/?/, "");
+  return ROUTES[hash] ? hash : "category/work-profile";
+}
+function render() {
+  const route = currentRoute();
+  const cfg = ROUTES[route];
+  document.querySelectorAll("aside a").forEach((a) => a.classList.toggle("on", a.getAttribute("data-route") === route));
+  if (cfg.cat) renderCategoryPage(cfg.cat, cfg.title);
+  else if (route === "long-term") renderLongTermPage();
+  else if (route === "persona") renderPersonaPage();
+  else if (route === "addressing") renderAddressingPage();
+  else if (route === "projects") renderProjectsPage();
+  else if (route === "settings") renderSettingsPage();
+}
+document.querySelectorAll("aside a").forEach((a) => {
+  a.addEventListener("click", () => { location.hash = "#/" + a.getAttribute("data-route"); });
+});
+window.addEventListener("hashchange", render);
+
+function refreshCounts() {
+  api("state").then((data) => {
+    const byCat = (data.counts && data.counts.byCategory) || {};
+    document.querySelectorAll("[data-cnt]").forEach((el) => {
+      const key = el.getAttribute("data-cnt");
+      const n = key === "projects" ? (data.counts ? data.counts.projects : 0) : (byCat[key] || 0);
+      el.textContent = n > 0 ? String(n) : "";
+    });
+  }).catch(() => { /* 计数失败不炸导航 */ });
+}
+
+window.addEventListener("load", () => {
+  startThemeBridge();
+  refreshCounts();
+  render();
+});
 </script>
 </body>
 </html>

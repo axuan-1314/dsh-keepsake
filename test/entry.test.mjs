@@ -229,6 +229,42 @@ test("总开关关 = 提取全停（R3 提取半边；审查 P2 补覆盖——�
   }
 });
 
+test("路由兜底（M3 desktop 实测加固）：无 request/header 时 assistant/message.source 提供路由", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  try {
+    resetSettingsCache();
+    const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
+      yield {
+        type: "text-delta",
+        index: 0,
+        text: '{"ops":[{"action":"write","name":"fallback-route.md","type":"project","title":"Fallback","description":"路由兜底","content":"正文"}]}',
+      };
+      yield { type: "finish", reason: { kind: "stop" } };
+    });
+    // 不给 provider/model 配置、不发 request/header——只发 assistant/message 带 source
+    apply(ctx, { enabled: true, storageRoot: root });
+    const session = fakeSession(workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, {
+      type: "assistant/message",
+      seq: 1,
+      data: { message: { source: { kind: "main", provider: "fallback-prov", model: "fallback-model" } } },
+    });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 2, data: { turn: 1, reason: { kind: "completed" } } });
+    const target = join(projectMemoryPaths(root, workspace).memoryDir, "fallback-route.md");
+    for (let i = 0; i < 100 && !existsSync(target); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(target), true, "路由兜底应让提取照常落盘");
+    assert.equal(streamCalls.length, 1);
+    assert.equal(streamCalls[0].provider, "fallback-prov");
+    assert.equal(streamCalls[0].model, "fallback-model");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("config 未知键 fail loud", () => {
   const { ctx } = fakeCtx();
   assert.throws(() => apply(ctx, { enabled: true, whatever: 1 }));

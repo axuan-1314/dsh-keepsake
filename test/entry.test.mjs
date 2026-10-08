@@ -12,6 +12,7 @@ function fakeCtx(streamImpl) {
   const sections = [];
   const effects = [];
   const streamCalls = [];
+  const registeredRoutes = [];
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
     on(type, fn) {
@@ -19,6 +20,24 @@ function fakeCtx(streamImpl) {
     },
     effect(fn, label) {
       effects.push({ fn, label });
+    },
+    // M0 起宿主面扩展（方案C §2）：ctx.inject(["webServer"], (sctx) => …)
+    // mock：立即执行 setup 并触发其注册的 effect（模拟宿主启动），路由可被断言。
+    inject(deps, setup) {
+      const pending = [];
+      const sctx = {
+        effect(fn) {
+          pending.push(fn);
+        },
+        webServer: {
+          register(route) {
+            registeredRoutes.push(route);
+            return () => {};
+          },
+        },
+      };
+      setup(sctx);
+      for (const fn of pending) fn();
     },
     systemPrompt: {
       section(section) {
@@ -33,7 +52,7 @@ function fakeCtx(streamImpl) {
       },
     },
   };
-  return { ctx, handlers, sections, effects, streamCalls };
+  return { ctx, handlers, sections, effects, streamCalls, registeredRoutes };
 }
 
 const USER_EVENT = {
@@ -56,8 +75,9 @@ function fakeSession(cwd, events) {
 
 test("入口元数据与注入段注册", () => {
   assert.equal(name, "dsh-memory");
-  assert.deepEqual(inject.sort(), ["llm", "systemPrompt"]);
-  const { ctx, sections } = fakeCtx();
+  // M0 起含 webServer（方案C §2 host 挂载面）
+  assert.deepEqual(inject.sort(), ["llm", "systemPrompt", "webServer"]);
+  const { ctx, sections, registeredRoutes } = fakeCtx();
   apply(ctx, { enabled: false });
   assert.equal(sections.length, 0); // 关闭时不注入
   apply(ctx, {}); // 审查 P2-1：缺省关（fail-closed），无显式 enabled: true 不启用
@@ -66,6 +86,10 @@ test("入口元数据与注入段注册", () => {
   assert.equal(sections.length, 2);
   assert.equal(sections[0].interpolate, false);
   assert.equal(sections[1].interpolate, false);
+  // M0 探针路由已注册（state exact + panel exact/prefix）
+  assert.ok(registeredRoutes.length >= 3);
+  assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/api/state"));
+  assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/panel/"));
 });
 
 test("事件→提取→落盘 全链路", async () => {

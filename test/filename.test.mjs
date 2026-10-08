@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { INDEX_FILENAME, isInsideRoot, isReservedDeviceSegment, resolveSafeMemoryTarget, sanitizeMemoryName } from "../lib/filename.js";
+import { INDEX_FILENAME, isInsideRoot, isReservedDeviceSegment, resolveSafeMemoryTarget, sanitizeMemoryName, stripControlAndBidi } from "../lib/filename.js";
 
 const ROOT = "C:\\mem\\projects\\x\\memory";
 
@@ -69,4 +69,27 @@ test("resolveSafeMemoryTarget: 三道闸合成", () => {
 
 test("INDEX_FILENAME 保留名核对", () => {
   assert.equal(INDEX_FILENAME, "MEMORY.md");
+});
+
+test("全面审查 P3-1：保留设备名剥到首点（nul.tar.md 一族拒绝）", () => {
+  assert.equal(isReservedDeviceSegment("nul.tar.md"), true);
+  assert.equal(isReservedDeviceSegment("aux.tar.gz.md"), true);
+  assert.equal(isReservedDeviceSegment("lpt1.tar.md"), true);
+  assert.equal(isReservedDeviceSegment("note.tar.md"), false);
+  assert.equal(sanitizeMemoryName("nul.tar.md"), null);
+  assert.equal(sanitizeMemoryName("con.backup.md"), null);
+  assert.equal(sanitizeMemoryName("my-notes.tar.md"), "my-notes.tar.md"); // 非保留名不受影响
+});
+
+test("全面审查 P3-2：中间段冒充索引名拒绝（x/memory.md/y.md 一族）", () => {
+  assert.equal(sanitizeMemoryName("x/memory.md/y.md"), null);
+  assert.equal(sanitizeMemoryName("memory.md/y.md"), null);
+  assert.equal(sanitizeMemoryName("x/MEMORY.md"), null); // 末段同样拒（既有语义保持）
+  assert.equal(sanitizeMemoryName("x/notes.md/y.md"), "x/notes.md/y.md"); // 正常嵌套不受影响
+});
+
+test("stripControlAndBidi：值域剥控制符/bidi", () => {
+  assert.equal(stripControlAndBidi("小" + String.fromCharCode(0) + "舟"), "小舟");
+  assert.equal(stripControlAndBidi("a" + String.fromCharCode(0x200b) + "b"), "ab");
+  assert.equal(stripControlAndBidi("普通文本"), "普通文本");
 });

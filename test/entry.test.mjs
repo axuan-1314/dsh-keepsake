@@ -269,3 +269,68 @@ test("config 未知键 fail loud", () => {
   const { ctx } = fakeCtx();
   assert.throws(() => apply(ctx, { enabled: true, whatever: 1 }));
 });
+
+// ---- 全面审查 T-GRA1 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
+
+test("T-GRA1① DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-dbg-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-dbg-"));
+  const prev = process.env.DSH_MEMORY_DEBUG;
+  try {
+    process.env.DSH_MEMORY_DEBUG = "1";
+    const { ctx, handlers } = fakeCtx(async function* () {
+      yield { type: "text-delta", index: 0, text: "Nothing to save." };
+      yield { type: "finish", reason: { kind: "stop" } };
+    });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "m", timeoutMs: 5000 });
+    const session = fakeSession(workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, USER_EVENT);
+    handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
+    for (let i = 0; i < 100; i += 1) {
+      if (existsSync(join(root, "debug.log"))) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const logged = readFileSync(join(root, "debug.log"), "utf8");
+    assert.match(logged, /\[dsh-memory\]/, "debug.log 应含插件日志行（Electron 宿主唯一可见通道）");
+    assert.match(logged, /提取|路由|webServer/, "应记录提取链路事件");
+  } finally {
+    if (prev === void 0) delete process.env.DSH_MEMORY_DEBUG;
+    else process.env.DSH_MEMORY_DEBUG = prev;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("T-GRA1② 路由优先级：assistant/message.source 不覆盖 request/header 已捕获路由", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-prio-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-prio-"));
+  try {
+    const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
+      yield { type: "text-delta", index: 0, text: "Nothing to save." };
+      yield { type: "finish", reason: { kind: "stop" } };
+    });
+    apply(ctx, { enabled: true, storageRoot: root }); // 不给显式配置，走会话路由
+    const session = fakeSession(workspace, [USER_EVENT]);
+    // 主路由先捕获（request/header 权威），兜底路 source 后到——不得覆盖
+    handlers.get("session/event")(session, {
+      type: "request/header",
+      seq: 1,
+      data: { header: { config: { provider: "main-prov", model: "main-model" } } },
+    });
+    handlers.get("session/event")(session, {
+      type: "assistant/message",
+      seq: 2,
+      data: { message: { source: { kind: "main", provider: "fallback-prov", model: "fallback-model" } } },
+    });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 3, data: { turn: 1, reason: { kind: "completed" } } });
+    for (let i = 0; i < 100 && streamCalls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(streamCalls.length, 1);
+    assert.equal(streamCalls[0].provider, "main-prov", "request/header 路由不被 source 兜底顶掉");
+    assert.equal(streamCalls[0].model, "main-model");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});

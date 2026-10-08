@@ -9,13 +9,17 @@ import {
   decideLadderTier,
   detectImportFormat,
   filterEntries,
+  importTitleOf,
   ladderFallbackOf,
   ladderNoteOf,
+  panelBackAction,
   parseSourceText,
   previewRowsOf,
   recentAgeOf,
   recentExpireDays,
   serializeEntries,
+  utf8Length,
+  validateEntryDraft,
 } from "../lib/panel-logic.js";
 
 // ---- 人设模板 ----
@@ -53,15 +57,28 @@ test("buildImportRequest：markdown 形态带 title 透传", () => {
   assert.deepEqual(r.body.payload, { markdown: "# 全部", title: "总汇" });
 });
 
-test("previewRowsOf：overwrite 标红（danger），add 不标；preview 截 80 字符", () => {
+test("importTitleOf：markdown 标题推断（审查 P3-4 面板侧）；json 恒空", () => {
+  assert.equal(importTitleOf("markdown-split", "## 条目一\n内容\n\n## 条目二\n内容"), "条目一");
+  assert.equal(importTitleOf("markdown-whole", "# 总标题\n\n正文"), "总标题");
+  assert.equal(importTitleOf("markdown-whole", "没有标题的普通首行\n正文"), "没有标题的普通首行");
+  assert.equal(importTitleOf("markdown-whole", "\n\n  \n首行前有空白"), "首行前有空白");
+  assert.equal(importTitleOf("markdown-whole", ""), "");
+  assert.equal(importTitleOf("markdown-whole", "   \n#\n"), "");
+  assert.equal(importTitleOf("json", '{"entries":[]}'), "");
+  assert.equal(importTitleOf("markdown-whole", "x".repeat(80)).length <= 60, true); // 60 上限
+});
+
+test("previewRowsOf：overwrite/rename 标红（danger），add 不标；preview 截 80 字符", () => {
   const rows = previewRowsOf([
     { category: "work-profile", name: "a.md", title: "A", action: "overwrite", content: "x".repeat(100) },
     { category: "work-profile", name: "b.md", title: "B", action: "add", content: "短" },
+    { category: "work-profile", name: "c-2.md", title: "C", action: "rename", content: "改名避让" }, // IMP-1 批内去重
   ]);
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 3);
   assert.equal(rows[0].danger, true);
   assert.equal(rows[0].preview.length, 80);
   assert.equal(rows[1].danger, false);
+  assert.equal(rows[2].danger, true, "rename（批内撞名改名）同样标红");
   assert.equal(previewRowsOf(void 0).length, 0); // 空防御
 });
 
@@ -117,6 +134,46 @@ test("ladderNoteOf：降级可见提示文案（window 档无提示）", () => {
   assert.match(ladderNoteOf("iframe", "window.open 返回空"), /window\.open 返回空/);
   assert.match(ladderNoteOf("location"), /已改为跳转模式/);
   assert.equal(ladderNoteOf("window"), "");
+});
+
+test("panelBackAction：popup 关窗 / iframe 通知宿主 / 顶层按 hash 步数回退（审查 P3-1）", () => {
+  assert.deepEqual(panelBackAction(true, false, 1, 0), { mode: "close" });
+  assert.deepEqual(panelBackAction(false, true, 1, 0), { mode: "notify-host" });
+  // 顶层：面板内部点过 3 个路由 → 一次跳回 4 步前的设置页
+  assert.deepEqual(panelBackAction(false, false, 5, 3), { mode: "back", steps: 4 });
+  assert.deepEqual(panelBackAction(false, false, 2, 0), { mode: "back", steps: 1 });
+  // 无历史（面板是首个条目）→ 应用根
+  assert.deepEqual(panelBackAction(false, false, 1, 0), { mode: "root" });
+});
+
+// ---- 条目草稿预检（U-TRU1 / P3-11 / P3-14） ----
+
+test("utf8Length：ASCII 1 字节 / CJK 3 字节 / emoji 4 字节；空与 null 防御", () => {
+  assert.equal(utf8Length("abc"), 3);
+  assert.equal(utf8Length("中文"), 6);
+  assert.equal(utf8Length("😀"), 4); // emoji 代理对：2 字符 4 字节——字符数视角看不到的真实占用
+  assert.equal(utf8Length(""), 0);
+  assert.equal(utf8Length(null), 0);
+  assert.equal(utf8Length(void 0), 0);
+});
+
+test("validateEntryDraft：必填 / 20000 字符上限 / 字节上限三道门", () => {
+  assert.equal(validateEntryDraft("标题", "正文").ok, true);
+  assert.equal(validateEntryDraft("", "正文").ok, false); // 空标题（P3-11：服务端会静默回退旧标题）
+  assert.equal(validateEntryDraft("  ", "正文").ok, false);
+  assert.equal(validateEntryDraft("标题", "").ok, false); // 空正文（会建出空白条目）
+  assert.equal(validateEntryDraft("标题", "   ").ok, false);
+  const overChars = validateEntryDraft("标题", "a".repeat(20001));
+  assert.equal(overChars.ok, false);
+  assert.match(overChars.error, /20000 字符上限/);
+  // 默认门槛下字符门先拦（码元≤20000 ⇒ UTF-8≤40000B）；字节门是 maxlength 被绕过
+  // （脚本赋值/拖放/存量超长）时的纵深防线——自定义参数钉独立逻辑（P3-14）。
+  const emoji = "😀".repeat(5001); // 10002 码元 / 20004 UTF-8 字节
+  assert.equal(validateEntryDraft("标题", emoji).ok, true); // 默认门槛放行
+  const overBytes = validateEntryDraft("标题", emoji, { maxBytes: 20000 });
+  assert.equal(overBytes.ok, false);
+  assert.match(overBytes.error, /KB/);
+  assert.equal(validateEntryDraft("t", "aaaa", { maxChars: 2 }).ok, false);
 });
 
 // ---- 近期动态 ----
@@ -182,4 +239,16 @@ test("parseSourceText：desc 含 --> 时转义往返；头部不合规块跳过�
   assert.equal(parsed.length, 2);
   assert.equal(parsed[0].description, "箭头-->转义前是", "转义符 --＞ 读回还原为 -->");
   assert.equal(parsed[1].name, "b.md");
+});
+
+test("serializeEntries：desc 含换行折叠为空格（审查 P3-15：单行注释协议防失配丢 name）", () => {
+  const text = serializeEntries([
+    { title: "T", name: "t.md", description: "第一行\n第二行", content: "正文" },
+  ]);
+  assert.match(text, /desc: 第一行 第二行 -->/);
+  assert.doesNotMatch(text, /desc: 第一行\n/);
+  const back = parseSourceText(text);
+  assert.equal(back.length, 1);
+  assert.equal(back[0].name, "t.md", "换行 desc 不得让 name 丢失");
+  assert.equal(back[0].description, "第一行 第二行");
 });

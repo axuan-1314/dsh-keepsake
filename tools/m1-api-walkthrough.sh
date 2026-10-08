@@ -7,6 +7,16 @@
 set -u
 BASE="${BASE:-http://127.0.0.1:3080}"
 API="$BASE/dsh-memory/api"
+
+# 安全门（全面审查 T-WLK1）：step 0 会 reset/清空目标宿主的全部记忆数据，
+# 只许对一次性验收容器跑。默认拒绝执行；必须显式 WALKTHROUGH_CONFIRM=yes。
+if [ "${WALKTHROUGH_CONFIRM:-}" != "yes" ]; then
+  echo "⚠ 拒绝执行：本逐项检查会清空 $BASE 上的记忆数据（五分类+人设+称呼；自动备份留在 backups/）。"
+  echo "  目标探测：HTTP $(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "$API/state" 2>/dev/null || echo unreachable)"
+  echo "  确认对一次性验收容器执行：WALKTHROUGH_CONFIRM=yes BASE=$BASE bash tools/m1-api-walkthrough.sh"
+  exit 1
+fi
+
 PASS=0
 FAIL=0
 REQTMP=$(mktemp)

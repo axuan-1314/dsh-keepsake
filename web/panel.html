@@ -123,12 +123,21 @@ const hostWindow = (() => {
   return null;
 })();
 let manualTheme = false;
+let bridgeLastOk = false; // [已知] 桥曾成功标记：桥再失效（n===0）时重挂退路
 
 function bridgeApply(vars) {
+  if (manualTheme) return 0; // U-THE1：手动档已选即断桥——晚到的成功不得踩死手动选择
   const n = L.applyThemeVars(document.body.style, vars);
-  if (n > 0 && !manualTheme) {
+  if (n > 0) {
+    bridgeLastOk = true;
     $("bridgeNotice").classList.remove("show");
     $("themeToggle").style.display = "none";
+  } else if (bridgeLastOk) {
+    // [已知] 退路：桥曾成功、现在收集不到变量（host 关闭/样式表消失）——
+    // 旧变量只写不删会冻结在旧主题，必须重挂提示+复活手动钮
+    bridgeLastOk = false;
+    $("bridgeNotice").classList.add("show");
+    $("themeToggle").style.display = "";
   }
   return n;
 }
@@ -154,12 +163,33 @@ function startThemeBridge() {
   try { hostWindow.postMessage({ type: "dsh-memory:panel-ready" }, "*"); } catch (e) {}
 }
 $("themeToggle").addEventListener("click", () => {
-  manualTheme = true;
+  manualTheme = true; // U-THE1：单向断桥（再点只切换深浅，桥不再接管）
+  // 清掉桥写进 body 内联的 --dsw-alias-*（级联优先级高于样式表），
+  // 让 body.theme-dark 的 --fb-* 兜底重新生效——否则手动档被架空、按钮变死键
+  const st = document.body.style;
+  for (let i = st.length - 1; i >= 0; i -= 1) {
+    const name = st[i];
+    if (typeof name === "string" && name.startsWith("--dsw-alias-")) st.removeProperty(name);
+  }
   document.body.classList.toggle("theme-dark");
 });
+// 「返回设置」分档（P3-1）：popup 关窗 / iframe 通知宿主收起 / 顶层绕开面板内部
+// hash 路由历史一步回设置页（决策纯函数 L.panelBackAction 进检查）
+let backDepth = 0; // 面板内部 hash 路由压栈计数（load 后 hashchange 次数）
+window.addEventListener("hashchange", () => { backDepth += 1; });
 $("backBtn").addEventListener("click", () => {
-  if (window.history.length > 1) window.history.back();
-  else window.location.href = "/";
+  let hasOpener = false;
+  let hasParent = false;
+  try { hasOpener = Boolean(window.opener && window.opener !== window); } catch (e) {}
+  try { hasParent = Boolean(window.parent && window.parent !== window); } catch (e) {}
+  const act = L.panelBackAction(hasOpener, hasParent, window.history.length, backDepth);
+  if (act.mode === "close") { try { window.close(); } catch (e) {} return; }
+  if (act.mode === "notify-host") {
+    try { window.parent.postMessage({ type: "dsh-memory:panel-close" }, "*"); } catch (e) {}
+    return;
+  }
+  if (act.mode === "back") { window.history.go(-act.steps); return; }
+  window.location.href = "/";
 });
 
 // ============ 基础 helper ============
@@ -175,6 +205,8 @@ async function api(path, options) {
 const apiPut = (path, obj) => api(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
 const apiPost = (path, obj) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(obj ?? {}) });
 const apiDel = (path, obj) => api(path, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
+const ENTRY_MAX_CHARS = 20000; // U-TRU1：与服务端 content 上限对齐——客户端拒绝而非静默截断
+const ADDRESS_SAVE_DEBOUNCE_MS = 600; // 与 lib/client.js 同名常量一致（防漂移检查钉住）
 
 let toastTimer = null;
 function toast(text, kind = "ok") {
@@ -213,9 +245,10 @@ function mdRender(text) {
   return html;
 }
 
-// ============ 确认弹窗 ============
+// ============ 确认弹窗（栈式：P3-5 确认层不再覆写下层对话框——源码模式取消不丢编辑） ============
 function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
-  dialogHost.innerHTML = `
+  const layer = document.createElement("div"); // 独立层 append：下层对话框 DOM 原样保留
+  layer.innerHTML = `
     <div class="mask">
       <div class="dialog" style="width:min(440px,92vw)">
         <h2>${esc(title)}</h2>
@@ -226,10 +259,12 @@ function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
         </div>
       </div>
     </div>`;
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
-  dialogHost.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) dialogHost.innerHTML = ""; });
-  dialogHost.querySelector("[data-ok]").addEventListener("click", async () => {
-    dialogHost.innerHTML = "";
+  dialogHost.appendChild(layer);
+  const close = () => layer.remove(); // 只摘本层，下层（若有）恢复可见、编辑内容无损
+  layer.querySelector("[data-x]").addEventListener("click", close);
+  layer.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) close(); });
+  layer.querySelector("[data-ok]").addEventListener("click", async () => {
+    close();
     await onConfirm();
   });
 }
@@ -265,22 +300,34 @@ function entryCard(cat, e, reload) {
   });
   card.querySelector("[data-edit]").addEventListener("click", () => {
     card.innerHTML = `
-      <div class="field"><label>标题</label><input class="inp" data-t value="${esc(e.title)}"></div>
-      <div class="field"><label>描述（一行钩子，可选）</label><input class="inp" data-d value="${esc(e.description)}"></div>
-      <div class="field"><label>正文</label><textarea class="ta" data-c>${esc(e.content)}</textarea></div>
+      <div class="field"><label>标题（60 字内）</label><input class="inp" data-t maxlength="60" value="${esc(e.title)}"></div>
+      <div class="field"><label>描述（一行钩子，可选，60 字内）</label><input class="inp" data-d maxlength="60" value="${esc(e.description)}"></div>
+      <div class="field"><label>正文（${ENTRY_MAX_CHARS} 字符上限）</label><textarea class="ta" data-c maxlength="${ENTRY_MAX_CHARS}"></textarea><div class="meta" data-cnt></div></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn sm" data-x>取消</button>
         <button class="btn sm primary" data-s>保存</button>
       </div>`;
+    // maxlength 不拦脚本/存量数据，value 先行赋值再挂计数（存量超长立即可见）
+    const $c = card.querySelector("[data-c]");
+    const $cnt = card.querySelector("[data-cnt]");
+    $c.value = e.content;
+    const updCnt = () => {
+      const over = $c.value.length > ENTRY_MAX_CHARS;
+      $cnt.textContent = `${$c.value.length} / ${ENTRY_MAX_CHARS} 字符 · UTF-8 ${L.utf8Length($c.value)} 字节` + (over ? "（已超限，保存将被阻止）" : "");
+    };
+    updCnt();
+    $c.addEventListener("input", updCnt);
     card.querySelector("[data-x]").addEventListener("click", reload);
     card.querySelector("[data-s]").addEventListener("click", async () => {
+      const v = L.validateEntryDraft(card.querySelector("[data-t]").value, $c.value); // P3-11 + U-TRU1：必填/字符/字节三道门
+      if (!v.ok) { toast(v.error, "err"); return; }
       try {
         await apiPut("entry", {
           category: cat,
           name: e.name,
           title: card.querySelector("[data-t]").value,
           description: card.querySelector("[data-d]").value,
-          content: card.querySelector("[data-c]").value,
+          content: $c.value,
         });
         toast("已保存");
         reload();
@@ -296,20 +343,25 @@ function newEntryDialog(cat, reload) {
     <div class="mask">
       <div class="dialog">
         <h2>新增条目</h2>
-        <div class="field"><label>标题</label><input class="inp" data-t placeholder="一句话说清这条记忆"></div>
-        <div class="field"><label>描述（一行钩子，可选）</label><input class="inp" data-d></div>
-        <div class="field"><label>正文</label><textarea class="ta tall" data-c></textarea></div>
+        <div class="field"><label>标题（60 字内）</label><input class="inp" data-t maxlength="60" placeholder="一句话说清这条记忆"></div>
+        <div class="field"><label>描述（一行钩子，可选，60 字内）</label><input class="inp" data-d maxlength="60"></div>
+        <div class="field"><label>正文（${ENTRY_MAX_CHARS} 字符上限）</label><textarea class="ta tall" data-c maxlength="${ENTRY_MAX_CHARS}"></textarea><div class="meta" data-cnt></div></div>
         <div class="foot">
           <button class="btn" data-x>取消</button>
           <button class="btn primary" data-s>保存</button>
         </div>
       </div>
     </div>`;
+  const $c = dialogHost.querySelector("[data-c]");
+  const $cnt = dialogHost.querySelector("[data-cnt]");
+  const updCnt = () => { $cnt.textContent = `${$c.value.length} / ${ENTRY_MAX_CHARS} 字符 · UTF-8 ${L.utf8Length($c.value)} 字节`; };
+  $c.addEventListener("input", updCnt);
   dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
   dialogHost.querySelector("[data-s]").addEventListener("click", async () => {
-    const title = dialogHost.querySelector("[data-t]").value.trim();
-    const content = dialogHost.querySelector("[data-c]").value.trim();
-    if (!title || !content) { toast("标题与正文必填", "err"); return; }
+    const title = dialogHost.querySelector("[data-t]").value;
+    const content = $c.value;
+    const v = L.validateEntryDraft(title, content); // 必填 + 字符 + 字节（U-TRU1/P3-11/P3-14 同一道门）
+    if (!v.ok) { toast(v.error, "err"); return; }
     try {
       await apiPost(`category/${cat}/entries`, { title, description: dialogHost.querySelector("[data-d]").value, content });
       dialogHost.innerHTML = "";
@@ -343,14 +395,22 @@ function sourceModeDialog(cat, entries, reload) {
       body: `将解析出 ${parsed.length} 条。\n操作会先自动备份当前内容，再清空整类并写入这些条目。确定继续吗？`,
       dangerText: "备份并替换",
       onConfirm: async () => {
+        let resetBackupId = null; // P3-6：reset+import 两步非原子——失败时指路备份
         try {
-          await apiPost(`category/${cat}/reset`);
+          const resetOut = await apiPost(`category/${cat}/reset`);
+          resetBackupId = resetOut.backupId ?? null;
           if (parsed.length > 0) {
             await apiPost("import", { category: cat, format: "json", payload: { entries: parsed } });
           }
+          dialogHost.innerHTML = ""; // 栈式确认层只摘自己，成功才撤源对话框
           toast(`整类已替换（${parsed.length} 条，已自动备份）`);
           reload();
-        } catch (err) { toast("整类替换失败：" + err.message, "err"); }
+        } catch (err) {
+          const hint = resetBackupId
+            ? `——分类已清空但写入失败：原内容已自动备份（${resetBackupId}），可到「设置」页恢复`
+            : "——尚未做任何改动，可重试";
+          toast("整类替换失败：" + err.message + hint, "err");
+        }
       },
     });
   });
@@ -358,7 +418,6 @@ function sourceModeDialog(cat, entries, reload) {
 
 // ============ 导入向导（上传/粘贴 → 格式 → dryRun 冲突标红 → 确认） ============
 function importDialog(cat, reload) {
-  let fileText = "";
   dialogHost.innerHTML = `
     <div class="mask">
       <div class="dialog">
@@ -390,42 +449,49 @@ function importDialog(cat, reload) {
   const $dry = dialogHost.querySelector("[data-dry]");
   const $confirm = dialogHost.querySelector("[data-confirm]");
   const $preview = dialogHost.querySelector("[data-previewHost]");
-  let lastPlans = null;
+  let fmtTouched = false; // P3-15：用户手选过格式后，选文件不再覆盖手选
+  const clearPreview = () => { $preview.innerHTML = ""; $confirm.style.display = "none"; };
   dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
   dialogHost.querySelector("[data-file]").addEventListener("change", (ev) => {
     const file = ev.target.files[0];
     if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { // P3-13：2MB 预检——超限文件不白读白传
+      toast("文件超过 2MB 上限，请精简后重试（或直接把内容粘贴到下方）", "err");
+      ev.target.value = "";
+      return;
+    }
     const reader = new FileReader();
+    reader.onerror = () => toast("文件读取失败，请重试或直接粘贴内容", "err"); // P3-13：读取错误可见
     reader.onload = () => {
-      fileText = String(reader.result ?? "");
-      $text.value = fileText;
-      $fmt.value = L.detectImportFormat(file.name, fileText);
-      $preview.innerHTML = "";
-      $confirm.style.display = "none";
+      $text.value = String(reader.result ?? "");
+      if (!fmtTouched) $fmt.value = L.detectImportFormat(file.name, $text.value);
+      clearPreview();
     };
     reader.readAsText(file);
   });
-  $text.addEventListener("input", () => { $preview.innerHTML = ""; $confirm.style.display = "none"; });
+  // [已知] 预览失效修复：文本与格式任一变化都清旧预览/藏确认钮——所见即所写
+  $text.addEventListener("input", clearPreview);
+  $fmt.addEventListener("change", () => { fmtTouched = true; clearPreview(); });
   $dry.addEventListener("click", async () => {
-    const req = L.buildImportRequest(cat, $fmt.value, $text.value);
+    const req = L.buildImportRequest(cat, $fmt.value, $text.value, L.importTitleOf($fmt.value, $text.value)); // P3-4：markdown 标题随行
     if (!req.ok) { toast(req.error, "err"); return; }
     try {
       const out = await apiPost("import?dryRun=1", req.body);
-      lastPlans = out.plans ?? [];
       const rows = L.previewRowsOf(out.plans);
       if (rows.length === 0) { $preview.innerHTML = '<div class="empty">没有可导入的条目</div>'; return; }
       $preview.innerHTML = `
-        <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:#d5564d">${rows.filter((r) => r.danger).length} 条与现有内容冲突，确认后覆盖</b>）：</div>
+        <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:#d5564d">${rows.filter((r) => r.danger).length} 条与现有内容冲突或批内改名</b>）：</div>
         <table class="preview">
           <tr><th style="width:90px">动作</th><th>标题</th><th>文件</th><th style="width:40%">内容预览</th></tr>
-          ${rows.map((r) => `<tr class="${r.danger ? "danger" : ""}"><td>${r.danger ? "覆盖" : "新增"}</td><td>${esc(r.title)}</td><td class="meta">${esc(r.name)}</td><td class="meta">${esc(r.preview)}</td></tr>`).join("")}
+          ${rows.map((r) => `<tr class="${r.danger ? "danger" : ""}"><td>${r.action === "rename" ? "改名" : r.danger ? "覆盖" : "新增"}</td><td>${esc(r.title)}</td><td class="meta">${esc(r.name)}</td><td class="meta">${esc(r.preview)}</td></tr>`).join("")}
         </table>
-        ${(out.errors ?? []).length > 0 ? `<div class="notice show err" style="margin:8px 0">${(out.errors ?? []).map(esc).join("<br>")}</div>` : ""}`;
+        ${(out.errors ?? []).length > 0 ? `<div class="notice show err" style="margin:8px 0">${(out.errors ?? []).map(esc).join("<br>")}</div>` : ""}
+        ${(out.notes ?? []).length > 0 ? `<div class="meta" style="margin:8px 0">${(out.notes ?? []).map(esc).join("<br>")}</div>` : ""}`;
       $confirm.style.display = "";
     } catch (err) { toast("预览失败：" + err.message, "err"); }
   });
   $confirm.addEventListener("click", async () => {
-    const req = L.buildImportRequest(cat, $fmt.value, $text.value);
+    const req = L.buildImportRequest(cat, $fmt.value, $text.value, L.importTitleOf($fmt.value, $text.value));
     if (!req.ok) { toast(req.error, "err"); return; }
     try {
       const out = await apiPost("import", req.body);
@@ -434,15 +500,20 @@ function importDialog(cat, reload) {
       if (out.ok === false) {
         toast(`导入部分失败：写入 ${out.written} 条，失败 ${out.failed.length} 条（${out.failed.join("、")}）；已自动备份 ${out.backupId}`, "err");
       } else {
-        toast(`导入完成：写入 ${out.written} 条（覆盖 ${out.overwritten} 条，已自动备份 ${out.backupId}）`);
+        // merged 为批次A 导入重名合并修复的新计数口径——tolerant 消费（旧版无此字段显示 0）
+        toast(`导入完成：写入 ${out.written} 条（覆盖 ${out.overwritten ?? 0} 条，合并 ${out.merged ?? 0} 条，已自动备份 ${out.backupId}）`);
       }
       reload();
     } catch (err) { toast("导入失败：" + err.message, "err"); }
   });
 }
 
+// ============ 页面渲染序号（P3-10：快速切路由时旧响应不得写入新页） ============
+let pageRenderSeq = 0;
+
 // ============ 页面：四分类 / 长期记忆 ============
 async function renderCategoryPage(cat, title) {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = title;
   pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天）" : "";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -450,9 +521,11 @@ async function renderCategoryPage(cat, title) {
   try {
     data = await api("category/" + cat);
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return; // 旧渲染丢弃：用户已切到别的路由
   const reload = () => { renderCategoryPage(cat, title); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">
@@ -491,6 +564,7 @@ async function renderCategoryPage(cat, title) {
 
 // ============ 页面：长期记忆（检索增强） ============
 async function renderLongTermPage() {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = "长期记忆";
   pageSub.textContent = "跨会话保存的重要信息与结论，不会过期";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -498,9 +572,11 @@ async function renderLongTermPage() {
   try {
     data = await api("category/long-term");
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return;
   const all = data.entries ?? [];
   const reload = () => { renderLongTermPage(); refreshCounts(); };
   page.innerHTML = `
@@ -545,6 +621,7 @@ async function renderLongTermPage() {
 
 // ============ 页面：人设（左右分栏 + 五模板 + 恢复默认） ============
 async function renderPersonaPage() {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = "人设";
   pageSub.textContent = "设定 DSH 的身份、性格与表达风格，对所有回复生效";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -552,9 +629,11 @@ async function renderPersonaPage() {
   try {
     data = await api("persona");
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return;
   page.innerHTML = `
     <div class="presetRow" data-presets></div>
     <div class="split">
@@ -619,6 +698,7 @@ async function renderPersonaPage() {
 
 // ============ 页面：称呼 ============
 async function renderAddressingPage() {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = "称呼";
   pageSub.textContent = "门牌上的两个输入框同一份数据（即时保存）";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -626,36 +706,49 @@ async function renderAddressingPage() {
   try {
     data = await api("addressing");
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return;
   page.innerHTML = `
     <div class="card" style="max-width:520px">
-      <div class="field"><label>DSH 的名字</label><input class="inp" data-name value="${esc(data.dshName)}" placeholder="例如：小舟（留空则不称呼）"></div>
-      <div class="field"><label>对我的称呼</label><input class="inp" data-alias value="${esc(data.userAlias)}" placeholder="例如：老板（留空则不称呼）"></div>
-      <div class="meta" data-hint>改动自动保存，下一轮对话生效。</div>
+      <div class="field"><label>DSH 的名字 <span class="meta" data-nameCnt></span></label><input class="inp" data-name maxlength="40" value="${esc(data.dshName)}" placeholder="例如：小舟（留空则不称呼）"></div>
+      <div class="field"><label>对我的称呼 <span class="meta" data-aliasCnt></span></label><input class="inp" data-alias maxlength="40" value="${esc(data.userAlias)}" placeholder="例如：老板（留空则不称呼）"></div>
+      <div class="meta" data-hint>改动自动保存，下一轮对话生效。上限 40 字（与服务端一致）。</div>
     </div>`;
+  const $name = page.querySelector("[data-name]");
+  const $alias = page.querySelector("[data-alias]");
+  const updCnts = () => { // P3-12：40 字截断可见——计数随输入更新
+    const nc = page.querySelector("[data-nameCnt]");
+    const ac = page.querySelector("[data-aliasCnt]");
+    if (nc) nc.textContent = `${$name.value.length}/40`;
+    if (ac) ac.textContent = `${$alias.value.length}/40`;
+  };
+  updCnts();
   let timer = null;
-  const save = () => {
+  // P3-9：字段级保存——只发被编辑字段（服务端字段合并已备好），与门牌并发互不覆盖
+  const save = (field) => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(async () => {
+      const value = field === "dshName" ? $name.value : $alias.value;
       try {
-        await apiPut("addressing", {
-          dshName: page.querySelector("[data-name]").value,
-          userAlias: page.querySelector("[data-alias]").value,
-        });
-        page.querySelector("[data-hint]").textContent = "已保存，下一轮对话生效。";
+        await apiPut("addressing", { [field]: value });
+        const h = page.querySelector("[data-hint]"); // P3-8：防抖窗口内切走路由 → null 守卫
+        if (h) h.textContent = "已保存，下一轮对话生效。";
       } catch (err) {
-        page.querySelector("[data-hint]").textContent = "保存失败：" + err.message;
+        const h = page.querySelector("[data-hint]");
+        if (h) h.textContent = "保存失败：" + err.message;
       }
-    }, 600);
+    }, ADDRESS_SAVE_DEBOUNCE_MS);
   };
-  page.querySelector("[data-name]").addEventListener("input", save);
-  page.querySelector("[data-alias]").addEventListener("input", save);
+  $name.addEventListener("input", () => { updCnts(); save("dshName"); });
+  $alias.addEventListener("input", () => { updCnts(); save("userAlias"); });
 }
 
 // ============ 页面：项目记忆（只读概览） ============
 async function renderProjectsPage() {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = "项目记忆";
   pageSub.textContent = "按工作区自动维护（只读）";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -663,9 +756,11 @@ async function renderProjectsPage() {
   try {
     data = await api("state");
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return;
   const projects = data.projects ?? [];
   if (projects.length === 0) {
     page.innerHTML = '<div class="empty">暂无项目记忆。项目记忆由对话自动维护。</div>';
@@ -695,6 +790,7 @@ async function renderProjectsPage() {
 
 // ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
 async function renderSettingsPage() {
+  const seq = ++pageRenderSeq;
   pageTitle.textContent = "设置";
   pageSub.textContent = "";
   page.innerHTML = '<div class="empty">加载中…</div>';
@@ -703,9 +799,11 @@ async function renderSettingsPage() {
     data = await api("state");
     backupsData = await api("backup/list");
   } catch (err) {
+    if (seq !== pageRenderSeq) return;
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  if (seq !== pageRenderSeq) return;
   const s = data.settings ?? {};
   const switchRow = (key, label, hint) => `
     <div class="kv"><b>${label}</b>
@@ -713,6 +811,15 @@ async function renderSettingsPage() {
       <span class="meta">${hint}</span>
     </div>`;
   const backups = backupsData.backups ?? [];
+  // 批次A /state 新字段 tolerant 消费（H-COR1 可观测）：缺失时 falsy 零影响
+  const corruptBits = [];
+  if (data.corrupt) corruptBits.push("settings.json（开关）");
+  if (data.addressingCorrupt) corruptBits.push("addressing.json（称呼）");
+  if (data.personaCorrupt) corruptBits.push("persona.md（人设）");
+  // P-PIPE1：extractionFailures 是分桶对象 {no-route,...,streak}（旧服务端可能缺）——
+  // 红条文案是"最近连续失败"，取 streak；对象缺席时按数字兜底。
+  const efRaw = data.extractionFailures;
+  const extractionFailures = efRaw && typeof efRaw === "object" ? Number(efRaw.streak ?? 0) : Number(efRaw ?? 0);
   page.innerHTML = `
     <div class="card"><h3>开关</h3>
       ${switchRow("conversationMemory", "对话记忆（总开关）", "关闭后不带任何记忆、也不再自动记录")}
@@ -720,7 +827,8 @@ async function renderSettingsPage() {
       ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
       <div class="meta" data-swHint>改动即时生效（下一轮对话）。</div>
     </div>
-    ${data.corrupt ? '<div class="card" style="border-color:rgba(221,85,85,.5)">settings.json 解析失败，已按缺省（全开）运行——点任意开关重写即可修复。</div>' : ""}
+    ${corruptBits.length > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">解析失败（已按缺省运行）：${corruptBits.map(esc).join("、")}——点任意开关 / 重新保存对应内容即可重写修复。</div>` : ""}
+    ${extractionFailures > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">记忆管道：最近连续 ${extractionFailures} 次自动提取失败，期间对话内容可能未被记录（服务端恢复后自动重试，详见服务端日志）。</div>` : ""}
     <div class="card"><h3>数据</h3>
       <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
       <div class="kv"><b>清空</b><button class="btn danger" data-clearAll>清空全部记忆（逐类自动备份）</button></div>
@@ -728,7 +836,7 @@ async function renderSettingsPage() {
     <div class="card"><h3>备份（重置/导入/恢复前自动留档）</h3>
       ${backups.length === 0 ? '<div class="meta">暂无备份。</div>' : backups.slice(0, 20).map((b) => `
         <div class="kv"><b><code class="k">${esc(b.id)}</code></b>
-          <span class="meta">${esc(b.reason ?? "")}</span><span class="spacer"></span>
+          <span class="meta">${esc(b.reason ?? "")}${b.incomplete ? "（不完整）" : ""}</span><span class="spacer"></span>
           <button class="btn sm" data-restore="${esc(b.id)}">恢复此备份</button>
         </div>`).join("")}
     </div>`;

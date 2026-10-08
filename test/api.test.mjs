@@ -117,13 +117,13 @@ test("非 loopback 请求 → 403", async () => {
   }
 });
 
-test("未知端点 → 404；方法不匹配 → 404", async () => {
+test("未知端点 → 404；方法不匹配 → 405（全面审查 P3-7 语义统一）", async () => {
   const root = freshRoot();
   try {
     const a = await callApi(root, { method: "GET", path: `${API_PREFIX}nope` });
     assert.equal(a.status, 404);
     const b = await callApi(root, { method: "DELETE", path: `${API_PREFIX}state` });
-    assert.equal(b.status, 404);
+    assert.equal(b.status, 405); // 路径可识别、方法不支持
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -405,6 +405,79 @@ test("project/:id/export：已知项目导出条目；未知项目 404；穿越�
     assert.equal(miss.status, 404);
     const evil = await callApi(root, { method: "GET", path: `${API_PREFIX}project/..%2F..%2Fetc/export` });
     assert.equal(evil.status, 404, "穿越形态不匹配 slug-hash 目录名正则");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 全面审查修复批 A 回归钉 ----
+
+test("IMP-1：导入批内同名去重（dryRun 标 rename、confirm 全落盘不互覆）", async () => {
+  const root = freshRoot();
+  try {
+    const payload = { category: "long-term", format: "json", payload: { entries: [
+      { title: "My Note", content: "第一条" },
+      { title: "my note", content: "第二条" },
+      { title: "My  Note!", content: "第三条" },
+    ] } };
+    const dry = await callApi(root, { method: "POST", path: `${API_PREFIX}import?dryRun=1`, body: payload });
+    assert.equal(dry.json.plans.length, 3);
+    const names = dry.json.plans.map((p) => p.name);
+    assert.equal(new Set(names).size, 3, "批内计划名两两不同");
+    assert.equal(dry.json.plans[0].action, "add");
+    assert.equal(dry.json.plans[1].action, "rename");
+    assert.equal(dry.json.notes.length, 2);
+    const confirm = await callApi(root, { method: "POST", path: `${API_PREFIX}import`, body: payload });
+    assert.equal(confirm.json.written, 3, "written=最终落盘文件数（旧版虚报 3 实存 1）");
+    assert.equal(confirm.json.failed.length, 0);
+    assert.equal(listEntries(root, "long-term").length, 3, "三条都在盘上");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("U-TRU1：条目写入超 20000 字符显式 413（不静默截断）；markdown 导入超长显式报错", async () => {
+  const root = freshRoot();
+  try {
+    const over = "x".repeat(20001);
+    const post = await callApi(root, { method: "POST", path: `${API_PREFIX}category/long-term/entries`, body: { title: "T", content: over } });
+    assert.equal(post.status, 413);
+    assert.equal(listEntries(root, "long-term").length, 0);
+    createEntry(root, "long-term", { title: "E", name: "e.md", content: "旧" });
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "e.md", content: over } });
+    assert.equal(put.status, 413);
+    const md = await callApi(root, { method: "POST", path: `${API_PREFIX}import?dryRun=1`, body: { category: "long-term", format: "markdown-whole", payload: { markdown: over } } });
+    assert.equal(md.json.ok, false);
+    assert.match(md.json.errors.join("；"), /超长/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("H-RES1/H-BAK1：restore id 校验前置（无效 id 不白落备份）+ 半备份 404 带 code", async () => {
+  const root = freshRoot();
+  try {
+    const before = listBackups(root).length;
+    const bad = await callApi(root, { method: "POST", path: `${API_PREFIX}backup/restore`, body: { id: "../evil" } });
+    assert.equal(bad.status, 404);
+    assert.equal(listBackups(root).length, before, "无效 id 不触发 pre-restore 备份");
+    const missing = await callApi(root, { method: "POST", path: `${API_PREFIX}backup/restore`, body: { id: "1999-01-01T00-00-00-000Z" } });
+    assert.equal(missing.status, 404);
+    assert.equal(listBackups(root).length, before, "不存在 id 同样不白落备份");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("state：extractionFailures 计数面在场（P-PIPE1 观测口）", async () => {
+  const root = freshRoot();
+  try {
+    const s = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(s.status, 200);
+    assert.equal(typeof s.json.extractionFailures, "object");
+    assert.equal(typeof s.json.extractionFailures["no-route"], "number");
+    assert.equal(typeof s.json.addressingCorrupt, "boolean");
+    assert.equal(typeof s.json.personaCorrupt, "boolean");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

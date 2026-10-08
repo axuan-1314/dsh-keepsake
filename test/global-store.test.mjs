@@ -1,11 +1,12 @@
 // global-store：全局记忆区 CRUD（原子写/三道闸/索引重建）、人设与称呼、
 // 滚动清理、分类重置、导出/备份/恢复。
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  BACKUP_KEEP,
   DEFAULT_PERSONA,
   categoryDir,
   clearCategory,
@@ -27,12 +28,14 @@ import {
   renderGlobalEntry,
   restoreBackup,
   stripFrontmatter,
+  sweepTmpOrphans,
   updateEntry,
   writeAddressing,
   writeEntryDirect,
   writePersona,
   resetPersona,
 } from "../lib/global-store.js";
+import { recentTsOf } from "../lib/recent-ts.js";
 
 function freshRoot() {
   return mkdtempSync(join(tmpdir(), "dsh-memory-gstore-"));
@@ -297,28 +300,35 @@ test("persona isDefault：reset 后回到默认态；PUT 与模板同文 = 默�
 
 // ---- 称呼 ----
 
-test("addressing：缺省空；写入读回；部分更新；40 字符截断", () => {
+test("addressing：缺省空；写入读回；部分更新；40 字符截断；控制符剥除", () => {
   const root = freshRoot();
   try {
-    assert.deepEqual(readAddressing(root), { dshName: "", userAlias: "" });
+    assert.deepEqual(readAddressing(root), { dshName: "", userAlias: "", corrupt: false });
     writeAddressing(root, { dshName: "小舟" });
-    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "" });
+    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "", corrupt: false });
     writeAddressing(root, { userAlias: "老板" });
-    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "老板" });
+    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "老板", corrupt: false });
     const long = writeAddressing(root, { dshName: "x".repeat(50) });
     assert.equal(long.dshName.length, 40);
+    const dirty = writeAddressing(root, { dshName: "小" + String.fromCharCode(0) + "舟" });
+    assert.equal(dirty.dshName, "小舟"); // 全面审查 P3：控制符被剥
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("addressing：损坏 JSON = 空称呼（注入略句，不炸）", () => {
+test("addressing：损坏 JSON = 空称呼 + corrupt 标记（可见降级），写前旧档备份", () => {
   const root = freshRoot();
   try {
     const dir = globalRoot(root);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "addressing.json"), "{bad", "utf8");
-    assert.deepEqual(readAddressing(root), { dshName: "", userAlias: "" });
+    const read = readAddressing(root, { warn: () => {} });
+    assert.deepEqual(read, { dshName: "", userAlias: "", corrupt: true }); // 全面审查 H-COR1：不再静默
+    writeAddressing(root, { dshName: "小舟" });
+    const preserved = readdirSync(dir).filter((f) => f.startsWith("addressing.json.corrupt-"));
+    assert.equal(preserved.length, 1); // 原损坏档备份，不被覆盖丢尸
+    assert.equal(readAddressing(root).corrupt, false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -476,4 +486,133 @@ test("globalRoot/categoryDir：路径拼装与分类校验", () => {
   assert.equal(globalRoot("/r"), join("/r", "global"));
   assert.equal(categoryDir("/r", "work-profile"), join("/r", "global", "work-profile"));
   assert.throws(() => categoryDir("/r", "evil"));
+});
+
+// ---- 全面审查修复批 A 回归钉 ----
+
+test("IMP-1/嵌套名：createEntry 嵌套名显式拒绝（与 writeEntryDirect 统一）", () => {
+  const root = freshRoot();
+  try {
+    assert.equal(createEntry(root, "long-term", { title: "X", content: "c", name: "a/b.md" }), null);
+    assert.equal(writeEntryDirect(root, "long-term", { name: "a/b.md", content: "c" }), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("H-BAK1：备份滚动上限（只留最新 BACKUP_KEEP 份）", () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "keep", content: "c" });
+    const ids = [];
+    for (let i = 0; i < BACKUP_KEEP + 3; i += 1) ids.push(createBackup(root, "test"));
+    const listed = listBackups(root);
+    assert.equal(listed.length, BACKUP_KEEP); // 超额被滚动清
+    assert.equal(listed[0].id, ids[ids.length - 1]); // 新的留着
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("H-RES1：半备份拒绝恢复（complete:false 与无 meta 两形态）", () => {
+  const root = freshRoot();
+  try {
+    const sRoot = root;
+    const id = createBackup(sRoot, "test");
+    // 手工搓一个 complete:false 半备份
+    const halfId = "2020-01-01T00-00-00-000Z";
+    const halfDir = join(sRoot, "backups", halfId);
+    mkdirSync(halfDir, { recursive: true });
+    writeFileSync(join(halfDir, "backup-meta.json"), JSON.stringify({ id: halfId, complete: false }), "utf8");
+    assert.throws(() => restoreBackup(sRoot, halfId), /不完整/);
+    // 无 meta 的裸目录同样拒
+    const bareId = "2020-01-02T00-00-00-000Z";
+    mkdirSync(join(sRoot, "backups", bareId), { recursive: true });
+    assert.throws(() => restoreBackup(sRoot, bareId), /不完整/);
+    const bareList = listBackups(sRoot).find((b) => b.id === bareId);
+    assert.equal(bareList.incomplete, true); // 列表标红
+    // 旧式 meta（无 complete 字段）视同完整，可恢复（向下兼容）
+    assert.equal(restoreBackup(sRoot, id), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("H-RES1：恢复后原态可被 pre 备份找回（换入语义不丢档）", () => {
+  const root = freshRoot();
+  try {
+    const sRoot = root;
+    createEntry(root, "long-term", { title: "v1", content: "一版" });
+    const backupId = createBackup(sRoot, "test");
+    createEntry(root, "long-term", { title: "v2", content: "二版" });
+    const preId = createBackup(sRoot, "pre-restore");
+    restoreBackup(sRoot, backupId);
+    assert.equal(countEntries(sRoot, "long-term"), 1); // 回到备份时点
+    restoreBackup(sRoot, preId);
+    assert.equal(countEntries(sRoot, "long-term"), 2); // 后悔药的后悔药
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("H-COR1 persona：损坏回退出厂 + corrupt 标记 + 写前备份", () => {
+  const root = freshRoot();
+  try {
+    const gDir = globalRoot(root);
+    mkdirSync(gDir, { recursive: true });
+    writeFileSync(join(gDir, "persona.md"), "---\nname: \"persona\"\n", "utf8"); // 半截 frontmatter 致 strip 后非模板但仍可读——改用不可读形态
+    rmSync(join(gDir, "persona.md"));
+    mkdirSync(join(gDir, "persona.md"), { recursive: true }); // 目录占位 = 读取必炸
+    const read = readPersona(root, { warn: () => {} });
+    assert.equal(read.corrupt, true);
+    assert.equal(read.isDefault, true);
+    writePersona(root, "新正文", { warn: () => {} });
+    const preserved = readdirSync(gDir).filter((f) => f.startsWith("persona.md.corrupt-"));
+    assert.equal(preserved.length, 1);
+    assert.equal(readPersona(root).corrupt, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("P3-3/sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
+  const root = freshRoot();
+  try {
+    const sRoot = root;
+    const gDir = globalRoot(root);
+    mkdirSync(join(gDir, "long-term"), { recursive: true });
+    writeFileSync(join(gDir, "long-term", "a.md.tmp-1-2"), "x", "utf8");
+    writeFileSync(join(sRoot, "settings.json.tmp-1-2"), "x", "utf8");
+    mkdirSync(join(sRoot, "global.staging-1-2"), { recursive: true });
+    const removed = sweepTmpOrphans(sRoot);
+    assert.ok(removed >= 2);
+    assert.ok(!existsSync(join(gDir, "long-term", "a.md.tmp-1-2")));
+    assert.ok(!existsSync(join(sRoot, "settings.json.tmp-1-2")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O-A2/recentTsOf：未来时间戳钳制回 mtime、坏值回退、字符串 ISO 支持", () => {
+  const now = Date.now();
+  assert.equal(recentTsOf({ timestamp: new Date(now - 5000).toISOString(), mtimeMs: now - 9000 }), now - 5000); // ISO 字符串
+  assert.equal(recentTsOf({ timestamp: now - 5000, mtimeMs: now - 9000 }), now - 5000); // 数值
+  assert.equal(recentTsOf({ timestamp: "2099-01-01T00:00:00Z", mtimeMs: now - 9000 }), now - 9000); // 未来 ts 钳制
+  assert.equal(recentTsOf({ timestamp: "garbage", mtimeMs: now - 9000 }), now - 9000); // 坏值回退
+  assert.equal(recentTsOf({ timestamp: "garbage" }), 0); // 双坏 = 0
+});
+
+test("O-A2：未来时间戳条目不再永生（prune 判龄同源 recentTsOf）", () => {
+  const root = freshRoot();
+  try {
+    const old = new Date(Date.now() - 40 * 86400_000).toISOString();
+    createEntry(root, "recent-activity", { title: "Old", content: "旧", timestamp: old });
+    createEntry(root, "recent-activity", { title: "Future", content: "未来", timestamp: "2099-01-01T00:00:00.000Z" });
+    // Future 的 mtime 是现在 → recentTsOf 回退 mtime → 判龄为新，应存活；Old 过期删除
+    const { removed, kept } = pruneRecentActivity(root, { keepCount: 30, keepDays: 30 });
+    assert.equal(removed, 1);
+    assert.equal(kept, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

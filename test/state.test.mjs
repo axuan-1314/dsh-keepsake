@@ -38,6 +38,7 @@ test("error 不推进 cursor，下一轮从原 cursor 起跑", async () => {
   await scheduler.quiesce();
   assert.equal(scheduler.stateOf(session).cursor, 0); // 不推进
   fail = false;
+  session.seq = 12; // 宿主 seq 前移（真实宿主恒有 seq ≥ toSeq）
   scheduler.onTurnCompleted(session, 12);
   await scheduler.quiesce();
   assert.deepEqual(calls, [[0, 5], [0, 12]]); // 第二轮仍从 0 起跑（含上一轮增量）
@@ -58,7 +59,7 @@ test("单飞 + latestPending 合并", async () => {
       return "ok";
     },
   });
-  const session = fakeSession(0);
+  const session = fakeSession(15);
   scheduler.see(session, { seq: 0 });
   scheduler.onTurnCompleted(session, 4); // running 开始，挂起
   scheduler.onTurnCompleted(session, 8); // pending 覆盖
@@ -122,11 +123,56 @@ test("已覆盖区间（toSeq ≤ cursor）不重复调度", async () => {
       return "ok";
     },
   });
-  const session = fakeSession(0);
+  const session = fakeSession(2);
   scheduler.see(session, { seq: 0 });
   scheduler.onTurnCompleted(session, 2);
   scheduler.onTurnCompleted(session, 1); // 旧边界，已被覆盖
   await scheduler.quiesce();
   assert.deepEqual(calls, [[0, 2]]);
+  await scheduler.dispose();
+});
+
+test("P3-5 cursor 钳制：宿主 seq 滞后时不跨过未物化区间（宁可重叠不丢）", async () => {
+  const calls = [];
+  const scheduler = createScheduler({
+    extract: async (session, from, to) => {
+      calls.push([from, to]);
+      return "ok";
+    },
+  });
+  const session = fakeSession(5); // 宿主 seq 滞后于 turn/end 边界 12
+  scheduler.see(session, { seq: 0 });
+  scheduler.onTurnCompleted(session, 12);
+  await scheduler.quiesce();
+  assert.equal(scheduler.stateOf(session).cursor, 5); // 不跨过 [5,12)
+  session.seq = 12; // 宿主追平
+  scheduler.onTurnCompleted(session, 12);
+  await scheduler.quiesce();
+  assert.deepEqual(calls, [[0, 12], [5, 12]]); // 缺口区间被补提，不永久丢失
+  assert.equal(scheduler.stateOf(session).cursor, 12);
+  await scheduler.dispose();
+});
+
+test("P3-7 drop 后 pending 链不再续跑（已释放会话不提取）", async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const calls = [];
+  const scheduler = createScheduler({
+    extract: async (session, from, to) => {
+      calls.push([from, to]);
+      if (calls.length === 1) await gate;
+      return "ok";
+    },
+  });
+  const session = fakeSession(10);
+  scheduler.see(session, { seq: 0 });
+  scheduler.onTurnCompleted(session, 4); // 挂起
+  scheduler.onTurnCompleted(session, 8); // pending
+  scheduler.drop(session); // 会话释放
+  release();
+  await scheduler.quiesce();
+  assert.equal(calls.length, 1, "pending 续跑被 dropped 拦截");
   await scheduler.dispose();
 });

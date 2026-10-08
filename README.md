@@ -7,7 +7,7 @@ DSH（DeepSeek Harness）0.2.0-rc.2 cordis 插件：**项目记忆自动提取 +
 - **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并）。
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文），输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/`，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护。
-- **注入**：`ctx.systemPrompt.section` 注入两段——使用说明（记忆目录、单文件单事实、四类型、`[[name]]` 双链、直写约定）与 MEMORY.md 索引正文（200 行 / 25k 字符截断 + WARNING）。
+- **注入**：`ctx.systemPrompt.section` 注入四段——4990 人设（称呼指令+补充设定）、4995 全局记忆索引（每类 40 行 / 总 120 行预算）、5000 项目使用说明、5001 项目 MEMORY.md 索引（200 行 / 25k 字符截断，保最新丢最旧 + WARNING）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。
 
 ## 数据布局
@@ -54,8 +54,16 @@ dsh --profile web --dump-config                  # 验证 entry 入树
 ## 测试
 
 ```bash
-npm test    # node --test，49 项断言
+npm test    # node --test，198 项断言（含防漂移检查 test/client-source.test.mjs）
 ```
+
+## 可观测与运维
+
+- **提取失败计数**：`/dsh-memory/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
+- **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
+- **debug 日志口**：`DSH_MEMORY_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的唯一可见通道。
+- **备份策略**：reset/import/restore 前自动全量备份到 `backups/`，滚动保留最新 **20 份**；半备份（meta 无 complete）标记 incomplete 且拒绝恢复。
+- **逐项检查脚本**：`tools/m1-api-walkthrough.sh` 会清空目标宿主的记忆数据——默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`（只对一次性验收容器跑）。
 
 ## 已知限制
 
@@ -64,3 +72,5 @@ npm test    # node --test，49 项断言
 - **单次 LLM 调用**（非 ZCode 的提取子任务 loop，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
 - **防自反馈与检索**：提取调用为 request-only 输入、不向任何 session append 事件；记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
 - **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。
+- **单条覆盖写无编辑历史**（全面审查 P3-12 有意不修）：PUT persona / PUT entry 直接替换旧文——粘贴错内容保存即丢旧文；批量破坏路径（reset/import/restore）有自动备份，单条覆盖请自行先导出兜底。
+- **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 40 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。

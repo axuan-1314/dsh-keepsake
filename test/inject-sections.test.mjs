@@ -255,3 +255,39 @@ test("开关矩阵：全开基线 = 4990/4995 非空", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("T-GRA1③ 4995 两级注入预算：每类 40 行 + 总 120 行截断（F2/F3 变异坐实的假绿补钉）", () => {
+  // 相位 A（F2 每类预算）：单类 50 条 → 只见 40 行，且未触总预算无 WARNING
+  const rootA = freshRoot();
+  try {
+    for (let i = 0; i < 50; i += 1) {
+      createEntry(rootA, "long-term", { name: `pin-${String(i).padStart(3, "0")}.md`, title: `P-long-term-${i}`, content: "c" });
+    }
+    const { ctx, sections } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: rootA });
+    const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
+    const longTermLines = text.split("\n").filter((l) => l.includes("[P-long-term-"));
+    assert.equal(longTermLines.length, 40, "每类 40 行预算生效（50 条只见 40）");
+    assert.doesNotMatch(text, /\[WARNING\]/, "单类 40 行未触总预算");
+  } finally {
+    rmSync(rootA, { recursive: true, force: true });
+  }
+  // 相位 B（F3 总预算）：五类各 40 条共 200 行 > 120 → 截断 + WARNING
+  const rootB = freshRoot();
+  try {
+    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
+      for (let i = 0; i < 40; i += 1) {
+        createEntry(rootB, cat, { name: `pin-${cat}-${String(i).padStart(3, "0")}.md`, title: `P-${cat}-${i}`, content: "c" });
+      }
+    }
+    const { ctx, sections } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: rootB });
+    const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
+    assert.match(text, /\[WARNING\]/, "总预算截断应带可见 WARNING");
+    const entryLines = text.split("\n").filter((l) => /^- \[P-/.test(l));
+    assert.ok(entryLines.length <= 120, `注入条目行应 ≤120，实际 ${entryLines.length}`);
+    assert.ok(entryLines.length >= 40, "截断后仍保留内容（非全灭）");
+  } finally {
+    rmSync(rootB, { recursive: true, force: true });
+  }
+});

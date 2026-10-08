@@ -60,12 +60,19 @@ test("parseExtractionOutput: 裸 JSON 与围栏 JSON", () => {
   }
 });
 
-test("parseExtractionOutput: 非法输出抛错", () => {
+test("parseExtractionOutput: 整批不可解析抛错；单条畸形跳单容错（P-PIPE3）", () => {
+  // 整批级：payload 非 JSON / 缺 ops 数组 → 抛（cursor 不推进）
   assert.throws(() => parseExtractionOutput(""));
   assert.throws(() => parseExtractionOutput("没有 JSON"));
   assert.throws(() => parseExtractionOutput('{"nope":1}'));
-  assert.throws(() => parseExtractionOutput('{"ops":[{"action":"fly"}]}'));
-  assert.throws(() => parseExtractionOutput('{"ops":[{"action":"write","name":"a.md","content":123}]}'));
+  // 单条级：坏 op 跳过计数，好 ops 照常（旧版一票否决整批）
+  const mixed = parseExtractionOutput('{"ops":[{"action":"fly"},{"action":"write","name":"a.md","content":123},{"action":"write","name":"ok.md","content":"好"}]}');
+  assert.equal(mixed.ops.length, 1);
+  assert.equal(mixed.ops[0].name, "ok.md");
+  assert.equal(mixed.skippedMalformed, 2);
+  const del = parseExtractionOutput('{"ops":[{"action":"delete"}]}'); // 缺 name 的 delete 同样跳单
+  assert.equal(del.ops.length, 0);
+  assert.equal(del.skippedMalformed, 1);
 });
 
 test("parseExtractionOutput: 未知 type 归一为 project，缺省 indexLine", () => {

@@ -84,15 +84,25 @@ test("skipReason: 参数非 JSON 的 write 不误判", () => {
   assert.equal(skipReason(events, ROOT), null);
 });
 
-test("clipTail 保最新丢最旧（审查 P3-7）", () => {
+test("clipTail 保最新丢最旧 + 截断标记行（审查 P3-7 + P-PIPE2）", () => {
   const lines = Array.from({ length: 10 }, (_, i) => `[seq ${i}] User: m${i}`);
   const text = lines.join("\n");
   const cut = clipTail(text, 40);
-  assert.ok(cut.length <= 40);
+  assert.match(cut, /^\[\.\.\.earlier content omitted \(extraction backlog truncated\)\.\.\.\]/); // P-PIPE2 模型可见标记
   assert.match(cut, /m9$/); // 最新保留
   assert.doesNotMatch(cut, /m0 /); // 最旧丢弃
-  assert.match(cut, /^\[seq /); // 无残行
+  assert.match(cut, /\[seq \d+\] User: m\d/); // 正文无残行
   assert.equal(clipTail(text, 100000), text); // 未超预算原样
+});
+
+test("clipTail/clip 码点安全（P3-4：切点不切出孤立代理对）", () => {
+  const text = "a".repeat(10) + "😀".repeat(4) + "b".repeat(10);
+  const cut = clipTail(text, 12);
+  assert.ok(cut.includes("😀"), "emoji 成对保留");
+  for (const ch of cut) {
+    const c = ch.codePointAt(0);
+    assert.ok(!(c >= 0xd800 && c <= 0xdfff), `无孤立代理码元 U+${c.toString(16)}`);
+  }
 });
 
 test("renderTranscript: 摘录含用户/助手/工具行并截断", () => {

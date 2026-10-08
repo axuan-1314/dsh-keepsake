@@ -221,6 +221,34 @@ test("isCategoryId / deriveEntryName / isSafeBackupId 纯函数", () => {
   assert.equal(isSafeBackupId("2026-10-08T14-00-00-000Z"), true);
   assert.equal(isSafeBackupId("../escape"), false);
   assert.equal(isSafeBackupId("a".repeat(100)), false);
+  // 审查 P2 修复：旧字符集正则放行 "." 与 ":"——restoreBackup(".") 曾把 global/ 清空不恢复
+  assert.equal(isSafeBackupId("."), false, "单点目录名应拒绝");
+  assert.equal(isSafeBackupId(":"), false, "盘符根应拒绝");
+  assert.equal(isSafeBackupId(".."), false);
+  assert.equal(isSafeBackupId("2026-10-08T14-00-00-000Z/../../evil"), false);
+});
+
+test("writeEntryDirect：嵌套名拒绝（审查 P2——嵌套条目会绕过 listEntries/clearCategory/滚动清理成幽灵）", () => {
+  const root = freshRoot();
+  try {
+    assert.equal(writeEntryDirect(root, "work-profile", { name: "tools/rust.md", title: "R", content: "c" }), null);
+    assert.equal(writeEntryDirect(root, "recent-activity", { name: "a/b.md", title: "B", content: "c" }), null);
+    assert.equal(existsSync(join(root, "global", "work-profile", "tools")), false, "不应产生嵌套目录");
+    assert.equal(countEntries(root, "work-profile"), 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("restoreBackup：非法 id 抛错不清库（审查 P2 回归钉）", () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "W", content: "工" });
+    assert.throws(() => restoreBackup(root, "."));
+    assert.equal(countEntries(root, "work-profile"), 1, "拒绝后数据原样");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ---- 人设 ----

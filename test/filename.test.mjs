@@ -37,6 +37,11 @@ test("sanitizeMemoryName: 越界/点段/黑名单/控制符/冒号", () => {
   assert.equal(sanitizeMemoryName("a\u0000b.md"), "ab.md"); // 控制符剥除
   assert.equal(sanitizeMemoryName("MEMORY.md"), null); // 索引保留
   assert.equal(sanitizeMemoryName("memory.md"), null); // win32 大小写不敏感
+  // 审查 P1 修复：无扩展名的 "memory" 补 .md 后恰为索引文件——旧实现保留名检查在追加之前，漏拦
+  assert.equal(sanitizeMemoryName("memory"), null, "无扩展名 memory 应拒（追加 .md 后即 MEMORY.md）");
+  assert.equal(sanitizeMemoryName("Memory"), null);
+  assert.equal(sanitizeMemoryName("sub/memory"), null, "嵌套末段同样应拒");
+  assert.equal(sanitizeMemoryName("memories"), "memories.md", "前缀相近的正常名不受影响");
   assert.equal(sanitizeMemoryName(""), null);
   assert.equal(sanitizeMemoryName("///"), null);
   assert.equal(sanitizeMemoryName("."), null);

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { apply, name, inject } from "../lib/index.js";
 import { projectMemoryPaths } from "../lib/paths.js";
+import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 
 function fakeCtx(streamImpl) {
   const handlers = new Map();
@@ -203,6 +204,29 @@ test("非 completed 轮不触发", async () => {
   handlers.get("session/event")(session, { type: "turn/end", seq: 4, data: { turn: 1, reason: { kind: "aborted" } } });
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(streamCalls.length, 0);
+});
+
+test("总开关关 = 提取全停（R3 提取半边；审查 P2 补覆盖——此前该闸零测试）", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  try {
+    resetSettingsCache();
+    const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
+      throw new Error("总开关关时不应调用 LLM");
+    });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x" });
+    writeSettings(root, { conversationMemory: false });
+    const session = fakeSession(workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, USER_EVENT);
+    handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(streamCalls.length, 0, "总开关关时提取器不应发起 LLM 调用");
+    const paths = projectMemoryPaths(root, workspace);
+    assert.equal(existsSync(paths.memoryDir), false, "总开关关时不应有落盘");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });
 
 test("config 未知键 fail loud", () => {

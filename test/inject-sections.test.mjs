@@ -3,12 +3,13 @@
 //     总开关关 = 四段全灭；projectMemory 关 = 5000/5001 灭（4990/4995 不受影响）；
 //     globalExtraction 关 = 四段不受影响（4995 跟随数据非空，R2）。
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { apply } from "../lib/index.js";
 import { createEntry, writeAddressing, writePersona } from "../lib/global-store.js";
+import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 
 function fakeCtx() {
@@ -52,6 +53,15 @@ function setup(root) {
 
 const NO_CTX = {};
 
+/** 造 cwd=root 的项目记忆（条目+索引），让 5000/5001 在 withCwd 下有内容——无 cwd 的空串断言无甄别力（审查 P1 假绿修复）。 */
+function seedProjectMemory(root) {
+  const { memoryDir } = projectMemoryPaths(root, root);
+  mkdirSync(memoryDir, { recursive: true });
+  writeFileSync(join(memoryDir, "p.md"), "---\nname: p\ntitle: P\n---\n项目正文。\n");
+  writeFileSync(join(memoryDir, "MEMORY.md"), "- [P](p.md) — 项目条目\n");
+  return { agent: { session: { header: { cwd: root } } } };
+}
+
 // ---- 4990 人设段渲染快照 ----
 
 test("4990：称呼两句 + 人设正文组合渲染", () => {
@@ -78,7 +88,7 @@ test("4990：只有称呼 / 只有正文 两种半满态", () => {
     const s = setup(root);
     let text = s.persona.text(NO_CTX);
     assert.match(text, /用户叫你「小舟」。/);
-    assert.doesNotMatch(text, /希望他称呼/);
+    assert.doesNotMatch(text, /称呼他为/);
     // 只有正文
     writeAddressing(root, { dshName: "", userAlias: "" });
     writePersona(root, "只有正文。");
@@ -180,12 +190,18 @@ test("开关矩阵：总开关关 = 四段全灭（R3 一刀切）", () => {
   try {
     writeAddressing(root, { dshName: "小舟" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
+    const withCwd = seedProjectMemory(root); // 5000/5001 需要 cwd 且需有内容，否则空串断言假绿
     const s = setup(root);
+    // 先验全开基线：四段都有内容（防止"本来就空"的假绿）
+    assert.notEqual(s.persona.text(NO_CTX), "");
+    assert.notEqual(s.globalIndex.text(NO_CTX), "");
+    assert.notEqual(s.instructions.text(withCwd), "");
+    assert.notEqual(s.index.text(withCwd), "");
     writeSettings(root, { conversationMemory: false });
     assert.equal(s.persona.text(NO_CTX), "");
     assert.equal(s.globalIndex.text(NO_CTX), "");
-    assert.equal(s.instructions.text(NO_CTX), "");
-    assert.equal(s.index.text(NO_CTX), "");
+    assert.equal(s.instructions.text(withCwd), "");
+    assert.equal(s.index.text(withCwd), "");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -196,12 +212,15 @@ test("开关矩阵：projectMemory 关 = 5000/5001 灭；4990/4995 不受影响"
   try {
     writeAddressing(root, { dshName: "小舟" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
+    const withCwd = seedProjectMemory(root);
     const s = setup(root);
+    assert.notEqual(s.instructions.text(withCwd), ""); // 先验基线非空（假绿修复）
+    assert.notEqual(s.index.text(withCwd), "");
     writeSettings(root, { projectMemory: false });
     assert.notEqual(s.persona.text(NO_CTX), "");
     assert.notEqual(s.globalIndex.text(NO_CTX), "");
-    assert.equal(s.instructions.text(NO_CTX), "");
-    assert.equal(s.index.text(NO_CTX), "");
+    assert.equal(s.instructions.text(withCwd), "");
+    assert.equal(s.index.text(withCwd), "");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -212,13 +231,13 @@ test("开关矩阵：globalExtraction 关 = 四段不受影响（4995 跟随数�
   try {
     writeAddressing(root, { dshName: "小舟" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
+    const withCwd = seedProjectMemory(root);
     const s = setup(root);
     writeSettings(root, { globalExtraction: false });
     assert.notEqual(s.persona.text(NO_CTX), "");
     assert.notEqual(s.globalIndex.text(NO_CTX), "");
-    // 5000/5001 需要 cwd，只验非空形态（有 cwd 才有内容；此处验证未被开关灭掉的路径）
-    const withCwd = { agent: { session: { header: { cwd: root } } } };
     assert.notEqual(s.instructions.text(withCwd), "");
+    assert.notEqual(s.index.text(withCwd), ""); // 5001 同样不受全局提取开关影响（审查补漏）
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

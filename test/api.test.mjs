@@ -385,3 +385,27 @@ test("planImport：未知分类 / 未知格式 / 空内容 显式报错", () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 单项目导出（方案C §6 附行，审查 P2 补齐） ----
+
+test("project/:id/export：已知项目导出条目；未知项目 404；穿越形态 404", async () => {
+  const root = freshRoot();
+  try {
+    const memDir = join(root, "projects", "demo-aabb0011223344", "memory");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(memDir, { recursive: true });
+    writeFileSync(join(memDir, "note.md"), "---\nname: note\ntitle: Note\n---\n项目条目正文\n");
+    writeFileSync(join(memDir, "MEMORY.md"), "- [Note](note.md) — 索引不导出\n");
+    const ok = await callApi(root, { method: "GET", path: `${API_PREFIX}project/demo-aabb0011223344/export` });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.ok, true);
+    assert.equal(ok.json.entries.length, 1, "只导出条目不含索引");
+    assert.match(ok.json.entries[0].content, /项目条目正文/);
+    const miss = await callApi(root, { method: "GET", path: `${API_PREFIX}project/unknown-0000000000000000/export` });
+    assert.equal(miss.status, 404);
+    const evil = await callApi(root, { method: "GET", path: `${API_PREFIX}project/..%2F..%2Fetc/export` });
+    assert.equal(evil.status, 404, "穿越形态不匹配 slug-hash 目录名正则");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

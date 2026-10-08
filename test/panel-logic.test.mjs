@@ -11,9 +11,11 @@ import {
   filterEntries,
   ladderFallbackOf,
   ladderNoteOf,
+  parseSourceText,
   previewRowsOf,
   recentAgeOf,
   recentExpireDays,
+  serializeEntries,
 } from "../lib/panel-logic.js";
 
 // ---- 人设模板 ----
@@ -147,4 +149,37 @@ test("filterEntries：三字段小写包含；空 query 全量；null 防御", (
   assert.equal(filterEntries(entries, "").length, 3);
   assert.equal(filterEntries(entries, "  ").length, 3);
   assert.equal(filterEntries(null, "x").length, 0);
+});
+
+// ---- 源码模式序列化/解析（审查 P2 修复：description 往返不丢） ----
+
+test("serializeEntries ↔ parseSourceText：含 description 的整类往返无损", () => {
+  const entries = [
+    { title: "团队技术栈", name: "team-stack.md", description: "包管理与运行时", content: "统一 pnpm + Node 24。" },
+    { title: "无描述条目", name: "plain.md", description: "", content: "只有正文。" },
+  ];
+  const text = serializeEntries(entries);
+  const back = parseSourceText(text);
+  assert.equal(back.length, 2);
+  assert.equal(back[0].title, "团队技术栈");
+  assert.equal(back[0].name, "team-stack.md");
+  assert.equal(back[0].description, "包管理与运行时", "description 必须随注释往返（审查 P2 回归钉）");
+  assert.equal(back[0].content, "统一 pnpm + Node 24。");
+  assert.equal(back[1].description, "");
+});
+
+test("parseSourceText：desc 含 --> 时转义往返；头部不合规块跳过；空正文跳过", () => {
+  const text = [
+    "## A", "<!-- name: a.md desc: 箭头--＞转义前是 -->", "正文 A", "",
+    "---", "",
+    "## B", "<!-- name: b.md -->", "正文 B", "",
+    "---", "",
+    "不是标题开头", "",
+    "---", "",
+    "## C", "<!-- name: c.md -->", "   ",
+  ].join("\n");
+  const parsed = parseSourceText(text);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].description, "箭头-->转义前是", "转义符 --＞ 读回还原为 -->");
+  assert.equal(parsed[1].name, "b.md");
 });

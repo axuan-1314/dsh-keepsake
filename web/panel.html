@@ -320,28 +320,15 @@ function newEntryDialog(cat, reload) {
 }
 
 // ============ 源码模式（整类直接编辑：序列化 → 编辑 → reset+import 重建） ============
-function serializeEntries(entries) {
-  return entries.map((e) => `## ${e.title}\n<!-- name: ${e.name} -->\n${e.content}`).join("\n\n---\n\n");
-}
-function parseSourceText(text) {
-  const entries = [];
-  const blocks = String(text ?? "").split(/\n---\n/);
-  for (const block of blocks) {
-    const m = block.match(/^##\s+([^\n]+)\n(?:<!--\s*name:\s*(\S+)\s*-->\n)?([\s\S]*)$/);
-    if (!m) continue;
-    const content = m[3].trim();
-    if (content.length === 0) continue;
-    entries.push({ title: m[1].trim(), name: m[2] ?? void 0, content });
-  }
-  return entries;
-}
+// 序列化/解析纯函数在 panel-logic.js（与检查共享同一份；desc 随注释往返不丢——审查 P2 修复）。
+// 已知边界：正文内含 "\n---\n"（单独一行 ---）的条目会被当分隔符切散，弹窗说明已注明。
 function sourceModeDialog(cat, entries, reload) {
   dialogHost.innerHTML = `
     <div class="mask">
       <div class="dialog" style="width:min(860px,96vw)">
         <h2>源码模式——直接编辑整类</h2>
-        <div class="meta">每条 = <code class="k">## 标题</code> + 可选 <code class="k">&lt;!-- name: file.md --&gt;</code> + 正文；条目间用 <code class="k">---</code> 分隔。保存 = 整类替换（先自动备份再重建）。</div>
-        <textarea class="ta tall" data-src style="min-height:46vh">${esc(serializeEntries(entries))}</textarea>
+        <div class="meta">每条 = <code class="k">## 标题</code> + 可选 <code class="k">&lt;!-- name: file.md desc: 一行钩子 --&gt;</code> + 正文；条目间用一行 <code class="k">---</code> 分隔（正文中请勿出现单独一行 --- ，会被当分隔符）。保存 = 整类替换（先自动备份再重建，desc 随注释往返不丢）。</div>
+        <textarea class="ta tall" data-src style="min-height:46vh">${esc(L.serializeEntries(entries))}</textarea>
         <div class="foot">
           <button class="btn" data-x>取消</button>
           <button class="btn danger" data-s>保存整类（先备份）</button>
@@ -350,7 +337,7 @@ function sourceModeDialog(cat, entries, reload) {
     </div>`;
   dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
   dialogHost.querySelector("[data-s]").addEventListener("click", () => {
-    const parsed = parseSourceText(dialogHost.querySelector("[data-src]").value);
+    const parsed = L.parseSourceText(dialogHost.querySelector("[data-src]").value);
     confirmDialog({
       title: "整类替换确认",
       body: `将解析出 ${parsed.length} 条。\n操作会先自动备份当前内容，再清空整类并写入这些条目。确定继续吗？`,
@@ -443,7 +430,12 @@ function importDialog(cat, reload) {
     try {
       const out = await apiPost("import", req.body);
       dialogHost.innerHTML = "";
-      toast(`导入完成：写入 ${out.written} 条（覆盖 ${out.overwritten} 条，已自动备份 ${out.backupId}）`);
+      // 审查 P3 修复：HTTP 200 + ok:false（部分条目失败）也要可见，不静默报成功
+      if (out.ok === false) {
+        toast(`导入部分失败：写入 ${out.written} 条，失败 ${out.failed.length} 条（${out.failed.join("、")}）；已自动备份 ${out.backupId}`, "err");
+      } else {
+        toast(`导入完成：写入 ${out.written} 条（覆盖 ${out.overwritten} 条，已自动备份 ${out.backupId}）`);
+      }
       reload();
     } catch (err) { toast("导入失败：" + err.message, "err"); }
   });
@@ -681,8 +673,24 @@ async function renderProjectsPage() {
   }
   page.innerHTML = projects.map((p) => `
     <div class="card"><h3><code class="k">${esc(p.id)}</code></h3>
-    <div class="meta">${p.entries} 条 · 最后更新 ${esc(fmtTime(p.lastMtimeMs))}</div></div>`).join("")
+    <div class="meta">${p.entries} 条 · 最后更新 ${esc(fmtTime(p.lastMtimeMs))}</div>
+    <div class="row" style="margin-top:8px"><button class="btn sm" data-pexport="${esc(p.id)}">导出此项目（JSON）</button></div></div>`).join("")
     + '<div class="meta">项目记忆只读——由对话自动维护；全量导出走「设置」页。</div>';
+  for (const btn of Array.from(page.querySelectorAll("[data-pexport]"))) {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-pexport");
+      try {
+        const out = await api(`project/${encodeURIComponent(id)}/export`);
+        const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `dsh-memory-project-${id}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast(`已导出 ${out.entries.length} 条`);
+      } catch (err) { toast("导出失败：" + err.message, "err"); }
+    });
+  }
 }
 
 // ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
@@ -773,7 +781,7 @@ async function renderSettingsPage() {
       const id = btn.getAttribute("data-restore");
       confirmDialog({
         title: "从备份恢复",
-        body: `将用备份 ${id} 全量覆盖当前全局记忆与人设/称呼。\n恢复前系统会先把当前状态再备份一次。确定继续吗？`,
+        body: `将用备份 ${esc(id)} 全量覆盖当前全局记忆与人设/称呼。\n恢复前系统会先把当前状态再备份一次。确定继续吗？`,
         dangerText: "恢复",
         onConfirm: async () => {
           try {

@@ -1,0 +1,384 @@
+// api：REST 路由匹配与校验、loopback 守卫负路径、导入 dryRun 解析。
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { test } from "node:test";
+import { API_PREFIX, isLoopbackRequest, makeApiRoutes, planImport } from "../lib/api.js";
+import { createEntry, listEntries, readPersona, listBackups } from "../lib/global-store.js";
+
+const silentLog = { info() {}, warn() {}, error() {} };
+
+function freshRoot() {
+  return mkdtempSync(join(tmpdir(), "dsh-memory-api-"));
+}
+
+function mockReq({ method, url, body, headers = {}, remoteAddress = "127.0.0.1" }) {
+  const req = new Readable({
+    read() {
+      if (body !== void 0) this.push(typeof body === "string" ? body : JSON.stringify(body));
+      this.push(null);
+    },
+  });
+  req.method = method;
+  req.url = url;
+  req.headers = { host: "127.0.0.1:3080", ...headers };
+  req.socket = { remoteAddress };
+  req.destroy = () => {};
+  return req;
+}
+
+function mockRes() {
+  return {
+    status: 0,
+    headers: {},
+    body: "",
+    writeHead(status, headers) {
+      this.status = status;
+      this.headers = headers ?? {};
+    },
+    end(chunk) {
+      this.body = chunk ?? "";
+    },
+    get headersSent() {
+      return this.status !== 0;
+    },
+  };
+}
+
+async function callApi(storageRoot, { method, path, body, headers, remoteAddress }) {
+  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {} });
+  const handler = routes[0].handler;
+  assert.equal(routes[0].kind, "prefix");
+  assert.equal(routes[0].path, API_PREFIX.replace(/\/$/, "")); // 内核 prefix 不带尾斜杠（实证）
+  const req = mockReq({ method, url: path, body, headers, remoteAddress });
+  const res = mockRes();
+  await handler(req, res);
+  return { status: res.status, json: res.body ? JSON.parse(res.body) : null, headers: res.headers };
+}
+
+// ---- loopback 守卫 ----
+
+test("isLoopbackRequest：四种 remoteAddress 形态", () => {
+  const base = { headers: { host: "127.0.0.1:3080" }, socket: {} };
+  assert.equal(isLoopbackRequest({ ...base, socket: { remoteAddress: "127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequest({ ...base, socket: { remoteAddress: "::1" } }), true);
+  assert.equal(isLoopbackRequest({ ...base, socket: { remoteAddress: "::ffff:127.0.0.1" } }), true);
+  assert.equal(isLoopbackRequest({ ...base, socket: { remoteAddress: "10.0.0.5" } }), false);
+});
+
+test("isLoopbackRequest：host 头校验", () => {
+  const socket = { remoteAddress: "127.0.0.1" };
+  assert.equal(isLoopbackRequest({ headers: { host: "localhost:3080" }, socket }), true);
+  assert.equal(isLoopbackRequest({ headers: { host: "[::1]:3080" }, socket }), true);
+  assert.equal(isLoopbackRequest({ headers: { host: "evil.com" }, socket }), false);
+  assert.equal(isLoopbackRequest({ headers: {}, socket }), false);
+});
+
+test("isLoopbackRequest：sec-fetch-site cross-site 拒绝；origin 同源校验", () => {
+  const socket = { remoteAddress: "127.0.0.1" };
+  const host = "127.0.0.1:3080";
+  assert.equal(isLoopbackRequest({ headers: { host, "sec-fetch-site": "cross-site" }, socket }), false);
+  assert.equal(isLoopbackRequest({ headers: { host, "sec-fetch-site": "same-origin" }, socket }), true);
+  assert.equal(isLoopbackRequest({ headers: { host, origin: "http://127.0.0.1:3080" }, socket }), true);
+  assert.equal(isLoopbackRequest({ headers: { host, origin: "https://evil.example" }, socket }), false);
+  assert.equal(isLoopbackRequest({ headers: { host, origin: "://bad" }, socket }), false);
+});
+
+// ---- 路由匹配与校验 ----
+
+test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概览/corrupt）", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "W", content: "工" });
+    const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.settings, { conversationMemory: true, projectMemory: true, globalExtraction: true });
+    assert.equal(json.corrupt, false);
+    assert.equal(json.counts.byCategory["work-profile"], 1);
+    assert.equal(json.counts.global, 1);
+    assert.ok(json.persona && typeof json.persona.excerpt === "string");
+    assert.ok(Array.isArray(json.projects));
+    assert.equal(json.addressing.dshName, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("非 loopback 请求 → 403", async () => {
+  const root = freshRoot();
+  try {
+    const { status } = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, remoteAddress: "10.1.2.3" });
+    assert.equal(status, 403);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("未知端点 → 404；方法不匹配 → 404", async () => {
+  const root = freshRoot();
+  try {
+    const a = await callApi(root, { method: "GET", path: `${API_PREFIX}nope` });
+    assert.equal(a.status, 404);
+    const b = await callApi(root, { method: "DELETE", path: `${API_PREFIX}state` });
+    assert.equal(b.status, 404);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT settings：合并写入 + 下轮 GET 可见", async () => {
+  const root = freshRoot();
+  try {
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { conversationMemory: false } });
+    assert.equal(put.status, 200);
+    assert.equal(put.json.settings.conversationMemory, false);
+    const get = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(get.json.settings.conversationMemory, false);
+    assert.equal(get.json.settings.projectMemory, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("persona：GET 默认模板 → PUT 写入 → POST reset 恢复", async () => {
+  const root = freshRoot();
+  try {
+    const before = await callApi(root, { method: "GET", path: `${API_PREFIX}persona` });
+    assert.equal(before.json.isDefault, true);
+    assert.ok(before.json.defaultTemplate);
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: { content: "我的人设正文" } });
+    assert.equal(put.status, 200);
+    assert.equal(readPersona(root).content, "我的人设正文");
+    const bad = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: { content: 123 } });
+    assert.equal(bad.status, 400);
+    const reset = await callApi(root, { method: "POST", path: `${API_PREFIX}persona/reset` });
+    assert.equal(reset.status, 200);
+    assert.match(reset.json.content, /补充人设/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT persona：超 100KB 上限 → 413 或 400（分级体积上限 R7）", async () => {
+  const root = freshRoot();
+  try {
+    const big = "x".repeat(101 * 1024);
+    const { status } = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: JSON.stringify({ content: big }) });
+    assert.ok(status === 413 || status === 400);
+    assert.equal(readPersona(root).isDefault, true); // 未写入
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("addressing：GET/PUT 往返", async () => {
+  const root = freshRoot();
+  try {
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}addressing`, body: { dshName: "小舟", userAlias: "老板" } });
+    assert.equal(put.status, 200);
+    const get = await callApi(root, { method: "GET", path: `${API_PREFIX}addressing` });
+    assert.deepEqual({ dshName: get.json.dshName, userAlias: get.json.userAlias }, { dshName: "小舟", userAlias: "老板" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("category：GET 条目列表 / POST 新增 / 非法分类 404", async () => {
+  const root = freshRoot();
+  try {
+    const created = await callApi(root, {
+      method: "POST",
+      path: `${API_PREFIX}category/work-profile/entries`,
+      body: { title: "API Entry", description: "经 API", content: "正文" },
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.json.name, "api-entry.md");
+    const list = await callApi(root, { method: "GET", path: `${API_PREFIX}category/work-profile` });
+    assert.equal(list.json.entries.length, 1);
+    assert.equal(list.json.entries[0].content, "正文");
+    const bad = await callApi(root, { method: "GET", path: `${API_PREFIX}category/evil` });
+    assert.equal(bad.status, 404);
+    const noContent = await callApi(root, { method: "POST", path: `${API_PREFIX}category/work-profile/entries`, body: { title: "无正文" } });
+    assert.equal(noContent.status, 400);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("entry：PUT 改条目（含跨分类移动）/ DELETE 删条目", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "To edit", content: "旧" });
+    const put = await callApi(root, {
+      method: "PUT",
+      path: `${API_PREFIX}entry`,
+      body: { category: "work-profile", name: "to-edit.md", content: "新", toCategory: "long-term" },
+    });
+    assert.equal(put.status, 200);
+    assert.equal(put.json.categoryId, "long-term");
+    const del = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "to-edit.md" } });
+    assert.equal(del.json.existed, true);
+    const ghost = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md", content: "x" } });
+    assert.equal(ghost.status, 404);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("category reset：先自动备份再清空（后悔药留档）", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "user-profile", { title: "Keep safe", content: "别丢" });
+    const reset = await callApi(root, { method: "POST", path: `${API_PREFIX}category/user-profile/reset` });
+    assert.equal(reset.status, 200);
+    assert.equal(reset.json.removed, 1);
+    assert.ok(reset.json.backupId);
+    const backups = listBackups(root);
+    assert.equal(backups.length, 1);
+    assert.equal(backups[0].reason, "reset:user-profile");
+    assert.equal(listEntries(root, "user-profile").length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("export：全量 JSON + content-disposition 附件头", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "L", content: "长" });
+    const { status, json, headers } = await callApi(root, { method: "GET", path: `${API_PREFIX}export` });
+    assert.equal(status, 200);
+    assert.equal(json.categories["long-term"].length, 1);
+    assert.match(headers["content-disposition"], /attachment; filename="dsh-memory-export-/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("backup list/restore：列备份 + 恢复（恢复前自动再备份）", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "V1", content: "第一版" });
+    const reset = await callApi(root, { method: "POST", path: `${API_PREFIX}category/work-profile/reset` });
+    const backupId = reset.json.backupId;
+    const list = await callApi(root, { method: "GET", path: `${API_PREFIX}backup/list` });
+    assert.equal(list.json.backups.length, 1);
+    const restore = await callApi(root, { method: "POST", path: `${API_PREFIX}backup/restore`, body: { id: backupId } });
+    assert.equal(restore.status, 200);
+    assert.ok(restore.json.preRestoreBackupId); // 后悔药的后悔药
+    assert.equal(listEntries(root, "work-profile").length, 1);
+    assert.equal(listEntries(root, "work-profile")[0].title, "V1");
+    const bad = await callApi(root, { method: "POST", path: `${API_PREFIX}backup/restore`, body: { id: "../evil" } });
+    assert.equal(bad.status, 404);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("import：dryRun 预览不落盘；confirm 写入 + 覆盖计数 + 自动备份", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "Same", content: "旧内容" }); // 制造 overwrite
+    const payload = {
+      entries: [
+        { title: "Same", content: "新内容" },
+        { title: "Brand new", content: "全新" },
+      ],
+    };
+    const dry = await callApi(root, {
+      method: "POST",
+      path: `${API_PREFIX}import?dryRun=1`,
+      body: { category: "work-profile", format: "json", payload },
+    });
+    assert.equal(dry.status, 200);
+    assert.equal(dry.json.dryRun, true);
+    assert.equal(dry.json.plans.length, 2);
+    assert.equal(dry.json.plans[0].action, "overwrite"); // 冲突标红位
+    assert.equal(dry.json.plans[1].action, "add");
+    assert.equal(listEntries(root, "work-profile").length, 1); // dryRun 不落盘
+    const confirm = await callApi(root, {
+      method: "POST",
+      path: `${API_PREFIX}import`,
+      body: { category: "work-profile", format: "json", payload },
+    });
+    assert.equal(confirm.status, 200);
+    assert.equal(confirm.json.written, 2);
+    assert.equal(confirm.json.overwritten, 1);
+    assert.ok(confirm.json.backupId);
+    assert.equal(listEntries(root, "work-profile").length, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- planImport 解析（dryRun 纯函数面） ----
+
+test("planImport：JSON 数组与 {entries} 两种形态", () => {
+  const root = freshRoot();
+  try {
+    const a = planImport(root, { category: "long-term", format: "json", payload: [{ title: "A", content: "一" }] });
+    assert.equal(a.ok, true);
+    assert.equal(a.plans[0].action, "add");
+    const b = planImport(root, { category: "long-term", format: "json", payload: { entries: [{ title: "A", content: "一" }] } });
+    assert.equal(b.plans.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("planImport：坏条目（缺 content / 超长）跳过并记 errors", () => {
+  const root = freshRoot();
+  try {
+    const { ok, errors, plans } = planImport(root, {
+      category: "work-profile",
+      format: "json",
+      payload: { entries: [{ title: "无正文" }, { title: "超长", content: "x".repeat(20001) }, { title: "好", content: "行" }] },
+    });
+    assert.equal(ok, false); // 有 errors
+    assert.equal(errors.length, 2);
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].title, "好");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("planImport：markdown-split 按 ## 拆条；无标题段记 error", () => {
+  const root = freshRoot();
+  try {
+    const md = "## 第一条\n内容一\n\n## 第二条\n内容二\n## 空条\n";
+    const { plans, errors } = planImport(root, { category: "current-focus", format: "markdown-split", payload: { markdown: md } });
+    assert.equal(plans.length, 2);
+    assert.equal(plans[0].title, "第一条");
+    assert.equal(plans[0].content, "内容一");
+    assert.equal(errors.length, 1); // 空条跳过
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("planImport：markdown-whole 整段一条", () => {
+  const root = freshRoot();
+  try {
+    const { plans } = planImport(root, { category: "user-profile", format: "markdown-whole", payload: { markdown: "# 我的偏好\n全在这里", title: "偏好总汇" } });
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].title, "偏好总汇");
+    assert.match(plans[0].content, /全在这里/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("planImport：未知分类 / 未知格式 / 空内容 显式报错", () => {
+  const root = freshRoot();
+  try {
+    assert.equal(planImport(root, { category: "evil", format: "json", payload: [] }).ok, false);
+    assert.equal(planImport(root, { category: "long-term", format: "yaml", payload: {} }).ok, false);
+    assert.equal(planImport(root, { category: "long-term", format: "markdown-whole", payload: { markdown: "" } }).ok, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

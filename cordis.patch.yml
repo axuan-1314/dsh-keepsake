@@ -2,6 +2,8 @@
 # 插入为独立 entry；config 为插件唯一配置面（apply(ctx, config) 第二参）。
 # enabled 默认显式开：安装即启用；回滚 = 把 enabled 改 false（HMR 生效）
 # 或 dsh plugin --profile <name> remove dsh-memory（整包卸载）。
+# 用户可感知开关（对话记忆/项目记忆/全局提取）不在此处——走
+# ~/.dsh/memory/settings.json（host 每轮读取，改完下一轮即生效，绕开 desktop 重启限制）。
 - insert:
     - id: dsh-memory
       name: dsh-memory
@@ -17,3 +19,5 @@
         maxManifestFiles: 200
         maxPromptChars: 48000
         maxOps: 20
+        recentKeepCount: 30
+        recentKeepDays: 30

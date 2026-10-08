@@ -83,12 +83,20 @@ test("入口元数据与注入段注册", () => {
   apply(ctx, {}); // 审查 P2-1：缺省关（fail-closed），无显式 enabled: true 不启用
   assert.equal(sections.length, 0);
   apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry") });
-  assert.equal(sections.length, 2);
-  assert.equal(sections[0].interpolate, false);
-  assert.equal(sections[1].interpolate, false);
-  // M0 探针路由已注册（state exact + panel exact/prefix）
+  // M1 起四段（方案C §4）：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
+  assert.equal(sections.length, 4);
+  assert.equal(sections[0].name, "dsh-memory:persona");
+  assert.equal(sections[0].order, 4990);
+  assert.equal(sections[1].name, "dsh-memory:global-index");
+  assert.equal(sections[1].order, 4995);
+  assert.equal(sections[2].name, "dsh-memory:instructions");
+  assert.equal(sections[2].order, 5000);
+  assert.equal(sections[3].name, "dsh-memory:index");
+  assert.equal(sections[3].order, 5001);
+  for (const section of sections) assert.equal(section.interpolate, false);
+  // M1 路由已注册（API prefix 总入口 + panel exact/prefix）
   assert.ok(registeredRoutes.length >= 3);
-  assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/api/state"));
+  assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-memory/api"));
   assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/panel/"));
 });
 
@@ -126,14 +134,14 @@ test("事件→提取→落盘 全链路", async () => {
     assert.equal(streamCalls[0].model, "model-x");
     assert.equal(streamCalls[0].purpose, "dsh-memory-extraction");
     assert.equal(streamCalls[0].sessionId, "s-test");
-    // 注入段：索引段此时能读到 MEMORY.md
-    const indexText = sections[1].text({ agent: { session: { header: { cwd: workspace } } } });
+    // 注入段：项目索引段（sections[3]）此时能读到 MEMORY.md
+    const indexText = sections[3].text({ agent: { session: { header: { cwd: workspace } } } });
     assert.match(indexText, /uses-pnpm\.md/);
-    const usageText = sections[0].text({ agent: { session: { header: { cwd: workspace } } } });
+    const usageText = sections[2].text({ agent: { session: { header: { cwd: workspace } } } });
     assert.match(usageText, new RegExp(paths.memoryDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    // 无 cwd 会话：注入段为空串（不炸组装）
-    assert.equal(sections[0].text({}), "");
-    assert.equal(sections[1].text({}), "");
+    // 无 cwd 会话：项目两段为空串（不炸组装）
+    assert.equal(sections[2].text({}), "");
+    assert.equal(sections[3].text({}), "");
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });

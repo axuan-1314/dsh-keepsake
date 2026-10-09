@@ -1,4 +1,5 @@
-// client.js / panel.html 防漂移检查（U-DRI1 短平快第一步 + 各修复的结构钉）。
+// client.js / panel.html 防漂移检查（U-DRI1 短平快第一步 + 各修复的结构钉）
+//   + 提取管道可观测（U1/U2/U6/V-1/V-5/V-7/V-9）：兜底-实现表驱动一致 + 面板消费锚。
 //   源码 grep 型 + 兜底函数提取执行对比：lib/client.js 的内联兜底、web/panel.html 的
 //   协议字面量与行为锚点，任何一边改动立刻红——防止"检查测的是没被消费的那份"。
 import assert from "node:assert/strict";
@@ -6,7 +7,13 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { decideLadderTier, ladderNoteOf } from "../lib/panel-logic.js";
+import {
+  decideLadderTier,
+  extractionNoticeText,
+  extractionRangeText,
+  extractionStreakOf,
+  ladderNoteOf,
+} from "../lib/panel-logic.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const clientSrc = readFileSync(path.join(root, "lib", "client.js"), "utf8");
@@ -129,4 +136,120 @@ test("结构钉：长度上限可见化（U-TRU1 / P3-12 双端）", () => {
   assert.match(panelSrc, /const ENTRY_MAX_CHARS = 20000;/, "条目字符上限常量");
   assert.match(panelSrc, /maxlength="\$\{ENTRY_MAX_CHARS\}"/, "编辑/新增正文必须 maxlength");
   assert.match(panelSrc, /validateEntryDraft\(/, "保存前必须走草稿预检（必填/字符/字节）");
+});
+
+// ---- U2/U6/V-7/V-9：提取管道可观测（门牌红条两行制 + 双端一致） ----
+
+test("防漂移：提取可观测纯函数经 panel-logic 优先分发（U6 消费分发锚）", () => {
+  assert.match(clientSrc, /LOGIC \? LOGIC\.extractionStreakOf/, "streak 归一必须经 panel-logic 优先分发");
+  assert.match(clientSrc, /LOGIC \? LOGIC\.extractionNoticeText/, "红条文案必须经 panel-logic 优先分发");
+  assert.match(clientSrc, /LOGIC \? LOGIC\.extractionRangeText/, "错过区间文案必须经 panel-logic 优先分发");
+});
+
+test("防漂移：streak 归一兜底 extractionStreakOfFallback 与实现一致（含旧数字形态）", () => {
+  const fn = extractFactoryFn(clientSrc, "extractionStreakOfFallback", "efRaw");
+  for (const c of [null, void 0, 0, 3, "5", { streak: 0 }, { streak: 1 }, { streak: 10 }, {}]) {
+    assert.equal(fn(c), extractionStreakOf(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+});
+
+test("防漂移：红条文案兜底 extractionNoticeTextFallback 与实现表驱动一致（streak 0/1/10、字段缺失、旧数字形态）", () => {
+  const fn = extractFactoryFn(clientSrc, "extractionNoticeTextFallback", "efRaw");
+  const cases = [
+    null, void 0, 0, 3, // 旧数字形态
+    { streak: 0 }, { streak: 1 }, { streak: 10 },
+    { streak: 0, recent: [] },
+    { streak: 3, streakReason: "llm-error" }, // 旧对象形态（无 recent）
+    { streak: 3, recent: [] },
+    { streak: 3, recent: [{ reason: "llm-error", model: "group/example-model", message: "429" }] },
+    { streak: 1, recent: [{ reason: "io-error" }] },
+    { streak: 2, recent: [{ model: "a/b" }] },
+    { streak: 2, recent: [], streakReason: "parse-error" },
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), extractionNoticeText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  // 模板锚（任何一边改文案，另一边立刻失去一致性被上一循环抓住；此处再钉模板本身）
+  assert.ok(clientSrc.includes("`自动提取失败 ${streak} 次 · 最近：${reason}（${model}）`"));
+  assert.ok(clientSrc.includes("`记忆自动提取最近连续失败 ${streak} 次，期间对话内容可能未被记录——请检查服务端日志。`"));
+});
+
+test("防漂移：错过区间兜底 extractionRangeTextFallback 与实现表驱动一致", () => {
+  const fn = extractFactoryFn(clientSrc, "extractionRangeTextFallback", "efRaw, range");
+  const cases = [
+    [null, null], [null, { from: 473 }],
+    [{ streak: 0 }, { from: 473 }],
+    [{ streak: 1 }, null], [{ streak: 1 }, {}],
+    [{ streak: 3 }, { from: 473, to: 478 }],
+    [{ streak: 3 }, { from: "x" }], [{ streak: 3 }, "473"],
+    [2, { from: 10 }],
+  ];
+  for (const [ef, range] of cases) {
+    assert.equal(fn(ef, range), extractionRangeText(ef, range), `兜底与实现输出不一致：${JSON.stringify([ef, range])}`);
+  }
+  assert.ok(clientSrc.includes("`seq ${from} 之后的轮次尚未记录，恢复后自动补提`"));
+});
+
+test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示（U2/V-9/V-10）", () => {
+  assert.match(clientSrc, /openPanel\("#\/settings"\)/, "「详情」必须 openPanel 深链 #/settings（三档梯子同带）");
+  assert.match(clientSrc, /extractionRangeText\(efRaw, state\.lastFailedRange\)/, "行2 错过区间消费 state.lastFailedRange");
+  assert.match(clientSrc, /lastStreakRef/, "「红条从有到无」判断沿必须存 ref");
+  assert.match(clientSrc, /提取已恢复/, "恢复一次性提示文案在位");
+  assert.match(clientSrc, /typeof hash === "string"/, "openPanel 深链参数必须防 React 事件对象误入");
+});
+
+// ---- U1/V-1/V-4/V-5/V-7/V-8：面板健康卡结构钉 ----
+
+test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（V-7 消费锚）", () => {
+  assert.match(panelSrc, /L\.extractionNoticeText\(/, "健康卡红态 headline 必须走共享文案纯函数");
+  assert.match(panelSrc, /L\.pipeHealthLevel\(/, "三态判定必须走纯函数");
+  assert.match(panelSrc, /L\.modelShortName\(/, "车型短名必须走纯函数");
+  assert.match(panelSrc, /L\.relativeTimeOf\(/, "相对时间必须走纯函数");
+  assert.match(panelSrc, /L\.extractionStreakOf\(/, "streak 归一必须走纯函数");
+  assert.match(panelSrc, /L\.diagnosticTextOf\(/, "复制诊断必须走纯函数组装");
+  assert.match(panelSrc, /id = "data-pipe-health"/, "健康卡锚点 id 在场（V-9 深链滚动目标）");
+  assert.match(panelSrc, /宿主版本较旧，未提供失败详情/, "旧服务端文案在位（V-11）");
+  assert.match(panelSrc, /extraction-errors\.log/, "失败日志路径行在位（V-10）");
+  assert.match(panelSrc, /title="\$\{esc\(msg\)\}"/, "recent[].message 不可信——全量必须进 title 且过 esc()");
+  assert.match(panelSrc, /msg\.length > 60 \? msg\.slice\(0, 60\)/, "message 摘要截 60 字符");
+});
+
+test("结构钉：立即重试三段式（V-1/V-6）——retry 只在 click handler、busy disabled、轮询只 GET state", () => {
+  const hits = panelSrc.match(/extract\/retry/g) ?? [];
+  assert.equal(hits.length, 1, "extract/retry 全文件只允许出现一次（确认弹窗 onConfirm 内）——轮询路径绝不调 retry");
+  const clickIdx = panelSrc.indexOf('retryBtn.addEventListener("click"');
+  const retryIdx = panelSrc.indexOf("extract/retry");
+  assert.ok(clickIdx >= 0 && retryIdx > clickIdx, "retry 调用必须位于重试按钮 click handler 内");
+  assert.match(panelSrc, /retryBtn\.disabled = true/, "202 后按钮 busy disabled");
+  assert.match(panelSrc, /retryBtn\.textContent = "提取中…"/, "busy 文案「提取中…」");
+  assert.match(panelSrc, /toast\("提取已恢复"\)/, "streak 清零才 toast 成功（V-1 禁同步假承诺）");
+  assert.match(panelSrc, /重试后仍未恢复，查看失败详情/, "60s 超时文案");
+  assert.match(panelSrc, /setTimeout\(poll, 2000\)/, "2s 轮询节奏");
+  assert.match(panelSrc, /Date\.now\(\) \+ 60000/, "轮询上限 60s");
+});
+
+test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer（V-5）", () => {
+  assert.match(panelSrc, /function stopPipePoll\(\)/, "清 timer 入口在位");
+  assert.match(panelSrc, /\}, 5000\)/, "5s 轮询节奏");
+  assert.match(panelSrc, /function render\(\) \{\r?\n  stopPipePoll\(\)/, "render 切路由必须先清健康卡轮询");
+  assert.match(panelSrc, /pipeRetryBusy/, "手动重试在途时 5s 轮询让位");
+});
+
+test("结构钉：提取模型卡两个诚实字段 + 嵌入模型预留位（V-2/U4/U7）", () => {
+  assert.match(panelSrc, /id = "data-pipe-model"/);
+  assert.match(panelSrc, /未指定（跟随会话路由）/, "extractionConfig 缺失时的诚实文案");
+  assert.match(panelSrc, /尚未有提取/, "lastUsedRoute 缺失时的诚实文案");
+  assert.match(panelSrc, /嵌入模型（语义召回预留）/, "U7 嵌入模型字段在场");
+  assert.match(panelSrc, /embed-model 2/, "U7 预留说明文案在场");
+});
+
+test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {
+  assert.match(panelSrc, /\.tableScroll \{ overflow: auto/, "tableScroll 样式在位");
+  const wrapped = panelSrc.match(/<div class="tableScroll"><table class="preview">/g) ?? [];
+  assert.ok(wrapped.length >= 2, "导入预览表与失败详情表都必须包 tableScroll 容器");
+  assert.match(panelSrc, /没有匹配「\$\{esc\(query\)\}」/, "搜索无命中回显 query");
+  assert.match(panelSrc, /暂无长期记忆/, "库空态文案（与搜索无命中区分）");
+  assert.match(panelSrc, /\.dot\.green \{ background: #50a05a; \}/, "灯点绿 #50a05a（不引新色值）");
+  assert.match(panelSrc, /\.dot\.yellow \{ background: #c98a3d; \}/, "灯点黄 #c98a3d");
+  assert.match(panelSrc, /\.dot\.red \{ background: #d5564d; \}/, "灯点红 #d5564d");
 });

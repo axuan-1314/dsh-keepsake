@@ -76,6 +76,18 @@
   .pill.on { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.18)); font-weight: 600; }
   .search { max-width: 320px; }
   code.k { font-family: Consolas, monospace; font-size: 12px; background: rgba(128,128,128,.12); border-radius: 4px; padding: 0 4px; }
+  /* V-8：窄屏横向滚动容器（导入预览表 + U1 失败详情表共用，防小窗撑破） */
+  .tableScroll { overflow: auto; margin: 8px 0; }
+  /* U1 三态灯点：绿/黄/红只用既有色值（#50a05a/#c98a3d/#d5564d，不引新值）；
+     灰=提取在途（闪烁），色取 --dsw-alias-label-secondary 带 fallback */
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.green { background: #50a05a; }
+  .dot.yellow { background: #c98a3d; }
+  .dot.red { background: #d5564d; }
+  .dot.grey { background: var(--dsw-alias-label-secondary, #9aa2ab); animation: dotBlink 1.1s ease-in-out infinite; }
+  @keyframes dotBlink { 50% { opacity: .3; } }
+  /* V-10：aside 设置项的提取连击红徽标（与 .cnt 同形，红=#d5564d 既有值） */
+  aside a .cnt.alert { color: #d5564d; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -91,7 +103,7 @@
     <a data-route="persona">人设</a>
     <a data-route="addressing">称呼</a>
     <a data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
-    <a data-route="settings">设置</a>
+    <a data-route="settings">设置 <span class="cnt alert" data-cnt="extraction-streak" title="自动提取连续失败次数（设置页管道健康卡可看详情）"></span></a>
   </aside>
   <main>
     <div class="topbar">
@@ -481,10 +493,10 @@ function importDialog(cat, reload) {
       if (rows.length === 0) { $preview.innerHTML = '<div class="empty">没有可导入的条目</div>'; return; }
       $preview.innerHTML = `
         <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:#d5564d">${rows.filter((r) => r.danger).length} 条与现有内容冲突或批内改名</b>）：</div>
-        <table class="preview">
+        <div class="tableScroll"><table class="preview">
           <tr><th style="width:90px">动作</th><th>标题</th><th>文件</th><th style="width:40%">内容预览</th></tr>
           ${rows.map((r) => `<tr class="${r.danger ? "danger" : ""}"><td>${r.action === "rename" ? "改名" : r.danger ? "覆盖" : "新增"}</td><td>${esc(r.title)}</td><td class="meta">${esc(r.name)}</td><td class="meta">${esc(r.preview)}</td></tr>`).join("")}
-        </table>
+        </table></div>
         ${(out.errors ?? []).length > 0 ? `<div class="notice show err" style="margin:8px 0">${(out.errors ?? []).map(esc).join("<br>")}</div>` : ""}
         ${(out.notes ?? []).length > 0 ? `<div class="meta" style="margin:8px 0">${(out.notes ?? []).map(esc).join("<br>")}</div>` : ""}`;
       $confirm.style.display = "";
@@ -590,16 +602,19 @@ async function renderLongTermPage() {
     </div>
     <div data-list></div>`;
   const list = page.querySelector("[data-list]");
-  const renderList = (entries) => {
+  // V-8：空态拆两态——库空（引导语）vs 搜索无命中（回显 query，区别于库空）
+  const renderList = (entries, query = "") => {
     list.innerHTML = "";
     if (entries.length === 0) {
-      list.innerHTML = '<div class="empty">无匹配条目。</div>';
+      list.innerHTML = all.length === 0
+        ? '<div class="empty">暂无长期记忆。对话中沉淀出跨会话有价值的结论后，DSH 会自动归档；也可以手动新增或导入。</div>'
+        : `<div class="empty">没有匹配「${esc(query)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
       return;
     }
     for (const e of entries) list.appendChild(entryCard("long-term", e, reload));
   };
   renderList(all);
-  page.querySelector("[data-q]").addEventListener("input", (ev) => renderList(L.filterEntries(all, ev.target.value)));
+  page.querySelector("[data-q]").addEventListener("input", (ev) => renderList(L.filterEntries(all, ev.target.value), ev.target.value));
   page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog("long-term", reload));
   page.querySelector("[data-import]").addEventListener("click", () => importDialog("long-term", reload));
   page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog("long-term", all, reload));
@@ -788,6 +803,210 @@ async function renderProjectsPage() {
   }
 }
 
+// ============ 管道健康卡 + 提取模型卡（U1/V-4 布局 + V-2/U4/U7 模型可视化） ============
+// /state 新字段 tolerant 消费（§三·补 host 契约）：新服务端恒在、缺失=旧版（V-11）。
+// 三态判定/文案/短名/相对时间全走 panel-logic 纯函数（U6 双端一致）；
+// recent[].message 是上游错误串不可信，渲染必过 esc()（E-9）。
+let pipePollTimer = null; // V-5：streak>0 期间 5s 本地轮询；render() 切路由统一清
+let pipeRetryBusy = false; // V-1：手动重试轮询在途——5s 轮询让位（避免卡片重渲染打断按钮 busy 态）
+
+function stopPipePoll() {
+  if (pipePollTimer) { clearInterval(pipePollTimer); pipePollTimer = null; }
+}
+
+/** 分桶 badge 行（零值不渲染——零桶平铺只会稀释病灶）。 */
+function pipeBucketsHtml(ef) {
+  const badges = L.EXTRACTION_BUCKET_KEYS
+    .filter((k) => Number(ef && ef[k] != null ? ef[k] : 0) > 0)
+    .map((k) => `<span class="badge">${esc(k)} ${Number(ef[k])}</span>`);
+  return badges.length > 0 ? badges.join(" ") : '<span class="meta">无失败计数</span>';
+}
+
+/** V-10：aside 设置项红徽标（连击>0 才显示；刷新计数/健康卡轮询顺路更新）。 */
+function updateStreakBadge(streak) {
+  const el = document.querySelector('[data-cnt="extraction-streak"]');
+  if (el) el.textContent = streak > 0 ? String(streak) : "";
+}
+
+/** 管道健康卡（U1）：三态灯 + 分桶 + 最近 5 条详情 + 错过区间 + 失败日志 + 重试/诊断按钮。
+ *  绿态折叠一行摘要（V-4）；红/黄/在途展开病灶。 */
+function buildPipeHealthCard(data) {
+  const efRaw = data.extractionFailures;
+  const ef = efRaw && typeof efRaw === "object" ? efRaw : null;
+  const streak = L.extractionStreakOf(efRaw);
+  const inFlight = data.extractionInFlight === true;
+  const level = L.pipeHealthLevel(efRaw, { inFlight });
+  const dotCls = level === "green" ? "green" : level === "yellow" ? "yellow" : level === "red" ? "red" : "grey";
+  const hasDetail = ef !== null && Array.isArray(ef.recent); // V-11：recent 缺失=旧服务端
+  const parts = [];
+  if (level === "green") {
+    // 绿态折叠（V-4）：健康时只占一行；notice ok 复用三态色板（V-8）
+    const at = data.lastAttemptAt ? ` · 上次尝试 ${L.relativeTimeOf(data.lastAttemptAt)}` : "";
+    parts.push(`<div class="notice show ok" style="margin:6px 0 0">最近无失败${at}</div>`);
+  } else {
+    if (level === "red") {
+      const notice = L.extractionNoticeText(efRaw); // 与门牌红条同文案（U6 双端一致）
+      if (notice) parts.push(`<div class="notice show err" style="margin:6px 0 0">${esc(notice)}</div>`);
+    } else if (level === "yellow") {
+      parts.push('<div class="notice show" style="margin:6px 0 0">近期有过提取失败或重试，现已自动恢复——下方计数供回看。</div>');
+    } else {
+      parts.push('<div class="meta" style="margin:6px 0 0">正在提取，结束后状态自动刷新。</div>');
+    }
+    parts.push(`<div style="margin:8px 0 2px">${pipeBucketsHtml(ef)}</div>`);
+    if (!hasDetail) {
+      // 旧服务端：桶照展示（存量字段），详情面没有就不装样子（V-11 与"recent:[]"不同文案）
+      parts.push('<div class="meta">宿主版本较旧，未提供失败详情（升级宿主后可见最近 5 条病因与失败日志）。</div>');
+    } else {
+      const rows = ef.recent.slice(0, 5).map((r) => {
+        const msg = String(r && r.message != null ? r.message : "");
+        const short = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
+        return `<tr><td class="meta">${esc(L.relativeTimeOf(r && r.at))}</td><td>${esc(r && r.reason)}</td><td class="meta">${esc(L.modelShortName(r && r.model) || "—")}</td><td class="meta" title="${esc(msg)}">${esc(short)}</td></tr>`;
+      }).join("");
+      parts.push(`
+        <div class="tableScroll"><table class="preview">
+          <tr><th style="width:92px">时间</th><th style="width:96px">原因</th><th style="width:150px">模型</th><th>摘要</th></tr>
+          ${rows.length > 0 ? rows : '<tr><td colspan="4" class="meta">暂无最近失败详情。</td></tr>'}
+        </table></div>`);
+      if (data.lastFailedRange && streak > 0) {
+        // V-3 收紧措辞：不承诺具体区间一定补回（会话 disposed/多会话场景）
+        parts.push(`<div class="meta">seq ${Number(data.lastFailedRange.from)} 之后的轮次尚未记录，恢复后自动补提。</div>`);
+      }
+      // V-10：失败日志入口（storageRoot 顶层字段缺失时只显示文件名）
+      const logPath = data.storageRoot ? String(data.storageRoot).replace(/[\\/]+$/, "") + "/extraction-errors.log" : "extraction-errors.log";
+      parts.push(`<div class="meta" style="margin-top:4px">失败日志：<code class="k">${esc(logPath)}</code></div>`);
+    }
+  }
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "data-pipe-health"; // V-9：门牌「详情」深链滚动锚点
+  card.innerHTML = `
+    <h3><span class="dot ${dotCls}"></span>自动提取管道${inFlight ? '<span class="badge">提取中…</span>' : ""}
+      <span class="ops">
+        <button class="btn sm" data-retryExtract>立即重试提取</button>
+        <button class="btn sm" data-copyDiag>复制诊断信息</button>
+      </span>
+    </h3>
+    ${parts.join("")}`;
+  card.querySelector("[data-copyDiag]").addEventListener("click", async () => {
+    let text;
+    try {
+      text = L.diagnosticTextOf(data);
+    } catch {
+      text = JSON.stringify(data, null, 2); // 纯函数组装失败兜底：原始 state 也比空强
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("诊断信息已复制（可直接粘贴到 issue）");
+    } catch (err) { toast("复制失败：" + err.message, "err"); }
+  });
+  const retryBtn = card.querySelector("[data-retryExtract]");
+  retryBtn.addEventListener("click", () => {
+    confirmDialog({
+      title: "立即重试提取",
+      body: "将对仍有未提取区间的会话真的发起一次 LLM 提取（消耗少量 token）。\n期间对话不受影响；结果以这里的管道状态为准。",
+      dangerText: "发起重试",
+      onConfirm: async () => {
+        retryBtn.disabled = true; // V-1 三段式：202 后 busy，绝不同步 toast 成功
+        retryBtn.textContent = "提取中…";
+        let out;
+        try {
+          out = await apiPost("extract/retry"); // 202 {ok,triggered}；409 抛错文案直接透传
+        } catch (err) {
+          retryBtn.disabled = false;
+          retryBtn.textContent = "立即重试提取";
+          toast(err.message, "err");
+          return;
+        }
+        if (Number(out && out.triggered) === 0) {
+          retryBtn.disabled = false;
+          retryBtn.textContent = "立即重试提取";
+          toast("当前没有待重试的提取区间");
+          return;
+        }
+        // V-1：每 2s 轮询 /state 最多 60s，看 streak 清零才算恢复——此路径绝不再次调 retry
+        pipeRetryBusy = true;
+        const deadline = Date.now() + 60000;
+        const poll = async () => {
+          let st = null;
+          try { st = await api("state"); } catch { /* 单次拉取失败：继续轮 */ }
+          if (st && L.extractionStreakOf(st.extractionFailures) === 0) {
+            pipeRetryBusy = false;
+            toast("提取已恢复");
+            refreshPipeCards(); // V-5：流程结束重取 /state 重渲染健康卡
+            return;
+          }
+          if (Date.now() >= deadline) {
+            pipeRetryBusy = false;
+            toast("重试后仍未恢复，查看失败详情", "err");
+            refreshPipeCards();
+            return;
+          }
+          setTimeout(poll, 2000);
+        };
+        setTimeout(poll, 2000);
+      },
+    });
+  });
+  return card;
+}
+
+/** 提取模型卡（V-2/U4 两个诚实字段 + U7 嵌入模型预留位）：config 如实展示，
+ *  实时跟随值（sessionStates）API 层摸不到，不装样子。 */
+function buildPipeModelCard(data) {
+  const cfg = data.extractionConfig && typeof data.extractionConfig === "object" ? data.extractionConfig : {};
+  const used = data.lastUsedRoute && typeof data.lastUsedRoute === "object" ? data.lastUsedRoute : null;
+  const emb = data.embeddingConfig && typeof data.embeddingConfig === "object" ? data.embeddingConfig : {};
+  const fb = Array.isArray(cfg.fallback) ? cfg.fallback : [];
+  const route = cfg.provider || cfg.model
+    ? `${esc(cfg.provider ?? "—")} / ${esc(cfg.model ?? "—")}`
+    : "未指定（跟随会话路由）";
+  const fbText = fb.length > 0 ? fb.map((f) => `${esc(f && f.provider ? f.provider : "—")} / ${esc(f && f.model ? f.model : "—")}`).join("、") : "无";
+  const usedText = used
+    ? `${esc(used.provider ?? "—")} / ${esc(used.model ?? "—")} · ${L.relativeTimeOf(used.at)}`
+    : "尚未有提取";
+  const embText = emb.provider || emb.model
+    ? `${esc(emb.provider ?? "—")} / ${esc(L.modelShortName(emb.model) || "—")}`
+    : "未配置——向量语义召回尚未启用，此位留给 embed-model 2 一类本地嵌入模型";
+  const inFlight = data.extractionInFlight === true;
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "data-pipe-model";
+  card.innerHTML = `
+    <h3>提取模型${inFlight ? '<span class="badge">提取中…</span>' : ""}</h3>
+    <div class="kv"><b>提取路由</b><span>${route}<span class="meta"> · fallback：${fbText}</span></span></div>
+    <div class="kv"><b>最近一次提取用车</b><span>${usedText}</span></div>
+    <div class="kv"><b>嵌入模型（语义召回预留）</b><span>${embText}</span></div>
+    <div class="meta">提取默认跟随会话路由；要指定更稳的车型，在 cordis.patch.yml 给 dsh-memory 配 provider/model 或 fallback（配法见 README，不硬编码任何模型）。</div>`;
+  return card;
+}
+
+/** 重取 /state 就地重渲染两张管道卡（V-5：重试流程结束 / 5s 轮询共用入口）。 */
+async function refreshPipeCards() {
+  const health = document.getElementById("data-pipe-health"); // await 前取引用：中途切路由后 replaceWith 落在脱挂节点，无害
+  if (!health) { stopPipePoll(); return; } // 路由已切走：清 timer 即可
+  let data;
+  try {
+    data = await api("state");
+  } catch {
+    return; // 单次拉取失败保留旧卡，下轮轮询再试
+  }
+  health.replaceWith(buildPipeHealthCard(data));
+  const model = document.getElementById("data-pipe-model");
+  if (model) model.replaceWith(buildPipeModelCard(data));
+  updateStreakBadge(L.extractionStreakOf(data.extractionFailures)); // V-10 顺路更新红徽标
+  schedulePipePoll(data);
+}
+
+/** streak>0 期间 5s 本地轮询（V-5）；手动重试轮询在途时让位（重试流自管节奏）。 */
+function schedulePipePoll(data) {
+  stopPipePoll();
+  if (L.extractionStreakOf(data.extractionFailures) < 1) return;
+  pipePollTimer = setInterval(() => {
+    if (!document.getElementById("data-pipe-health")) { stopPipePoll(); return; } // 双保险：路由切走
+    if (!pipeRetryBusy) refreshPipeCards();
+  }, 5000);
+}
+
 // ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
 async function renderSettingsPage() {
   const seq = ++pageRenderSeq;
@@ -816,10 +1035,7 @@ async function renderSettingsPage() {
   if (data.corrupt) corruptBits.push("settings.json（开关）");
   if (data.addressingCorrupt) corruptBits.push("addressing.json（称呼）");
   if (data.personaCorrupt) corruptBits.push("persona.md（人设）");
-  // P-PIPE1：extractionFailures 是分桶对象 {no-route,...,streak}（旧服务端可能缺）——
-  // 红条文案是"最近连续失败"，取 streak；对象缺席时按数字兜底。
-  const efRaw = data.extractionFailures;
-  const extractionFailures = efRaw && typeof efRaw === "object" ? Number(efRaw.streak ?? 0) : Number(efRaw ?? 0);
+  // V-4 布局：开关卡 → 管道健康卡（承接原单行红卡）→ 提取模型卡 → corrupt 卡 → 数据卡 → 备份卡
   page.innerHTML = `
     <div class="card"><h3>开关</h3>
       ${switchRow("conversationMemory", "对话记忆（总开关）", "关闭后不带任何记忆、也不再自动记录")}
@@ -827,8 +1043,9 @@ async function renderSettingsPage() {
       ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
       <div class="meta" data-swHint>改动即时生效（下一轮对话）。</div>
     </div>
+    <div data-pipeHealth></div>
+    <div data-pipeModel></div>
     ${corruptBits.length > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">解析失败（已按缺省运行）：${corruptBits.map(esc).join("、")}——点任意开关 / 重新保存对应内容即可重写修复。</div>` : ""}
-    ${extractionFailures > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">记忆管道：最近连续 ${extractionFailures} 次自动提取失败，期间对话内容可能未被记录（服务端恢复后自动重试，详见服务端日志）。</div>` : ""}
     <div class="card"><h3>数据</h3>
       <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
       <div class="kv"><b>清空</b><button class="btn danger" data-clearAll>清空全部记忆（逐类自动备份）</button></div>
@@ -840,6 +1057,16 @@ async function renderSettingsPage() {
           <button class="btn sm" data-restore="${esc(b.id)}">恢复此备份</button>
         </div>`).join("")}
     </div>`;
+  // 管道健康卡 + 提取模型卡（元素卡：重试与轮询只重渲染这两张，不打扰开关/备份区）
+  page.querySelector("[data-pipeHealth]").replaceWith(buildPipeHealthCard(data));
+  page.querySelector("[data-pipeModel]").replaceWith(buildPipeModelCard(data));
+  schedulePipePoll(data); // V-5：streak>0 期间 5s 本地轮询（render 切路由统一清）
+  // V-9：门牌「详情」深链落地——面板初载即 #/settings 时滚到健康卡；
+  // 内部导航（backDepth>0）不强制滚动，避免每次进设置页都被拽到中段
+  if (location.hash === "#/settings" && backDepth === 0) {
+    const anchor = document.getElementById("data-pipe-health");
+    if (anchor) anchor.scrollIntoView({ block: "start" });
+  }
   for (const input of Array.from(page.querySelectorAll("[data-sw]"))) {
     input.addEventListener("change", async () => {
       const key = input.getAttribute("data-sw");
@@ -921,6 +1148,7 @@ function currentRoute() {
   return ROUTES[hash] ? hash : "category/work-profile";
 }
 function render() {
+  stopPipePoll(); // V-5：路由切走必须清健康卡轮询 timer（设置页重进时再按 streak 重建）
   const route = currentRoute();
   const cfg = ROUTES[route];
   document.querySelectorAll("aside a").forEach((a) => a.classList.toggle("on", a.getAttribute("data-route") === route));
@@ -939,9 +1167,12 @@ window.addEventListener("hashchange", render);
 function refreshCounts() {
   api("state").then((data) => {
     const byCat = (data.counts && data.counts.byCategory) || {};
+    const streak = L.extractionStreakOf(data.extractionFailures); // V-10：设置项红徽标顺路更新
     document.querySelectorAll("[data-cnt]").forEach((el) => {
       const key = el.getAttribute("data-cnt");
-      const n = key === "projects" ? (data.counts ? data.counts.projects : 0) : (byCat[key] || 0);
+      const n = key === "extraction-streak" ? streak
+        : key === "projects" ? (data.counts ? data.counts.projects : 0)
+        : (byCat[key] || 0);
       el.textContent = n > 0 ? String(n) : "";
     });
   }).catch(() => { /* 计数失败不炸导航 */ });
@@ -950,6 +1181,8 @@ function refreshCounts() {
 window.addEventListener("load", () => {
   startThemeBridge();
   refreshCounts();
+  // V-10：30s 轻轮询——顺路保 aside 计数与提取红徽标不过期（页面级 interval，随页回收）
+  setInterval(refreshCounts, 30000);
   render();
 });
 </script>

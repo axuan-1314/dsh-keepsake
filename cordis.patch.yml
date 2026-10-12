@@ -9,17 +9,15 @@
       name: dsh-memory
       config:
         enabled: true
-        # 批次A（v0.2.0）：注入通道。message=durable 用户消息通道（默认，全 preset 生效，
+        # 注入通道（v0.2.0）：message=durable 用户消息通道（默认，全 preset 生效，
         # 根治 minimal 预设 complete:true 静默丢注入）；section=旧四段 systemPrompt 注入（一键回滚）。
         injectChannel: message
         injectMaxChars: 60000
-        # 批次B B1（v0.3.0）：语义召回。本机（作者环境）指向本地 embed-model-2 服务：
-        # http://127.0.0.1:11434/v1/embeddings（OpenAI 兼容，768 维）——记忆文本不出本机。
-        # 他人部署请改成自己的端点，或把 recallEnabled 置 false（不配置即不产生任何嵌入调用）。
-        recallEnabled: true
-        embeddingProvider: local-eg2
-        embeddingModel: onnx-community/embed-model-2-ONNX
-        embeddingBaseUrl: http://127.0.0.1:11434/v1/embeddings
+        # 语义召回（可选，默认关）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦检索。
+        # 需同时配 embeddingBaseUrl + embeddingModel（OpenAI 兼容端点，见 README「配置」），
+        # 缺一启动即抛（fail loud）。不配置则不产生任何外部调用（记忆文本不出本机）。
+        # 示例端点：本地 ollama → http://127.0.0.1:11434/v1/embeddings
+        recallEnabled: false
         provider: null
         model: null
         minUserWords: 3

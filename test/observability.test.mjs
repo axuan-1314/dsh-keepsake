@@ -39,9 +39,9 @@ test("F2 E-6 sanitizeLogMessage：剥 CR/LF 防注入假行 + 截 200", () => {
 });
 
 test("F2 E-6 formatErrorLogLine：[ISO] [pid] reason provider/model 摘要", () => {
-  const line = formatErrorLogLine({ at: 1730000000000, reason: "llm-error", provider: "example-provider", model: "group/example-model", message: "429: Endpoint is unavailable" }, 4321);
+  const line = formatErrorLogLine({ at: 1730000000000, reason: "llm-error", provider: "acme", model: "group/chat-model", message: "429: Endpoint is unavailable" }, 4321);
   assert.ok(line.startsWith("[2025-10-27T") || line.startsWith("[20"), line);
-  assert.ok(line.includes("[4321] llm-error provider=example-provider model=group/example-model 429: Endpoint is unavailable\n"), line);
+  assert.ok(line.includes("[4321] llm-error provider=acme model=group/chat-model 429: Endpoint is unavailable\n"), line);
   // 无路由字段时不留空尾巴
   const bare = formatErrorLogLine({ at: 1730000000000, reason: "no-cwd", message: "x" }, 1);
   assert.ok(bare.includes("] no-cwd x"), bare);
@@ -111,11 +111,11 @@ test("F2 metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷�
   __resetMetricsForTest();
   setExtractionFailedRange(473, 478);
   setExtractionInFlight(true);
-  noteExtractionAttempt({ provider: "example-provider", model: "group/x" });
+  noteExtractionAttempt({ provider: "acme", model: "group/x" });
   const obs = extractionObservationSnapshot();
   assert.deepEqual(obs.lastFailedRange, { from: 473, to: 478 });
   assert.equal(obs.extractionInFlight, true);
-  assert.equal(obs.lastUsedRoute.provider, "example-provider");
+  assert.equal(obs.lastUsedRoute.provider, "acme");
   assert.equal(typeof obs.lastAttemptAt, "number");
   // 快照是拷贝：外改不污染内部态
   obs.lastFailedRange.from = 999;

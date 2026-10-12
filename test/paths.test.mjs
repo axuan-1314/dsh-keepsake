@@ -6,8 +6,8 @@ import { hashProjectPath, projectMemoryPaths, slugifyBasename } from "../lib/pat
 
 test("slugifyBasename: 基本净化", () => {
   assert.equal(slugifyBasename("My App"), "my-app");
-  assert.equal(slugifyBasename("workspace"), "project"); // 非法字符全替换后为空
-  assert.equal(slugifyBasename("another-plugin"), "another-plugin");
+  assert.equal(slugifyBasename("项目目录"), "project"); // 非 ASCII 字符全替换后为空
+  assert.equal(slugifyBasename("some-project"), "some-project");
   assert.equal(slugifyBasename("My Cool App!"), "my-cool-app");
 });
 
@@ -30,14 +30,14 @@ test("hashProjectPath: sha256 前 16 hex，win32 小写化", () => {
 });
 
 test("projectMemoryPaths: 布局 <root>/projects/<slug>-<hash>/memory", () => {
-  const paths = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\my-app");
-  const hash = hashProjectPath("D:\\my-app");
+  const paths = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\项目目录");
+  const hash = hashProjectPath("D:\\项目目录");
   assert.equal(paths.slug, "project");
   assert.ok(paths.projectDir.includes(`projects\\project-${hash}`) || paths.projectDir.includes(`projects/project-${hash}`));
   assert.ok(paths.memoryDir.endsWith("memory"));
   // 同一 cwd 不同大小写（win32）→ 同一目录
-  const paths2 = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\MYAPP...");
+  const paths2 = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\MYPROJ...");
   if (process.platform === "win32") {
-    assert.equal(paths2.slug, "myapp");
+    assert.equal(paths2.slug, "myproj");
   }
 });

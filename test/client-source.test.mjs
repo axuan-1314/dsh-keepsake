@@ -162,7 +162,7 @@ test("防漂移：红条文案兜底 extractionNoticeTextFallback 与实现表�
     { streak: 0, recent: [] },
     { streak: 3, streakReason: "llm-error" }, // 旧对象形态（无 recent）
     { streak: 3, recent: [] },
-    { streak: 3, recent: [{ reason: "llm-error", model: "group/example-model", message: "429" }] },
+    { streak: 3, recent: [{ reason: "llm-error", model: "group/chat-model", message: "429" }] },
     { streak: 1, recent: [{ reason: "io-error" }] },
     { streak: 2, recent: [{ model: "a/b" }] },
     { streak: 2, recent: [], streakReason: "parse-error" },

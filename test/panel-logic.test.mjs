@@ -272,7 +272,7 @@ test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed，顺序稳�
 });
 
 test("modelShortName：取路径末段（U2 门牌车型）；无斜杠原样；空/null 防御", () => {
-  assert.equal(modelShortName("group/example-model"), "example-model");
+  assert.equal(modelShortName("group/chat-model"), "chat-model");
   assert.equal(modelShortName("a/b/c"), "c");
   assert.equal(modelShortName("auto-glm"), "auto-glm");
   assert.equal(modelShortName("embed-model 2"), "embed-model 2"); // U7：无路径嵌入模型原样展示
@@ -331,8 +331,8 @@ test("extractionNoticeText：新版带病因+车型短名；streak 0 → 空；�
   assert.equal(extractionNoticeText({ streak: 0, recent: [] }), "");
   // 新版主形态（U2 行1：计数 · 病因（车型末段））
   assert.equal(
-    extractionNoticeText({ streak: 3, recent: [{ reason: "llm-error", at: 1, provider: "example-provider", model: "group/example-model", message: "429 …" }] }),
-    "自动提取失败 3 次 · 最近：llm-error（example-model）",
+    extractionNoticeText({ streak: 3, recent: [{ reason: "llm-error", at: 1, provider: "acme", model: "group/chat-model", message: "429 …" }] }),
+    "自动提取失败 3 次 · 最近：llm-error（chat-model）",
   );
   assert.equal(extractionNoticeText({ streak: 1, recent: [{ reason: "io-error" }] }), "自动提取失败 1 次 · 最近：io-error");
   assert.equal(extractionNoticeText({ streak: 2, recent: [] }), "自动提取失败 2 次", "有 recent 字段但空（≠旧版文案）");
@@ -367,14 +367,14 @@ test("diagnosticTextOf：版本/全量分桶（含零值）/最近失败摘要/�
       "no-route": 0, "no-cwd": 0, "llm-error": 4, "parse-error": 0, "io-error": 1,
       retried: 2, fallbackUsed: 0, streak: 3, streakReason: "llm-error",
       recent: [
-        { reason: "llm-error", at: now - 60000, provider: "example-provider", model: "group/example-model", message: "429 Endpoint is unavailable" },
+        { reason: "llm-error", at: now - 60000, provider: "acme", model: "group/chat-model", message: "429 Endpoint is unavailable" },
         { reason: "io-error", at: now - 3600000 },
       ],
     },
     lastFailedRange: { from: 473, to: 478 },
     extractionInFlight: false,
     lastAttemptAt: now - 60000,
-    lastUsedRoute: { provider: "example-provider", model: "group/example-model", at: now - 60000 },
+    lastUsedRoute: { provider: "acme", model: "group/chat-model", at: now - 60000 },
   };
   const text = diagnosticTextOf(state, now);
   assert.match(text, /\/state 版本：1/);
@@ -383,8 +383,8 @@ test("diagnosticTextOf：版本/全量分桶（含零值）/最近失败摘要/�
   assert.match(text, /io-error 1/);
   assert.match(text, /retried 2/);
   assert.match(text, /no-route 0/, "诊断文本分桶含零值（区别于 UI badge 的零值不渲染）");
-  assert.match(text, /llm-error example-provider\/group\/example-model：429 Endpoint is unavailable/);
-  assert.match(text, /example-provider\/group\/example-model（1 分钟前）/);
+  assert.match(text, /llm-error acme\/group\/chat-model：429 Endpoint is unavailable/);
+  assert.match(text, /acme\/group\/chat-model（1 分钟前）/);
   assert.match(text, /未恢复区间：seq 473 之后/);
   assert.match(text, /提取中：否/);
   // 旧版宿主：无 recent / 无 lastUsedRoute

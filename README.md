@@ -5,8 +5,10 @@
 - **插件版本**：0.2.0（以 `package.json` 为准）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
+- **前置条件**：已安装 DSH（web / headless / desktop 任一 profile）；Node ≥ 18；**零运行时依赖**（无需 `npm install`）
+- **许可**：MIT License（见 [LICENSE](LICENSE)）
 
-移植自 ZCode 项目记忆子系统（T2 规格），v1 采用单次 LLM 调用简化提取。
+设计参考同类 agent 的项目记忆子系统；v1 采用单次 LLM 调用简化提取。
 
 ## 目录
 
@@ -105,7 +107,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **错过区间提示**：「seq X 之后的轮次尚未记录，恢复后自动补提」——告诉你哪些对话可能漏记了。
 - **「立即重试提取」按钮**：对仍有未提取区间的会话真的发起一次 LLM 提取（有确认弹窗，明示消耗少量 token）；点击后按钮进入 busy 态，面板每 2 秒轮询状态最多 60 秒，恢复即提示「提取已恢复」。10 秒最小间隔，提取在途时返回 409。
 - **「复制诊断信息」按钮**：一键复制当前状态摘要，可直接粘贴到 issue。
-- **提取模型卡**：如实展示提取路由（显式配置的 `provider`/`model`，或「未指定（跟随会话路由）」）、fallback 换道配置、最近一次提取用车（路由 + 相对时间）、嵌入模型预留位（U7，语义召回尚未启用时的诚实占位）。
+- **提取模型卡**：如实展示提取路由（显式配置的 `provider`/`model`，或「未指定（跟随会话路由）」）、fallback 换道配置、最近一次提取用车（路由 + 相对时间）、嵌入模型（语义召回所用；未配置时显示为未启用）。
 
 ### 失败韧性：重试、分类、落盘留痕
 
@@ -113,7 +115,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 - **可取消退避重试**：单次提取最多 3 次 attempt（含首次），指数退避 500ms 起步、2s 封顶（jitter ±20%）；上游带 `Retry-After` 时优先采用（钳制防恶意长等）。插件卸载/进程退出时退避立即中断，不白等。
 - **失败分类**：按内核 `failure.code` 判可重试（EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT）；AUTH / INVALID_REQUEST / QUOTA 这类确定性失败立即摊牌，不浪费 attempt。
-- **换道兜底**（批次A M6）：主道 attempt 链不可恢复失败后，按 `fallback` 配置逐条换道（换道同样走完整 attempt 链）；换道成功计入 `/state` 的 `fallbackUsed` 并把最近用车指向该道。未配置 `fallback` 时行为与纯重试完全一致。
+- **换道兜底**（v0.2.0）：主道 attempt 链不可恢复失败后，按 `fallback` 配置逐条换道（换道同样走完整 attempt 链）；换道成功计入 `/state` 的 `fallbackUsed` 并把最近用车指向该道。未配置 `fallback` 时行为与纯重试完全一致。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`——常开，不依赖任何环境变量；只记摘要（时间 / pid / 原因 / 路由 / 错误摘要），**不含会话内容**；超过 512KB 轮转两档。
 - **结构性失败显式放弃**：无路由 / 无 cwd 这类重试不可能自愈的失败，连续 5 次后显式放弃该区间并记 error 日志，不无限积压。
 - **单条容错**：模型输出里个别畸形操作跳单处理（好条目照常落盘）；单条 IO 失败隔离上报，不阻断整批。
@@ -131,12 +133,14 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 ### 安装
 
+本插件经 **git 安装**（`dsh plugin add <本仓库的本地克隆路径或 git URL>`），未发布到 npm（`package.json` 保留 `private: true` 以防误发布）。
+
 ```bash
-dsh plugin --profile web add D:\dsh-keepsake       # 或 headless / desktop
-dsh --profile web --dump-config                  # 验证 entry 入树
+dsh plugin --profile web add <克隆到本地的仓库路径>   # 或 git URL；profile 可选 web / headless / desktop
+dsh --profile web --dump-config                    # 验证 entry 入树
 ```
 
-三个 profile 的安装均为 **symlink（link:D:\dsh-keepsake）**，源码改动无需同步拷贝；但运行中的 desktop 实例吃到新代码需 HMR 重载或重启应用（headless 每次启动天然取最新）。
+三个 profile 的安装均为 **symlink（`link:<克隆路径>`）**，源码改动无需同步拷贝；但运行中的 desktop 实例吃到新代码需 HMR 重载或重启应用（headless 每次启动天然取最新）。
 
 安装即启用：`cordis.patch.yml` 显式 `enabled: true`（代码缺省关，fail-closed），开关状态在 YAML 里可见。
 
@@ -169,7 +173,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `maxPromptChars` | 48000 | 增量 transcript 截断 |
 | `maxOps` | 20 | 单轮最多写/删条数 |
 | `recentKeepCount` / `recentKeepDays` | 30 / 30 | 近期动态滚动清理：最多保留条数 / 最大年龄天数 |
-| `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次；批F1 韧性链） |
+| `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次） |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | 指数退避首档与上限（jitter ±20%；上游带 Retry-After 时优先、钳 ≤3×上限） |
 | `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
 | `embeddingProvider` / `embeddingModel` | 空 | 嵌入模型（成对可选）。开启 `recallEnabled` 后 `embeddingModel` 必填；`embeddingProvider` 仅作面板标签（如 `ollama`） |
@@ -180,7 +184,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
 | `recallTimeoutMs` | 8000 | 单次嵌入调用超时。**实机实测**：本地 CPU 嵌入服务独立调用 ~0.6s，但**宿主进程内**竞争下可达数秒——故默认留足余量；端点真死会连接被拒秒退，只有慢端点才吃满（超时按失败降级：本轮不召回） |
 
-失败分类（批F1 E-1）：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
+失败分类：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
 
 配置严格性：未知 config 键即抛错（带 did-you-mean 建议），非法值即抛——fail loud，不静默吞错配。
 
@@ -250,7 +254,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
 - **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首一行免责/署名：记忆是参考上下文、非任务指令；subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
-- **语义召回**（可选，`recallEnabled`，批次B B1）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
+- **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 为进程内状态不持久化；插件中途挂载/恢复的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
@@ -259,10 +263,10 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 可观测与运维
 
 - **提取失败计数**：`/dsh-memory/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
-- **观测面（批F2）**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（U7 预留位）；面板设置页有「管道健康卡」承载以上全部。
-- **注入面（批次A v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
-- **召回面（批次B B1）**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
-- **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_MEMORY_DEBUG`，常开——10-09 停摆事故里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
+- **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（嵌入召回配置）；面板设置页有「管道健康卡」承载以上全部。
+- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
+- **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
+- **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_MEMORY_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-memory/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
 - **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
 - **debug 日志口**：`DSH_MEMORY_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
@@ -280,16 +284,16 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 
 ## 已知限制
 
-- **规格 taskType 过滤未移植**：ZCode 侧按任务类型（interactive/fork/…）过滤提取资格；本插件对所有会话生效，依赖 skip 双门槛（无 ≥3 词散文 / 直写轮）兜底抑制噪声。
+- **规格 taskType 过滤未移植**：上游规格按任务类型（interactive/fork/…）过滤提取资格；本插件对所有会话生效，依赖 skip 双门槛（无 ≥3 词散文 / 直写轮）兜底抑制噪声。
 - **相对路径 file_path 的直写判定偏保守**：`transcript.js` 对 write/edit 的 `file_path` 以 memoryRoot 为基解析相对路径，恰好落在记忆目录内的相对路径会判为"直写轮"而 skip 提取——方向保守（多 skip、不漏存），安全。
-- **单次 LLM 调用**（非 ZCode 的提取子任务 loop，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
-- **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
+- **单次 LLM 调用**（非提取子任务 loop 形态，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
+- **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与上游规格同构）。
 - **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。
 - **单条覆盖写无编辑历史**（全面审查 P3-12 有意不修）：PUT persona / PUT entry 直接替换旧文——粘贴错内容保存即丢旧文；批量破坏路径（reset/import/restore）有自动备份，单条覆盖请自行先导出兜底。
 - **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 40 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
-- **注入块在会话内可能累积**（批次A 已知）：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
+- **注入块在会话内可能累积**：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
 - **`injectMaxChars` 是软上限**：超限追加的可见截断提示行不计入预算，最终字符数可能略超该值（默认 60000 下不触发，仅护栏）。
-- **防自食只覆盖自家注入**（批次A 范围）：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
-- **回声抑制是标签级**（批次B B4）：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind`（M3）兜底，但意译文本不可辨。
-- **语义召回按轮嵌入查询**（批次B B1）：开启后每轮对当前用户消息嵌一次（受 `recallTimeoutMs` 约束，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
-- **召回块的会话内累积**（批次B B1）：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。
+- **防自食只覆盖自家注入**：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
+- **回声抑制是标签级**：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind`（M3）兜底，但意译文本不可辨。
+- **语义召回按轮嵌入查询**：开启后每轮对当前用户消息嵌一次（受 `recallTimeoutMs` 约束，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
+- **召回块的会话内累积**：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。

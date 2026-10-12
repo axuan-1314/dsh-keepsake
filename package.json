@@ -1,7 +1,7 @@
 {
   "name": "dsh-memory",
   "version": "0.2.0",
-  "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 durable 用户消息通道注入人设/索引（injectChannel 可回退到 systemPrompt 注入）。移植自 ZCode 项目记忆子系统 T2 规格，v1 单次调用简化。",
+  "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 durable 用户消息通道注入人设/索引（injectChannel 可回退到 systemPrompt 注入）。v1 单次调用简化提取。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -13,7 +13,8 @@
   "files": [
     "lib/",
     "web/",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "FORMAT.md"
   ],
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
@@ -26,6 +27,18 @@
     "memory"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/axuan-1314/dsh-memory.git"
+  },
+  "homepage": "https://github.com/axuan-1314/dsh-memory#readme",
+  "bugs": {
+    "url": "https://github.com/axuan-1314/dsh-memory/issues"
+  },
+  "author": "axuan-1314",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {},
   "dsh": {
     "bundle": {

@@ -1,0 +1,20 @@
+# dependencies / build artifacts
+node_modules/
+*.tgz
+
+# logs & local runtime state
+*.log
+*.log.*
+
+# local / secrets
+.env
+.env.*
+*.local
+*.local.yml
+cordis.local.patch.yml
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

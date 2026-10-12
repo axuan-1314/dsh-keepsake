@@ -1,6 +1,6 @@
 # dsh-memory 记忆文件格式（FORMAT）
 
-> 目标：dsh-memory 写出的记忆是**纯 markdown + YAML frontmatter**——人类可读、可进 git、可被其他 agent（ZCode 记忆、memory vault…）直接复用。本页是该格式的唯一权威说明，也是跨 agent 互认的约定（ROADMAP 批 D D5）。字段口径与 `lib/global-store.js`（全局）、`lib/extract.js`（项目）的写盘实现一一对应。
+> 目标：dsh-memory 写出的记忆是**纯 markdown + YAML frontmatter**——人类可读、可进 git、可被其他 agent 直接复用。本页是该格式的唯一权威说明，也是跨 agent 互认的约定（见 ROADMAP）。字段口径与 `lib/global-store.js`（全局）、`lib/extract.js`（项目）的写盘实现一一对应。
 
 ## 一、文件布局
 
@@ -59,7 +59,7 @@ node_type: "memory"
 | `description` | 是 | 一行钩子，进索引行（≤150 字符提示）；也是语义召回的嵌入文本之一 |
 | `metadata.type` | 是 | 见下「类型」；全局记忆恒为 `global` |
 | `metadata.timestamp` | 仅 recent-activity | ISO 时间，**宿主盖章**（不信模型） |
-| `node_type` | 是 | 恒 `"memory"`（memory vault同款标记，便于跨库识别） |
+| `node_type` | 是 | 恒 `"memory"`（跨库识别用的稳定标记） |
 | `originSessionId` | 项目 | 产出该条目的会话 id（可追溯） |
 
 **类型（`metadata.type`，项目记忆）**：
@@ -92,7 +92,7 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 
 ## 六、跨 agent 互认约定
 
-本格式有意与 **ZCode 记忆子系统** 与 **memory vault**（`[[memory-conventions]]`）对齐，使同一套记忆文件可被多个 agent 直接读取：
+本格式有意与常见 markdown 记忆约定对齐，使同一套记忆文件可被多个 agent 直接读取：
 
 - **frontmatter 四字段**：`name` / `description` / `metadata.type` / `node_type` 三处同名同义；
 - **互链语法**：`[[name]]`（悬空链接合法，指向尚未存在的条目）；
@@ -103,5 +103,5 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 
 ## 七、不做 / 预留
 
-- **墓碑删除**（`deleted:` 元数据）**预留不实现**：本插件纯本地单机，暂无多端合并需求；为将来 git 同步/跨 agent 合并预留一个可选 `deleted` 字段位置即可（ROADMAP 批 D 注明不单独排批）。
+- **墓碑删除**（`deleted:` 元数据）**预留不实现**：本插件纯本地单机，暂无多端合并需求；为将来 git 同步/跨 agent 合并预留一个可选 `deleted` 字段位置即可（见 ROADMAP，不单独排批）。
 - **不引入 JSON 真源**：本插件 markdown 即真源（区别于以 JSON 为真源、markdown 为渲染产物的方案），保证"用户能直接打开编辑"。

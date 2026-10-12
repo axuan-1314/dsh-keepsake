@@ -1,5 +1,5 @@
 // 批F1 提取调用重试韧性：错误分类（E-1 route on code）/ 重试链+drain 纪律（E-2）/
-// 退避参数与纯函数（E-3）/ retried·lastRecoveredAt 计数（E-4）/ fallback 配置骨架（E-5）。
+// 退避参数与纯函数（E-3）/ retried·lastRecoveredAt 计数（E-4）/ fallback 换道接线（E-5 + 批次A M6）。
 // 假 ctx 配方照 test/entry.test.mjs；DATA_DIR 隔离照各测试的 mkdtempSync(tmpdir())，
 // 不写 ~/.dsh 真实数据、不真实调用任何 LLM（stream 全假队列）。
 import assert from "node:assert/strict";
@@ -505,19 +505,15 @@ test("F1 E-5 resolveConfig：未知键 did-you-mean 提示（failbacks→fallbac
   assert.throws(() => resolveConfig({ enabled: true, retryMaxDelay: 1 }), /did you mean "retryMaxDelayMs"\?/);
 });
 
-test("F1 E-5 fallback 骨架 inert：配了 fallback 也不换道（本批只校验+持有）", async () => {
+test("批次A M6 fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + 落盘", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-skel-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-fb-skel-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-wire-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-fb-wire-"));
   try {
-    const fail = failingStream({ code: "SERVER", status: 503, message: "upstream down" }); // 流工厂（async generator function），queuedStream entry() 调用得 iterator
-    const queue = [fail, fail, fail];
-    let fbTicks = 0;
-    const fbSettled = () => {
-      fbTicks += 1;
-      return fbTicks >= 10;
-    };
+    const fail = failingStream({ code: "SERVER", status: 503, message: "upstream down" });
+    const queue = [fail, fail, okStream()]; // 主道 2 attempt 全败 → 换道 1 次成功
+    const target = join(projectMemoryPaths(root, workspace).memoryDir, "retry-works.md");
     const { streamCalls } = await runExtraction({
       root,
       workspace,
@@ -528,12 +524,48 @@ test("F1 E-5 fallback 骨架 inert：配了 fallback 也不换道（本批只校
         fallback: [{ provider: "fb-prov", model: "fb-model" }],
       },
       streamImpl: queuedStream(queue),
-      waitFor: fbSettled,
+      waitFor: () => existsSync(target),
     });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(streamCalls.length, 2, "主道 attempt 数不变（fallback 本批不接线）");
-    assert.equal(extractionFailureSnapshot().fallbackUsed, 0, "fallbackUsed 恒 0");
-    assert.ok(streamCalls.every((c) => c.provider === "prov" && c.model === "model-x"), "不得提前换道");
+    assert.equal(existsSync(target), true, "换道成功后应落盘");
+    assert.equal(streamCalls.length, 3, "主道 2 attempt + 换道 1 attempt");
+    assert.ok(streamCalls[0].provider === "prov" && streamCalls[0].model === "model-x", "第 1 次走主道");
+    assert.ok(streamCalls[1].provider === "prov" && streamCalls[1].model === "model-x", "第 2 次仍走主道（未提前换道）");
+    assert.ok(streamCalls[2].provider === "fb-prov" && streamCalls[2].model === "fb-model", "主道耗尽后才换道");
+    const snap = extractionFailureSnapshot();
+    assert.equal(snap.fallbackUsed, 1, "换道成功计一次");
+    assert.equal(snap.streak, 0, "换道成功=恢复，无失败连击");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("批次A M6 fallback：配了但全败 → 报 error、fallbackUsed 不加、不落盘", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-fail-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-fb-fail-"));
+  try {
+    const fail = failingStream({ code: "SERVER", status: 503, message: "down" });
+    const queue = [fail, fail, fail, fail]; // 主道 2 + 换道 2（换道同样走完整 attempt 链）全败
+    const target = join(projectMemoryPaths(root, workspace).memoryDir, "retry-works.md");
+    const { streamCalls } = await runExtraction({
+      root,
+      workspace,
+      config: {
+        retryAttempts: 2,
+        retryBackoffMs: 5,
+        retryMaxDelayMs: 20,
+        fallback: [{ provider: "fb-prov", model: "fb-model" }],
+      },
+      streamImpl: queuedStream(queue),
+      waitFor: settleAfter(12),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(streamCalls.length, 4, "主道 2 + 换道 2（队列越界哨兵兜底更多调用）");
+    assert.equal(extractionFailureSnapshot().fallbackUsed, 0, "全败不记换道成功");
+    assert.equal(existsSync(target), false, "全败不落盘");
+    assert.ok(streamCalls.every((c) => c.provider === "prov" || c.provider === "fb-prov"), "两道路由都试过");
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });

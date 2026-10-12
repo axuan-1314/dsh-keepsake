@@ -105,6 +105,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 - **可取消退避重试**：单次提取最多 3 次 attempt（含首次），指数退避 500ms 起步、2s 封顶（jitter ±20%）；上游带 `Retry-After` 时优先采用（钳制防恶意长等）。插件卸载/进程退出时退避立即中断，不白等。
 - **失败分类**：按内核 `failure.code` 判可重试（EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT）；AUTH / INVALID_REQUEST / QUOTA 这类确定性失败立即摊牌，不浪费 attempt。
+- **换道兜底**（批次A M6）：主道 attempt 链不可恢复失败后，按 `fallback` 配置逐条换道（换道同样走完整 attempt 链）；换道成功计入 `/state` 的 `fallbackUsed` 并把最近用车指向该道。未配置 `fallback` 时行为与纯重试完全一致。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`——常开，不依赖任何环境变量；只记摘要（时间 / pid / 原因 / 路由 / 错误摘要），**不含会话内容**；超过 512KB 轮转两档。
 - **结构性失败显式放弃**：无路由 / 无 cwd 这类重试不可能自愈的失败，连续 5 次后显式放弃该区间并记 error 日志，不无限积压。
 - **单条容错**：模型输出里个别畸形操作跳单处理（好条目照常落盘）；单条 IO 失败隔离上报，不阻断整批。
@@ -162,7 +163,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `recentKeepCount` / `recentKeepDays` | 30 / 30 | 近期动态滚动清理：最多保留条数 / 最大年龄天数 |
 | `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次；批F1 韧性链） |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | 指数退避首档与上限（jitter ±20%；上游带 Retry-After 时优先、钳 ≤3×上限） |
-| `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。**当前仅校验+持有（inert）**，换道调用逻辑未实现 |
+| `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
 | `embeddingProvider` / `embeddingModel` | 空 | **语义召回预留位（U7）**：成对可选，配了只在面板「嵌入模型」卡展示（如 embed-model 2 一类本地嵌入模型）；向量召回管线尚未存在，不产生任何调用 |
 
 失败分类（批F1 E-1）：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
@@ -252,7 +253,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，267 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，268 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 

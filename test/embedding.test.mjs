@@ -136,6 +136,15 @@ test("④b parseEmbeddingResponse：缺 data / 空 embedding / 垃圾 → null",
   assert.equal(parseEmbeddingResponse(42), null);
 });
 
+test("④c parseEmbeddingResponse：容忍本地服务常见形态（单条 embedding / embeddings 批量）", () => {
+  assert.deepEqual(parseEmbeddingResponse({ embedding: [1, 2, 3] }), [[1, 2, 3]]); // ollama 原生 /api/embeddings
+  assert.deepEqual(parseEmbeddingResponse({ embeddings: [[1, 2], [3, 4]] }), [[1, 2], [3, 4]]); // 批量形态
+  assert.equal(parseEmbeddingResponse({ embedding: [] }), null);
+  assert.equal(parseEmbeddingResponse({ embedding: ["a"] }), null);
+  assert.equal(parseEmbeddingResponse({ embeddings: [] }), null);
+  assert.equal(parseEmbeddingResponse({ embeddings: [[1], ["a"]] }), null);
+});
+
 test("⑤a embedTexts：请求 url/method/body/Content-Type（无 key 不带 Authorization）", async () => {
   let captured;
   const fetchImpl = async (url, options) => {

@@ -304,6 +304,29 @@ test("F2 api：GET state 带批F2 新字段（观测面+双模型卡数据源）
   }
 });
 
+test("api：只配 embeddingModel（不配 provider 标签）时 embeddingConfig 不再误判为未配置", async () => {
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-embcfg-"));
+  const log = { info() {}, warn() {}, error() {} };
+  try {
+    const handler = findRoute(makeApiRoutes({
+      storageRoot: root,
+      log,
+      extraction: {
+        triggerRetry: () => 0,
+        inFlight: () => false,
+        configSummary: () => ({ provider: void 0, model: void 0, fallback: [], embeddingProvider: void 0, embeddingModel: "nomic-embed-text" }),
+      },
+    }), "GET", "state");
+    const res = mockRes();
+    await handler(makeReq("GET", "state"), res);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.embeddingConfig, { provider: null, model: "nomic-embed-text" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- V-1: scheduler.retryPending 单飞复用 ----
 
 test("F2 scheduler.retryPending：落后会话补提 + 在途合并 pending 不双跑", async () => {

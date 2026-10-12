@@ -14,9 +14,9 @@
         injectChannel: message
         injectMaxChars: 60000
         # 语义召回（可选，默认关）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦检索。
-        # 需同时配 embeddingBaseUrl + embeddingModel（OpenAI 兼容端点，见 README「配置」），
+        # 自带模型：配 embeddingBaseUrl + embeddingModel（任意 OpenAI 兼容嵌入服务，本地/远程均可）即可；
         # 缺一启动即抛（fail loud）。不配置则不产生任何外部调用（记忆文本不出本机）。
-        # 示例端点：本地 ollama → http://127.0.0.1:11434/v1/embeddings
+        # 示例：ollama http://127.0.0.1:11434/v1/embeddings ；LM Studio http://127.0.0.1:1234/v1/embeddings
         recallEnabled: false
         provider: null
         model: null

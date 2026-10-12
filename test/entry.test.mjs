@@ -286,17 +286,29 @@ test("config 注入通道键 fail loud（批次A）：injectChannel 非法值 / 
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 1.5 }), /injectMaxChars/);
 });
 
-test("config 召回键 fail loud（批次B B1）：召回开而缺端点/模型、与 section 模式冲突、阈值越界、超时越界", () => {
+test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即抛、section 冲突、端点 scheme 收紧、阈值/超时越界", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-recall-"));
   const { ctx } = fakeCtx();
-  assert.throws(() => apply(ctx, { enabled: true, recallEnabled: true }), /embeddingBaseUrl/);
-  assert.throws(() => apply(ctx, { enabled: true, recallEnabled: true, embeddingBaseUrl: "http://x" }), /embeddingModel/);
+  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true }), /embeddingBaseUrl/);
+  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://x" }), /embeddingModel/);
   assert.throws(
-    () => apply(ctx, { enabled: true, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingProvider: "p", embeddingModel: "m" }),
+    () => apply(ctx, { enabled: true, storageRoot: root, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingModel: "m" }),
     /injectChannel/,
     "section 模式召回永不执行 → 开即抛（不静默 no-op）",
   );
-  assert.throws(() => apply(ctx, { enabled: true, recallMinScore: 1.5 }), /recallMinScore/);
-  assert.throws(() => apply(ctx, { enabled: true, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
+  assert.throws(
+    () => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "file:///etc/passwd", embeddingModel: "m" }),
+    /http/,
+    "嵌入端点收紧到 http(s)：非 http(s) scheme 即抛",
+  );
+  // 自带模型：只给端点 + 模型（不配 provider 标签）必须放行——用户点自己的本地嵌入模型即此形态
+  assert.doesNotThrow(() =>
+    apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://127.0.0.1:1234/v1/embeddings", embeddingModel: "nomic-embed-text" }),
+  );
+  // embeddingProvider 仅作面板标签：单独出现（无模型、未开召回）同样放行（不再强制与 model 成对）
+  assert.doesNotThrow(() => apply(ctx, { enabled: true, storageRoot: root, embeddingProvider: "local" }));
+  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallMinScore: 1.5 }), /recallMinScore/);
+  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
 });
 
 // ---- 全面审查 T-GRA1 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----

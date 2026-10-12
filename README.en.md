@@ -70,6 +70,7 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 Off by default. Enable `recallEnabled` and configure an embedding endpoint (`embeddingBaseUrl` / `embeddingModel`) and each turn retrieves the most relevant entries for **your current question** (embedding cosine top-k), injected as a `<memory-recall>` block — without waiting for the model to Read the index. Embeddings are cached incrementally; only new/changed entries are re-embedded.
 
 - **Off by default**: no endpoint configured means no external calls at all (memory text never leaves the machine); pointing at a local endpoint (e.g. ollama `http://127.0.0.1:11434/v1/embeddings`) also keeps it local.
+- **Bring your own model (provider-agnostic)**: the plugin is tied to no specific embedding model or vendor — as long as your service exposes an OpenAI-compatible embedding endpoint (which almost every local deployment does), just set `embeddingBaseUrl` + `embeddingModel`. Any local model (nomic-embed-text, bge-m3, embed-model, …) works. `embeddingProvider` is only a display label and is optional.
 - **Explicit degradation**: on timeout/error the turn simply recalls nothing (non-blocking, never fabricated), counted under `/state.recall`.
 
 ### Memory management panel
@@ -166,9 +167,10 @@ cordis entry config (see `cordis.patch.yml`):
 | `retryAttempts` | 3 | Total extraction attempts (incl. the first) |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | Exponential backoff first step and cap (jitter ±20%; `Retry-After` honored and clamped) |
 | `fallback` | `[]` (retry only) | Fallback routes `[{provider, model}]`, ≤3, deduped, must not collide with the primary |
-| `embeddingProvider` / `embeddingModel` | empty | Embedding model (optional pair); with `recallEnabled` on, `embeddingModel` is required |
+| `embeddingModel` | empty | **Your** embedding model identifier. Required with `recallEnabled` — it is also the cache identity of the vector space (changing it re-embeds everything). Put the model name your endpoint serves, e.g. `nomic-embed-text`, `bge-m3`, `text-embedding-3-small` |
+| `embeddingProvider` | empty | Optional display-only label for the panel; never used in calls and **not required to pair with `embeddingModel`** |
 | `recallEnabled` | **false** | Semantic-recall master switch; enabling requires `embeddingBaseUrl` + `embeddingModel` (fail-loud otherwise) |
-| `embeddingBaseUrl` | empty | Embedding endpoint (OpenAI-compatible: `POST <url>`, body `{model, input}`, returns `{data:[{embedding}]}`) |
+| `embeddingBaseUrl` | empty | Your embedding endpoint — **any OpenAI-compatible service, local or remote**: `POST <url>`, body `{model, input}`, returns `{data:[{embedding}]}` (also tolerates the `{embedding}` / `{embeddings}` shapes common in local servers). Only `http(s)` is accepted. Examples: ollama `http://127.0.0.1:11434/v1/embeddings`, LM Studio `http://127.0.0.1:1234/v1/embeddings`; vLLM / TEI / llama.cpp alike; remote e.g. `https://api.openai.com/v1/embeddings` |
 | `embeddingApiKey` | empty | Endpoint auth (optional; adds `Authorization: Bearer`) |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | Max recalled entries per turn / recall-block token budget |
 | `recallMinScore` | 0.35 | Cosine threshold ([0,1]) |

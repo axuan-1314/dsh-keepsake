@@ -78,6 +78,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 默认关闭。开启 `recallEnabled` 并配好嵌入端点（`embeddingBaseUrl` / `embeddingModel`）后，每轮对话会按你**当前的问题**语义检索最相关的记忆条目（嵌入余弦 top-k），以 `<memory-recall>` 块注入——不必等模型按索引主动 Read。条目向量按内容增量缓存，只有新写/改动过的条目才重新嵌入。
 
 - **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 ollama `http://127.0.0.1:11434/v1/embeddings`）则记忆文本也不出本机。
+- **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（nomic-embed-text、bge-m3、embed-model…）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 
 ### 记忆管理面板
@@ -184,9 +185,10 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次） |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | 指数退避首档与上限（jitter ±20%；上游带 Retry-After 时优先、钳 ≤3×上限） |
 | `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
-| `embeddingProvider` / `embeddingModel` | 空 | 嵌入模型（成对可选）。开启 `recallEnabled` 后 `embeddingModel` 必填；`embeddingProvider` 仅作面板标签（如 `ollama`） |
-| `recallEnabled` | **false** | 语义召回总开关；开启需同时配 `embeddingBaseUrl` + `embeddingModel`（缺一启动即抛，fail loud） |
-| `embeddingBaseUrl` | 空 | 嵌入端点（OpenAI 兼容：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`）。例：本地 ollama 的 `http://127.0.0.1:11434/v1/embeddings` |
+| `embeddingModel` | 空 | **你的**嵌入模型标识。开启 `recallEnabled` 后必填——它同时是向量空间的缓存身份（换模型＝整库重嵌）。填你端点上的模型名即可，如 `nomic-embed-text`、`bge-m3`、`text-embedding-3-small` |
+| `embeddingProvider` | 空 | 可选，纯面板显示标签，不参与调用，**不要求与 `embeddingModel` 成对**（如 `ollama` / `lmstudio`） |
+| `recallEnabled` | **false** | 语义召回总开关；开启需配 `embeddingBaseUrl` + `embeddingModel`（缺一启动即抛，fail loud） |
+| `embeddingBaseUrl` | 空 | 你的嵌入端点，**任意 OpenAI 兼容服务即可（本地或远程）**：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`（也容忍 `{embedding}` / `{embeddings}` 两种本地常见形态）。仅接受 `http(s)`。示例：ollama `http://127.0.0.1:11434/v1/embeddings`、LM Studio `http://127.0.0.1:1234/v1/embeddings`，vLLM / TEI / llama.cpp 同形；远程如 `https://api.openai.com/v1/embeddings` |
 | `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |

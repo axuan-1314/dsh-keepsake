@@ -15,6 +15,7 @@ import {
   extractionRangeText,
   extractionStreakOf,
   filterEntries,
+  injectionSummary,
   importTitleOf,
   ladderFallbackOf,
   ladderNoteOf,
@@ -393,4 +394,27 @@ test("diagnosticTextOf：版本/全量分桶（含零值）/最近失败摘要/�
   // 空态防御：整个 state 空对象也不炸
   assert.equal(typeof diagnosticTextOf({}, now), "string");
   assert.equal(typeof diagnosticTextOf(null, now), "string");
+});
+
+// ---- 批次A 注入面摘要（/state.injection tolerant 消费纯函数） ----
+
+test("injectionSummary：正常值「已注入 N 次 · 最近 X 字符」；丢段/渲染失败附加；空与 undefined → null", () => {
+  assert.equal(injectionSummary({ count: 3, lastChars: 1200 }), "已注入 3 次 · 最近 1200 字符");
+  assert.equal(
+    injectionSummary({ count: 2, lastChars: 400, droppedSegments: 3, renderFailures: 1 }),
+    "已注入 2 次 · 最近 400 字符 · 丢段 3 · 渲染失败 1",
+  );
+  assert.equal(injectionSummary({ count: 1, lastChars: 0 }), "已注入 1 次 · 最近 0 字符", "首注空块也如实报 0 字符");
+  assert.equal(
+    injectionSummary({ count: 2, lastChars: 100, droppedSegments: 0, renderFailures: 0 }),
+    "已注入 2 次 · 最近 100 字符",
+    "零值附加项不渲染",
+  );
+  // 无数据不显示（旧版宿主 / 尚未注入）
+  assert.equal(injectionSummary(null), null);
+  assert.equal(injectionSummary(void 0), null);
+  assert.equal(injectionSummary({}), null);
+  assert.equal(injectionSummary({ count: 0 }), null);
+  assert.equal(injectionSummary({ count: 0, lastChars: 5 }), null);
+  assert.equal(injectionSummary({ count: "x" }), null, "非法 count 不渲染");
 });

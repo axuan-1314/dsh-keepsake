@@ -84,21 +84,29 @@ test("入口元数据与注入段注册", () => {
   apply(ctx, {}); // 审查 P2-1：缺省关（fail-closed），无显式 enabled: true 不启用
   assert.equal(sections.length, 0);
   apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry") });
-  // M1 起四段（方案C §4）：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
-  assert.equal(sections.length, 4);
-  assert.equal(sections[0].name, "dsh-memory:persona");
-  assert.equal(sections[0].order, 4990);
-  assert.equal(sections[1].name, "dsh-memory:global-index");
-  assert.equal(sections[1].order, 4995);
-  assert.equal(sections[2].name, "dsh-memory:instructions");
-  assert.equal(sections[2].order, 5000);
-  assert.equal(sections[3].name, "dsh-memory:index");
-  assert.equal(sections[3].order, 5001);
-  for (const section of sections) assert.equal(section.interpolate, false);
+  // 批次A：默认 injectChannel=message → section 侧只留一条静态路由兜底段
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].name, "dsh-memory:routing");
+  assert.equal(sections[0].order, 5000);
+  assert.equal(sections[0].interpolate, false);
   // M1 路由已注册（API prefix 总入口 + panel exact/prefix）
   assert.ok(registeredRoutes.length >= 3);
   assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-memory/api"));
   assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/panel/"));
+
+  // 批次A：显式 injectChannel=section → 旧四段（M1 方案C §4）：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
+  const sectioned = fakeCtx();
+  apply(sectioned.ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry"), injectChannel: "section" });
+  assert.equal(sectioned.sections.length, 4);
+  assert.equal(sectioned.sections[0].name, "dsh-memory:persona");
+  assert.equal(sectioned.sections[0].order, 4990);
+  assert.equal(sectioned.sections[1].name, "dsh-memory:global-index");
+  assert.equal(sectioned.sections[1].order, 4995);
+  assert.equal(sectioned.sections[2].name, "dsh-memory:instructions");
+  assert.equal(sectioned.sections[2].order, 5000);
+  assert.equal(sectioned.sections[3].name, "dsh-memory:index");
+  assert.equal(sectioned.sections[3].order, 5001);
+  for (const section of sectioned.sections) assert.equal(section.interpolate, false);
 });
 
 test("事件→提取→落盘 全链路", async () => {
@@ -113,7 +121,7 @@ test("事件→提取→落盘 全链路", async () => {
       };
       yield { type: "finish", reason: { kind: "stop" } };
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, injectChannel: "section" });
     const session = fakeSession(workspace, [USER_EVENT]);
     // 照真实事件流：先消息事件（首见登记 cursor=0），再 turn/end(completed) 触发
     handlers.get("session/event")(session, USER_EVENT);
@@ -268,6 +276,14 @@ test("路由兜底（M3 desktop 实测加固）：无 request/header 时 assista
 test("config 未知键 fail loud", () => {
   const { ctx } = fakeCtx();
   assert.throws(() => apply(ctx, { enabled: true, whatever: 1 }));
+});
+
+test("config 注入通道键 fail loud（批次A）：injectChannel 非法值 / injectMaxChars 非正/非整数", () => {
+  const { ctx } = fakeCtx();
+  assert.throws(() => apply(ctx, { enabled: true, injectChannel: "bogus" }), /injectChannel/);
+  assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 0 }), /injectMaxChars/);
+  assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: -5 }), /injectMaxChars/);
+  assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 1.5 }), /injectMaxChars/);
 });
 
 // ---- 全面审查 T-GRA1 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----

@@ -876,6 +876,9 @@ function buildPipeHealthCard(data) {
       parts.push(`<div class="meta" style="margin-top:4px">失败日志：<code class="k">${esc(logPath)}</code></div>`);
     }
   }
+  // 批次A：注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
+  const injectionLine = L.injectionSummary(data.injection);
+  if (injectionLine) parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}</div>`);
   const card = document.createElement("div");
   card.className = "card";
   card.id = "data-pipe-health"; // V-9：门牌「详情」深链滚动锚点

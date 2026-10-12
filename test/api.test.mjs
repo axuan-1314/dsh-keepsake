@@ -482,3 +482,20 @@ test("state：extractionFailures 计数面在场（P-PIPE1 观测口）", async 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("state：injection 注入面字段在场（批次A，服务端恒在；缺失=旧版）", async () => {
+  const root = freshRoot();
+  try {
+    const s = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(s.status, 200);
+    const inj = s.json.injection;
+    assert.equal(typeof inj, "object");
+    // 契约字段恒在（字段缺失=旧版宿主，面板 tolerant 消费）
+    for (const k of ["count", "lastChars", "totalChars", "resends", "droppedSegments", "renderFailures", "lastAt"]) {
+      assert.ok(Object.prototype.hasOwnProperty.call(inj, k), `injection 缺字段 ${k}`);
+    }
+    assert.equal(typeof inj.count, "number");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

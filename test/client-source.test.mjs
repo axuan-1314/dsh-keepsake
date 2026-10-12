@@ -12,6 +12,7 @@ import {
   extractionNoticeText,
   extractionRangeText,
   extractionStreakOf,
+  injectionSummary,
   ladderNoteOf,
 } from "../lib/panel-logic.js";
 
@@ -252,4 +253,26 @@ test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期�
   assert.match(panelSrc, /\.dot\.green \{ background: #50a05a; \}/, "灯点绿 #50a05a（不引新色值）");
   assert.match(panelSrc, /\.dot\.yellow \{ background: #c98a3d; \}/, "灯点黄 #c98a3d");
   assert.match(panelSrc, /\.dot\.red \{ background: #d5564d; \}/, "灯点红 #d5564d");
+});
+
+// ---- 批次A：注入面（消息通道）防漂移 ----
+
+test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱动一致（含纯失败告警）", () => {
+  const fn = extractFactoryFn(clientSrc, "injectionSummaryFallback", "injection");
+  const cases = [
+    null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
+    { count: 0 }, // 未注入无异常：null
+    { count: 0, lastChars: 5 }, // count=0（lastChars 无意义）：null
+    { count: 0, renderFailures: 2 }, // 纯失败：仍出告警（M1 显式可见，不静默藏）
+    { count: -1, renderFailures: 0 }, // 非法 count 无异常：null
+    { count: 3, lastChars: 1200 },
+    { count: 3, lastChars: 1200, droppedSegments: 2 },
+    { count: 3, lastChars: 1200, renderFailures: 1, droppedSegments: 1 },
+    { count: "5", lastChars: "900" }, // 字符串数字归一
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), injectionSummary(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  assert.match(clientSrc, /LOGIC \? LOGIC\.injectionSummary/, "注入摘要必须经 panel-logic 优先分发");
+  assert.match(panelSrc, /L\.injectionSummary\(/, "健康卡注入摘要必须走共享纯函数（消费锚）");
 });

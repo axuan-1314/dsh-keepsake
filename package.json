@@ -1,7 +1,7 @@
 {
   "name": "dsh-memory",
-  "version": "0.1.0",
-  "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 ctx.systemPrompt 注入使用说明与索引。移植自 ZCode 项目记忆子系统 T2 规格，v1 单次调用简化。",
+  "version": "0.2.0",
+  "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 durable 用户消息通道注入人设/索引（injectChannel 可回退到 systemPrompt 注入）。移植自 ZCode 项目记忆子系统 T2 规格，v1 单次调用简化。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
-    "check": "for f in lib/*.js; do node --check \"$f\" || exit 1; done"
+    "check": "node -e \"const{readdirSync}=require('node:fs');const{execFileSync}=require('node:child_process');for(const f of readdirSync('lib'))if(f.endsWith('.js'))execFileSync(process.execPath,['--check','lib/'+f],{stdio:'inherit'})\""
   },
   "keywords": [
     "deepseek-harness",

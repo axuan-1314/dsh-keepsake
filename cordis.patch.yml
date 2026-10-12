@@ -9,6 +9,10 @@
       name: dsh-memory
       config:
         enabled: true
+        # 批次A（v0.2.0）：注入通道。message=durable 用户消息通道（默认，全 preset 生效，
+        # 根治 minimal 预设 complete:true 静默丢注入）；section=旧四段 systemPrompt 注入（一键回滚）。
+        injectChannel: message
+        injectMaxChars: 60000
         provider: null
         model: null
         minUserWords: 3

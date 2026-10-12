@@ -41,7 +41,7 @@ function freshRoot() {
 /** 起插件并返回四段 text 函数。 */
 function setup(root) {
   const { ctx, sections } = fakeCtx();
-  apply(ctx, { enabled: true, storageRoot: root, provider: "p", model: "m" });
+  apply(ctx, { enabled: true, storageRoot: root, provider: "p", model: "m", injectChannel: "section" });
   assert.equal(sections.length, 4);
   return {
     persona: sections[0],
@@ -264,7 +264,7 @@ test("T-GRA1③ 4995 两级注入预算：每类 40 行 + 总 120 行截断（F2
       createEntry(rootA, "long-term", { name: `pin-${String(i).padStart(3, "0")}.md`, title: `P-long-term-${i}`, content: "c" });
     }
     const { ctx, sections } = fakeCtx();
-    apply(ctx, { enabled: true, storageRoot: rootA });
+    apply(ctx, { enabled: true, storageRoot: rootA, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
     const longTermLines = text.split("\n").filter((l) => l.includes("[P-long-term-"));
     assert.equal(longTermLines.length, 40, "每类 40 行预算生效（50 条只见 40）");
@@ -281,7 +281,7 @@ test("T-GRA1③ 4995 两级注入预算：每类 40 行 + 总 120 行截断（F2
       }
     }
     const { ctx, sections } = fakeCtx();
-    apply(ctx, { enabled: true, storageRoot: rootB });
+    apply(ctx, { enabled: true, storageRoot: rootB, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
     assert.match(text, /\[WARNING\]/, "总预算截断应带可见 WARNING");
     const entryLines = text.split("\n").filter((l) => /^- \[P-/.test(l));

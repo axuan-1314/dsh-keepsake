@@ -2,7 +2,7 @@
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.1.0（以 `package.json` 为准）
+- **插件版本**：0.2.0（以 `package.json` 为准）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
 
@@ -32,7 +32,7 @@
 DSH 每次新会话都是从零开始：你的工作背景、这个项目的决策历史、上周聊定的口径，全都得重新说一遍。dsh-memory 把这件事自动化：
 
 1. **自动提取**——每轮对话结束，插件自动判断这轮有没有值得记的事（用户偏好、项目决策、长期有效的结论……），有就落盘成本地 Markdown 文件；
-2. **自动注入**——之后每一轮对话，把已记下的内容以四段形式注回系统提示词（人设 / 全局记忆索引 / 项目使用说明 / 项目记忆索引），模型据此"记得"你；
+2. **自动注入**——之后每一轮对话，把已记下的内容以四段形式（人设 / 全局记忆索引 / 项目使用说明 / 项目记忆索引）作为一条插件自有的用户消息注入会话，模型据此"记得"你；
 3. **面板管理**——DSH 设置页多一个「记忆」区块，从这里打开记忆管理面板：浏览/编辑/删除/导入导出记忆条目、编辑人设与称呼、开关各路记忆、看提取管道健康状况。
 
 记忆分两层：
@@ -49,7 +49,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **无需手动操作**：每一轮对话正常结束（`turn/end` 且 `reason.kind === "completed"`）后自动触发一次提取判断；纯寒暄、命令式短句（不足 3 个词的用户散文）这类没内容可记的轮次自动跳过，不白花 token。
 - **增量提取**：插件为每个会话维护提取进度（cursor），只提炼新完成的轮次；提取失败时进度不推进，下一轮自动连本带利重提（自动补提），不会漏记也不会重复记。
 - **提取走会话路由**：默认复用你当前对话所用的模型路由（与 session-title 同款捕获策略），不单独配置也能跑；也可以在 `cordis.patch.yml` 显式指定更稳的 `provider` / `model`。
-- **跨会话四段注入**：之后每轮对话，系统提示词里自动出现——
+- **跨会话四段注入**：之后每轮对话，插件把记忆作为一条**插件自有的用户消息**注入会话（默认走 durable 消息通道，对所有预设——包括 `complete:true` 的极简预设——都生效，这是 v0.2.0 对旧版"极简模式静默失忆"的根治点；`injectChannel: "section"` 可回退到旧的系统提示词注入）。这条消息由四段组成，模型据此"记得"你：
 
 | 注入段 | 模型看到什么 | 预算 |
 |---|---|---|
@@ -66,7 +66,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 项目记忆 | 项目使用说明/项目索引不再注入，项目类记忆写入被过滤（计数可见） |
 | 全局自动提取 | 不再自动写全局记忆；已有的全局条目照常注入 |
 
-- **防自反馈**：提取调用是独立的请求，不向会话追加任何事件，不会出现"模型在回忆录里自言自语"的循环。
+- **防自反馈**：注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记；提取侧按此标识把自家注入的消息从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。
 
 ### 记忆管理面板
 
@@ -148,6 +148,8 @@ cordis entry config（见 `cordis.patch.yml`）：
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
+| `injectChannel` | **`"message"`** | 注入通道：`"message"`=durable 用户消息通道（默认，全预设生效）；`"section"`=旧四段 systemPrompt 注入（一键回滚） |
+| `injectMaxChars` | 60000 | 消息通道注入总预算（字符）；超限按优先级整段丢弃并附可见 WARNING |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
 | `provider` / `model` | 空（跟随会话路由） | 提取调用的模型路由；成对出现，否则报错。缺省时自动捕获本会话路由（`request/header` 优先，`assistant/message` 的 `source` 兜底，同 session-title 策略） |
 | `minUserWords` | 3 | skip 条件的散文词数下限 |
@@ -198,6 +200,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 回滚与卸载
 
 1. **停功能不卸包**：把 profile 的 `cordis.patch.yml`（或 bundle patch）里 `enabled` 改为 `false`。生效方式分 profile：**web profile 由 HMR 自动生效；desktop/headless 改 config 后需重启对应实例**（桌面端重启应用；headless 本就每次启动新进程）。不存在"改完即热生效"的统一行为，以上为各 profile 的实际生效路径。若只想临时停用记忆功能，用面板的总开关即可（下一轮对话生效，无需重启）。
+   - 只回退**注入通道**（不停功能）：把 `injectChannel` 改为 `"section"`，回到旧的四段系统提示词注入；同样按上面的 profile 生效路径。
 2. **整包卸载**：`dsh plugin --profile <name> remove dsh-memory`。
 3. **清数据**：删 `~/.dsh/memory/`（自有目录，不影响其他组件）。
 
@@ -228,16 +231,17 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并：running 期间新触发只留最新边界）。
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
-- **注入**：`ctx.systemPrompt.section` 注入四段——4990 人设（称呼指令+补充设定）、4995 全局记忆索引（每类 40 行 / 总 120 行预算）、5000 项目使用说明、5001 项目 MEMORY.md 索引（200 行 / 25k 字符截断，保最新丢最旧 + WARNING）；空段自动丢弃；索引读取有 mtime 缓存（缓存键含项目维度，防同 size+mtime 串档）。
+- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 为进程内状态不持久化；插件中途挂载/恢复的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
-- **六条规格边界**：① 去抖合并+cursor 推进 → `lib/state.js`；② 写入边界（仅 .md、包含性强制、模型永不直接碰盘）→ `lib/extract.js`；③ 文件名安全 → `lib/filename.js`；④ 注入预算 → `lib/manifest.js`；⑤ 触发门槛 → `lib/transcript.js`；⑥ 防自反馈（request-only、不 append 事件）→ `lib/index.js`。
+- **六条规格边界**：① 去抖合并+cursor 推进 → `lib/state.js`；② 写入边界（仅 .md、包含性强制、模型永不直接碰盘）→ `lib/extract.js`；③ 文件名安全 → `lib/filename.js`；④ 注入预算 → `lib/manifest.js`；⑤ 触发门槛 → `lib/transcript.js`；⑥ 防自反馈（提取 request-only + 注入消息按 `source.kind` 过滤）→ `lib/index.js` / `lib/transcript.js`。
 
 ## 可观测与运维
 
 - **提取失败计数**：`/dsh-memory/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
 - **观测面（批F2）**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（U7 预留位）；面板设置页有「管道健康卡」承载以上全部。
+- **注入面（批次A v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_MEMORY_DEBUG`，常开——10-09 停摆事故里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-memory/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
 - **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
@@ -248,18 +252,21 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，239 个测试（含防漂移检查 test/client-source.test.mjs）
-npm run check  # node --check 语法快检 lib/*.js
+npm test    # node --test，267 个测试（含防漂移检查 test/client-source.test.mjs）
+npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 
-模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/四段注入）、`lib/state.js`（提取状态机）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
+模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入）、`lib/inject-channel.js`（注入块拼装/预算裁剪/来源判据）、`lib/state.js`（提取状态机）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
 
 ## 已知限制
 
 - **规格 taskType 过滤未移植**：ZCode 侧按任务类型（interactive/fork/…）过滤提取资格；本插件对所有会话生效，依赖 skip 双门槛（无 ≥3 词散文 / 直写轮）兜底抑制噪声。
 - **相对路径 file_path 的直写判定偏保守**：`transcript.js` 对 write/edit 的 `file_path` 以 memoryRoot 为基解析相对路径，恰好落在记忆目录内的相对路径会判为"直写轮"而 skip 提取——方向保守（多 skip、不漏存），安全。
 - **单次 LLM 调用**（非 ZCode 的提取子任务 loop，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
-- **防自反馈与检索**：提取调用为 request-only 输入、不向任何 session append 事件；记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
+- **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与 ZCode 同构）。
 - **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。
 - **单条覆盖写无编辑历史**（全面审查 P3-12 有意不修）：PUT persona / PUT entry 直接替换旧文——粘贴错内容保存即丢旧文；批量破坏路径（reset/import/restore）有自动备份，单条覆盖请自行先导出兜底。
 - **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 40 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
+- **注入块在会话内可能累积**（批次A 已知）：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
+- **`injectMaxChars` 是软上限**：超限追加的可见截断提示行不计入预算，最终字符数可能略超该值（默认 60000 下不触发，仅护栏）。
+- **防自食只覆盖自家注入**（批次A 范围）：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。

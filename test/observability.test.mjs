@@ -11,7 +11,10 @@ import {
   clearExtractionFailedRange,
   extractionFailureSnapshot,
   extractionObservationSnapshot,
+  injectionSnapshot,
   pushRecentFailure,
+  recordInjection,
+  recordInjectionError,
   setExtractionFailedRange,
   setExtractionInFlight,
   noteExtractionAttempt,
@@ -124,6 +127,52 @@ test("F2 metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷�
   assert.equal(cleared.extractionInFlight, false);
   __resetMetricsForTest();
   assert.equal(extractionObservationSnapshot().lastUsedRoute, null, "复位生效");
+});
+
+// ---- 批次A 注入面（消息通道注入健康：记账 / 异常计数 / 快照不可变） ----
+
+test("批次A metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ 缺省入参按 0", () => {
+  __resetMetricsForTest();
+  // 空态：字段恒在（缺失=旧版判据），值全零
+  assert.deepEqual(injectionSnapshot(), {
+    count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, renderFailures: 0, lastAt: null,
+  });
+  recordInjection({ chars: 120 });
+  recordInjection({ chars: 80, dropped: ["globalIndex", "persona"], resend: true });
+  const snap = injectionSnapshot();
+  assert.equal(snap.count, 2);
+  assert.equal(snap.lastChars, 80, "lastChars = 最近一次 chars");
+  assert.equal(snap.totalChars, 200, "totalChars 累加");
+  assert.equal(snap.resends, 1, "resend 为真才计补发");
+  assert.equal(snap.droppedSegments, 2, "dropped.length 计入丢段累计");
+  assert.equal(typeof snap.lastAt, "number");
+  // 缺省入参：chars 0 / dropped 空 / 非 resend 不额外计数
+  recordInjection();
+  const dflt = injectionSnapshot();
+  assert.equal(dflt.count, 3);
+  assert.equal(dflt.lastChars, 0);
+  assert.equal(dflt.totalChars, 200);
+  assert.equal(dflt.resends, 1);
+  __resetMetricsForTest();
+});
+
+test("批次A metrics：recordInjectionError → renderFailures；快照不可变（改返回值不影响内部态）", () => {
+  __resetMetricsForTest();
+  recordInjectionError();
+  recordInjectionError();
+  assert.equal(injectionSnapshot().renderFailures, 2);
+  // 快照是拷贝：外改不污染内部态
+  const snap = injectionSnapshot();
+  snap.count = 999;
+  snap.droppedSegments = 999;
+  snap.renderFailures = 999;
+  const again = injectionSnapshot();
+  assert.equal(again.count, 0);
+  assert.equal(again.droppedSegments, 0);
+  assert.equal(again.renderFailures, 2);
+  __resetMetricsForTest();
+  assert.equal(injectionSnapshot().renderFailures, 0, "复位生效");
+  assert.equal(injectionSnapshot().lastAt, null);
 });
 
 // ---- V-1/V-6: retry 端点契约 ----

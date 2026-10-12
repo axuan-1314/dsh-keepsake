@@ -178,7 +178,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
-| `recallTimeoutMs` | 1500 | 单次嵌入调用超时（超时按失败降级：本轮不召回） |
+| `recallTimeoutMs` | 8000 | 单次嵌入调用超时。**实机实测**：本地 CPU 嵌入服务独立调用 ~0.6s，但**宿主进程内**竞争下可达数秒——故默认留足余量；端点真死会连接被拒秒退，只有慢端点才吃满（超时按失败降级：本轮不召回） |
 
 失败分类（批F1 E-1）：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
 

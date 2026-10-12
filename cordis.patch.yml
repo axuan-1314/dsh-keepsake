@@ -13,11 +13,13 @@
         # 根治 minimal 预设 complete:true 静默丢注入）；section=旧四段 systemPrompt 注入（一键回滚）。
         injectChannel: message
         injectMaxChars: 60000
-        # 批次B B1（v0.3.0）：语义召回，默认关——不配置端点就不产生任何嵌入调用（记忆文本不出本机）。
-        # 开启需同时配 embeddingProvider/embeddingModel 与 embeddingBaseUrl（OpenAI 兼容端点）。
-        recallEnabled: false
-        embeddingProvider: null
-        embeddingModel: null
+        # 批次B B1（v0.3.0）：语义召回。本机（作者环境）指向本地 embed-model-2 服务：
+        # http://127.0.0.1:11434/v1/embeddings（OpenAI 兼容，768 维）——记忆文本不出本机。
+        # 他人部署请改成自己的端点，或把 recallEnabled 置 false（不配置即不产生任何嵌入调用）。
+        recallEnabled: true
+        embeddingProvider: local-eg2
+        embeddingModel: onnx-community/embed-model-2-ONNX
+        embeddingBaseUrl: http://127.0.0.1:11434/v1/embeddings
         provider: null
         model: null
         minUserWords: 3

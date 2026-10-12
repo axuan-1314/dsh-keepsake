@@ -12,7 +12,7 @@ import { apply } from "../lib/index.js";
 import { createEntry } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
-import { __resetMetricsForTest, injectionSnapshot } from "../lib/metrics.js";
+import { __resetMetricsForTest, injectionSnapshot, recallSnapshot } from "../lib/metrics.js";
 import { skipReason } from "../lib/transcript.js";
 
 function fakeCtx() {
@@ -255,6 +255,157 @@ test("批次A：注入消息以 user/message 落事件流 → 提取侧 skip 门
     const injected = { role: "user", content: [{ type: "text", text: "很长很长的一段注入记忆内容".repeat(20) }], source: { kind: "plugin:dsh-memory", form: "memory-context" } };
     const events = [{ type: "user/message", surfaceOp: "append", seq: 0, data: injected }];
     assert.equal(skipReason(events, root, 3), "no-user-prose", "纯注入批次必须 skip 提取");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 批次B B1：嵌入语义召回接线 ----
+
+/** 确定性 stub 嵌入端点：向量按关键词命中（无需真实服务）。 */
+function stubFetch() {
+  const calls = [];
+  const impl = async (url, options) => {
+    calls.push({ url, options, body: JSON.parse(options.body) });
+    const vectors = JSON.parse(options.body).input.map((t) => [String(t).includes("pnpm") ? 1 : 0, String(t).includes("python") ? 1 : 0]);
+    return { ok: true, status: 200, json: async () => ({ data: vectors.map((embedding) => ({ embedding })) }) };
+  };
+  return { impl, calls };
+}
+
+async function withFetch(impl, fn) {
+  const original = globalThis.fetch;
+  globalThis.fetch = impl;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+const RECALL_CONFIG = { recallEnabled: true, embeddingBaseUrl: "http://stub/embeddings", embeddingProvider: "stub", embeddingModel: "stub-embed" };
+
+test("批次B B1：recallEnabled 时按语义召回注入 <memory-recall> 块（主块不受影响）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("我们 用 pnpm 还是 python？")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    const forms = out.messages.map((m) => m.source?.form).filter(Boolean);
+    assert.ok(forms.includes("memory-context"), "主块仍在");
+    assert.ok(forms.includes("memory-recall"), "召回块应注入");
+    const recall = textOf(out.messages.find((m) => m.source?.form === "memory-recall"));
+    assert.match(recall, /^<memory-recall>/);
+    assert.match(recall, /pnpm/, "命中条目应在召回块里");
+    assert.equal(recallSnapshot().hits, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("批次B B1：recallEnabled 默认关 → 无召回块且零嵌入调用（行为与批次A 一致）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root }); // 未开 recallEnabled
+    const handler = handlers.get("agent/pre-step");
+    let called = 0;
+    const impl = async () => { called += 1; throw new Error("默认关不应触发嵌入调用"); };
+    const decision = { kind: "enter", messages: [userMsg("我们 用 pnpm 还是 python？")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.ok(!out.messages.some((m) => m.source?.form === "memory-recall"), "默认不召回");
+    assert.equal(called, 0, "默认关不得产生任何嵌入调用");
+    assert.equal(recallSnapshot().hits, 0);
+    assert.equal(recallSnapshot().errors, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("批次B B1：同查询二次 pre-step → 召回块不重复注入（视野去重）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl } = stubFetch();
+    const msg = () => [userMsg("pnpm 命令")];
+    const first = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: msg() }), { kind: "enter", messages: msg() }));
+    const recallMsg = first.messages.find((m) => m.source?.form === "memory-recall");
+    assert.ok(recallMsg, "首轮应注入召回块");
+    const second = await withFetch(impl, () => run(
+      handler,
+      payloadOf({ agent: makeAgent({ cwd: root, events: [{ type: "user/message", data: recallMsg }] }), messages: msg() }),
+      { kind: "enter", messages: msg() },
+    ));
+    assert.ok(!second.messages.some((m) => m.source?.form === "memory-recall"), "同内容已在视野 → 不重复注入");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("批次B B1：嵌入响应畸形（缺 data）→ 降级不召回、记 errors", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const impl = async () => ({ ok: true, status: 200, json: async () => ({}) }); // 缺 data → parseEmbeddingResponse null → throw
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.ok(!out.messages.some((m) => m.source?.form === "memory-recall"), "畸形响应不召回");
+    assert.ok(out.messages.some((m) => m.source?.form === "memory-context"), "主块不受影响");
+    assert.equal(recallSnapshot().errors, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("批次B B1：条目向量缓存——第二次 pre-step 不再重嵌条目，只嵌查询", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const agent = makeAgent({ cwd: root });
+    const first = stubFetch();
+    await withFetch(first.impl, () => run(handler, payloadOf({ agent, messages: [userMsg("pnpm 命令")] }), { kind: "enter", messages: [userMsg("pnpm 命令")] }));
+    assert.equal(first.calls.length, 2, "首轮：1 条条目 + 1 次查询嵌入");
+    const second = stubFetch();
+    await withFetch(second.impl, () => run(handler, payloadOf({ agent, messages: [userMsg("pnpm 命令")] }), { kind: "enter", messages: [userMsg("pnpm 命令")] }));
+    assert.equal(second.calls.length, 1, "次轮：条目已缓存，只嵌查询");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("批次B B1：嵌入端点失败 → 降级不召回、主块不受影响、记 errors", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const impl = async () => { throw new Error("embedding endpoint down"); };
+    const decision = { kind: "enter", messages: [userMsg("我们 用 pnpm")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.ok(!out.messages.some((m) => m.source?.form === "memory-recall"), "失败不召回");
+    assert.ok(out.messages.some((m) => m.source?.form === "memory-context"), "主块照常注入");
+    assert.equal(recallSnapshot().errors, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

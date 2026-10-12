@@ -286,6 +286,19 @@ test("config 注入通道键 fail loud（批次A）：injectChannel 非法值 / 
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 1.5 }), /injectMaxChars/);
 });
 
+test("config 召回键 fail loud（批次B B1）：召回开而缺端点/模型、与 section 模式冲突、阈值越界、超时越界", () => {
+  const { ctx } = fakeCtx();
+  assert.throws(() => apply(ctx, { enabled: true, recallEnabled: true }), /embeddingBaseUrl/);
+  assert.throws(() => apply(ctx, { enabled: true, recallEnabled: true, embeddingBaseUrl: "http://x" }), /embeddingModel/);
+  assert.throws(
+    () => apply(ctx, { enabled: true, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingProvider: "p", embeddingModel: "m" }),
+    /injectChannel/,
+    "section 模式召回永不执行 → 开即抛（不静默 no-op）",
+  );
+  assert.throws(() => apply(ctx, { enabled: true, recallMinScore: 1.5 }), /recallMinScore/);
+  assert.throws(() => apply(ctx, { enabled: true, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
+});
+
 // ---- 全面审查 T-GRA1 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
 
 test("T-GRA1① DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {

@@ -13,6 +13,7 @@
 - [这是什么](#这是什么)
 - [功能介绍](#功能介绍)
   - [自动记忆：会话结束自动提炼，下次对话自动带上](#自动记忆会话结束自动提炼下次对话自动带上)
+  - [语义召回（可选）](#语义召回可选)
   - [记忆管理面板](#记忆管理面板)
   - [管道健康卡与「立即重试提取」](#管道健康卡与立即重试提取)
   - [失败韧性：重试、分类、落盘留痕](#失败韧性重试分类落盘留痕)
@@ -67,6 +68,13 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 全局自动提取 | 不再自动写全局记忆；已有的全局条目照常注入 |
 
 - **防自反馈**：注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记；提取侧按此标识把自家注入的消息从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。
+
+### 语义召回（可选）
+
+默认关闭。开启 `recallEnabled` 并配好嵌入端点（`embeddingBaseUrl` / `embeddingModel`）后，每轮对话会按你**当前的问题**语义检索最相关的记忆条目（嵌入余弦 top-k），以 `<memory-recall>` 块注入——不必等模型按索引主动 Read。条目向量按内容增量缓存，只有新写/改动过的条目才重新嵌入。
+
+- **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 ollama `http://127.0.0.1:11434/v1/embeddings`）则记忆文本也不出本机。
+- **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 
 ### 记忆管理面板
 
@@ -164,7 +172,13 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次；批F1 韧性链） |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | 指数退避首档与上限（jitter ±20%；上游带 Retry-After 时优先、钳 ≤3×上限） |
 | `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
-| `embeddingProvider` / `embeddingModel` | 空 | **语义召回预留位（U7）**：成对可选，配了只在面板「嵌入模型」卡展示（如 embed-model 2 一类本地嵌入模型）；向量召回管线尚未存在，不产生任何调用 |
+| `embeddingProvider` / `embeddingModel` | 空 | 嵌入模型（成对可选）。开启 `recallEnabled` 后 `embeddingModel` 必填；`embeddingProvider` 仅作面板标签（如 `ollama`） |
+| `recallEnabled` | **false** | 语义召回总开关；开启需同时配 `embeddingBaseUrl` + `embeddingModel`（缺一启动即抛，fail loud） |
+| `embeddingBaseUrl` | 空 | 嵌入端点（OpenAI 兼容：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`）。例：本地 ollama 的 `http://127.0.0.1:11434/v1/embeddings` |
+| `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
+| `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
+| `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
+| `recallTimeoutMs` | 1500 | 单次嵌入调用超时（超时按失败降级：本轮不召回） |
 
 失败分类（批F1 E-1）：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
 
@@ -184,6 +198,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ├── settings.json                          # 三层开关（面板可改，每轮读取）
 ├── extraction-errors.log                  # 提取失败日志（常开，>512KB 轮转两档）
 ├── debug.log                              # DSH_MEMORY_DEBUG=1 时的诊断口
+├── embeddings.json                        # 语义召回条目向量缓存（开启 recallEnabled 时生成）
 ├── global/                                # 全局记忆
 │   ├── persona.md                         # 人设（出厂默认模板起步）
 │   ├── addressing.json                    # 称呼 {dshName, userAlias}
@@ -202,6 +217,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 1. **停功能不卸包**：把 profile 的 `cordis.patch.yml`（或 bundle patch）里 `enabled` 改为 `false`。生效方式分 profile：**web profile 由 HMR 自动生效；desktop/headless 改 config 后需重启对应实例**（桌面端重启应用；headless 本就每次启动新进程）。不存在"改完即热生效"的统一行为，以上为各 profile 的实际生效路径。若只想临时停用记忆功能，用面板的总开关即可（下一轮对话生效，无需重启）。
    - 只回退**注入通道**（不停功能）：把 `injectChannel` 改为 `"section"`，回到旧的四段系统提示词注入；同样按上面的 profile 生效路径。
+   - 只关**语义召回**：把 `recallEnabled` 改为 `false`（或删除），回到"仅索引、无自动召回"，不再产生任何嵌入调用。
 2. **整包卸载**：`dsh plugin --profile <name> remove dsh-memory`。
 3. **清数据**：删 `~/.dsh/memory/`（自有目录，不影响其他组件）。
 
@@ -233,6 +249,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
 - **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首一行免责/署名：记忆是参考上下文、非任务指令；subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
+- **语义召回**（可选，`recallEnabled`，批次B B1）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 为进程内状态不持久化；插件中途挂载/恢复的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
@@ -243,6 +260,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **提取失败计数**：`/dsh-memory/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
 - **观测面（批F2）**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（U7 预留位）；面板设置页有「管道健康卡」承载以上全部。
 - **注入面（批次A v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
+- **召回面（批次B B1）**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_MEMORY_DEBUG`，常开——10-09 停摆事故里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-memory/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
 - **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
@@ -253,7 +271,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，271 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，309 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 
@@ -272,3 +290,5 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **`injectMaxChars` 是软上限**：超限追加的可见截断提示行不计入预算，最终字符数可能略超该值（默认 60000 下不触发，仅护栏）。
 - **防自食只覆盖自家注入**（批次A 范围）：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
 - **回声抑制是标签级**（批次B B4）：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind`（M3）兜底，但意译文本不可辨。
+- **语义召回按轮嵌入查询**（批次B B1）：开启后每轮对当前用户消息嵌一次（受 `recallTimeoutMs` 约束，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
+- **召回块的会话内累积**（批次B B1）：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。

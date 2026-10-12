@@ -12,6 +12,7 @@
   "files": [
     "lib/",
     "web/",
+    "docs/",
     "cordis.patch.yml",
     "FORMAT.md"
   ],

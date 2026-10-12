@@ -953,7 +953,7 @@ function buildPipeHealthCard(data) {
   return card;
 }
 
-/** 提取模型卡（V-2/U4 两个诚实字段 + U7 嵌入模型预留位）：config 如实展示，
+/** 提取模型卡（两个诚实字段 + 嵌入召回配置）：config 如实展示，
  *  实时跟随值（sessionStates）API 层摸不到，不装样子。 */
 function buildPipeModelCard(data) {
   const cfg = data.extractionConfig && typeof data.extractionConfig === "object" ? data.extractionConfig : {};
@@ -969,7 +969,7 @@ function buildPipeModelCard(data) {
     : "尚未有提取";
   const embText = emb.provider || emb.model
     ? `${esc(emb.provider ?? "—")} / ${esc(L.modelShortName(emb.model) || "—")}`
-    : "未配置——向量语义召回尚未启用，此位留给 embed-model 2 一类本地嵌入模型";
+    : "未配置——语义召回未启用；配置 embeddingBaseUrl + embeddingModel 后，每轮按当前问题做嵌入检索";
   const inFlight = data.extractionInFlight === true;
   const card = document.createElement("div");
   card.className = "card";
@@ -978,7 +978,7 @@ function buildPipeModelCard(data) {
     <h3>提取模型${inFlight ? '<span class="badge">提取中…</span>' : ""}</h3>
     <div class="kv"><b>提取路由</b><span>${route}<span class="meta"> · fallback：${fbText}</span></span></div>
     <div class="kv"><b>最近一次提取用车</b><span>${usedText}</span></div>
-    <div class="kv"><b>嵌入模型（语义召回预留）</b><span>${embText}</span></div>
+    <div class="kv"><b>嵌入模型（语义召回）</b><span>${embText}</span></div>
     <div class="meta">提取默认跟随会话路由；要指定更稳的车型，在 cordis.patch.yml 给 dsh-memory 配 provider/model 或 fallback（配法见 README，不硬编码任何模型）。</div>`;
   return card;
 }

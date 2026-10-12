@@ -236,12 +236,12 @@ test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer（V-5）", (
   assert.match(panelSrc, /pipeRetryBusy/, "手动重试在途时 5s 轮询让位");
 });
 
-test("结构钉：提取模型卡两个诚实字段 + 嵌入模型预留位（V-2/U4/U7）", () => {
+test("结构钉：提取模型卡两个诚实字段 + 嵌入召回配置", () => {
   assert.match(panelSrc, /id = "data-pipe-model"/);
   assert.match(panelSrc, /未指定（跟随会话路由）/, "extractionConfig 缺失时的诚实文案");
   assert.match(panelSrc, /尚未有提取/, "lastUsedRoute 缺失时的诚实文案");
-  assert.match(panelSrc, /嵌入模型（语义召回预留）/, "U7 嵌入模型字段在场");
-  assert.match(panelSrc, /embed-model 2/, "U7 预留说明文案在场");
+  assert.match(panelSrc, /嵌入模型（语义召回）/, "嵌入模型字段在场");
+  assert.match(panelSrc, /语义召回未启用/, "未配置端点时的说明文案在场");
 });
 
 test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {

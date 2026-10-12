@@ -212,6 +212,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 - `slug`：workspace basename 净化（小写、`[^a-z0-9._-]+`→`-`、截 48、空则 `project`）
 - `hash16`：绝对路径（win32 转小写）sha256 前 16 hex
+- 记忆文件格式（frontmatter / 索引行 / `[[name]]` 互链 / 跨 agent 互认约定）见 [FORMAT.md](FORMAT.md)
 
 ## 回滚与卸载
 

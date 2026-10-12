@@ -203,3 +203,13 @@ test("M3: renderTranscript 剔除插件注入行，保留正常用户/助手/工
   assert.match(text, /\[seq 4\] ToolCall read:/);
   assert.match(text, /\[seq 5\] ToolResult: 工具结果/);
 });
+
+test("B4: renderTranscript 剥掉助手回复里回声的注入块（<memory-context> 整段）", () => {
+  const echoed = "好的，我按记忆来。<memory-context>\n注入的记忆正文 SHOULD-NOT-APPEAR\n</memory-context> 以上。";
+  const events = [
+    { type: "assistant/message", surfaceOp: "append", seq: 1, data: { message: { content: [{ type: "text", text: echoed }] } } },
+  ];
+  const text = renderTranscript(events);
+  assert.doesNotMatch(text, /SHOULD-NOT-APPEAR/, "回声的注入块内容必须被剥掉");
+  assert.match(text, /我按记忆来/, "回复里的正常文本仍在");
+});

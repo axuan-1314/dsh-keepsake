@@ -89,6 +89,7 @@ test("批次A：默认 message 模式——pre-step 注入 memory-context（不�
     assert.equal(typeof injected.source.digest, "string");
     const text = textOf(injected);
     assert.match(text, /^<memory-context>/);
+    assert.match(text, /Reference memory from earlier sessions/); // B3 免责/署名行
     assert.match(text, /Global memory index/); // 全局索引段
     assert.match(text, /Uses pnpm/); // 条目内容
     assert.match(text, /Persistent project memory/); // 项目使用说明段（cwd 有效）

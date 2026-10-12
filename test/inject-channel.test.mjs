@@ -6,10 +6,12 @@ import {
   INJECT_SEGMENT_ORDER,
   INJECT_SOURCE_KIND,
   MEMORY_CONTEXT_FORM,
+  MEMORY_CONTEXT_INTRO,
   buildMemoryContext,
   digestOf,
   isPluginSourcedMessage,
   sameInjectionText,
+  stripMemoryMarkup,
 } from "../lib/inject-channel.js";
 
 test("常量：来源标识/ form / 顺序", () => {
@@ -119,4 +121,26 @@ test("⑧ digestOf：稳定且区分输入", () => {
   assert.match(digestOf("hello"), /^[0-9a-f]{40}$/);
   assert.equal(digestOf(123), digestOf("123")); // 非字符串先 String() 归一
   assert.equal(digestOf(""), digestOf(""));
+});
+
+test("⑨ B3 免责/署名行：intro 在开标签后首行、计入预算；缺省不破坏既有形态", () => {
+  const segments = { persona: "人格" };
+  assert.equal(buildMemoryContext(segments).text, "<memory-context>\n人格\n</memory-context>", "无 intro 形态不变");
+  const { text } = buildMemoryContext(segments, { intro: "INTRO" });
+  assert.equal(text, "<memory-context>\nINTRO\n\n人格\n</memory-context>");
+  assert.ok(MEMORY_CONTEXT_INTRO.length > 0);
+  // intro 计入预算：给刚够正文+包裹、不够 intro 的预算 → 触发 persona 截断
+  const tight = buildMemoryContext({ persona: "A".repeat(50) }, { maxChars: 50, intro: MEMORY_CONTEXT_INTRO });
+  assert.equal(tight.truncated, true);
+  assert.ok(tight.text.includes(MEMORY_CONTEXT_INTRO), "intro 仍在（先保 intro 再截正文）");
+});
+
+test("⑩ B4 stripMemoryMarkup：剥 <memory-context>/<memory-recall> 整段，保留其余", () => {
+  const squash = (s) => s.replace(/\s+/g, " ").trim();
+  assert.equal(squash(stripMemoryMarkup("前 <memory-context>\nA\n</memory-context> 后")), "前 后");
+  assert.equal(stripMemoryMarkup("<memory-recall>x</memory-recall>"), "");
+  assert.equal(stripMemoryMarkup("无标签纯文本"), "无标签纯文本");
+  assert.equal(stripMemoryMarkup(undefined), "");
+  assert.equal(stripMemoryMarkup(123), "123");
+  assert.equal(stripMemoryMarkup("<memory-context>unclosed"), "<memory-context>unclosed", "未闭合不误吃");
 });

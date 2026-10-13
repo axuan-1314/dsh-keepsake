@@ -1,5 +1,5 @@
 // panel-logic 检查：导入解析/预览行模型/主题映射/档位决策/近期动态/检索
-//   + 提取管道可观测纯函数（U1/U2/U6/V-7：三态判定/红条文案/模型短名/相对时间/诊断文本）。
+//   + 提取管道可观测纯函数（三态判定/红条文案/模型短名/相对时间/诊断文本）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -68,7 +68,7 @@ test("buildImportRequest：markdown 形态带 title 透传", () => {
   assert.deepEqual(r.body.payload, { markdown: "# 全部", title: "总汇" });
 });
 
-test("importTitleOf：markdown 标题推断（审查 P3-4 面板侧）；json 恒空", () => {
+test("importTitleOf：markdown 标题推断（面板侧）；json 恒空", () => {
   assert.equal(importTitleOf("markdown-split", "## 条目一\n内容\n\n## 条目二\n内容"), "条目一");
   assert.equal(importTitleOf("markdown-whole", "# 总标题\n\n正文"), "总标题");
   assert.equal(importTitleOf("markdown-whole", "没有标题的普通首行\n正文"), "没有标题的普通首行");
@@ -83,7 +83,7 @@ test("previewRowsOf：overwrite/rename 标红（danger），add 不标；preview
   const rows = previewRowsOf([
     { category: "work-profile", name: "a.md", title: "A", action: "overwrite", content: "x".repeat(100) },
     { category: "work-profile", name: "b.md", title: "B", action: "add", content: "短" },
-    { category: "work-profile", name: "c-2.md", title: "C", action: "rename", content: "改名避让" }, // IMP-1 批内去重
+    { category: "work-profile", name: "c-2.md", title: "C", action: "rename", content: "改名避让" }, // 批内去重
   ]);
   assert.equal(rows.length, 3);
   assert.equal(rows[0].danger, true);
@@ -147,7 +147,7 @@ test("ladderNoteOf：降级可见提示文案（window 档无提示）", () => {
   assert.equal(ladderNoteOf("window"), "");
 });
 
-test("panelBackAction：popup 关窗 / iframe 通知宿主 / 顶层按 hash 步数回退（审查 P3-1）", () => {
+test("panelBackAction：popup 关窗 / iframe 通知宿主 / 顶层按 hash 步数回退", () => {
   assert.deepEqual(panelBackAction(true, false, 1, 0), { mode: "close" });
   assert.deepEqual(panelBackAction(false, true, 1, 0), { mode: "notify-host" });
   // 顶层：面板内部点过 3 个路由 → 一次跳回 4 步前的设置页
@@ -157,7 +157,7 @@ test("panelBackAction：popup 关窗 / iframe 通知宿主 / 顶层按 hash 步�
   assert.deepEqual(panelBackAction(false, false, 1, 0), { mode: "root" });
 });
 
-// ---- 条目草稿预检（U-TRU1 / P3-11 / P3-14） ----
+// ---- 条目草稿预检 ----
 
 test("utf8Length：ASCII 1 字节 / CJK 3 字节 / emoji 4 字节；空与 null 防御", () => {
   assert.equal(utf8Length("abc"), 3);
@@ -170,7 +170,7 @@ test("utf8Length：ASCII 1 字节 / CJK 3 字节 / emoji 4 字节；空与 null 
 
 test("validateEntryDraft：必填 / 20000 字符上限 / 字节上限三道门", () => {
   assert.equal(validateEntryDraft("标题", "正文").ok, true);
-  assert.equal(validateEntryDraft("", "正文").ok, false); // 空标题（P3-11：服务端会静默回退旧标题）
+  assert.equal(validateEntryDraft("", "正文").ok, false); // 空标题（服务端会静默回退旧标题）
   assert.equal(validateEntryDraft("  ", "正文").ok, false);
   assert.equal(validateEntryDraft("标题", "").ok, false); // 空正文（会建出空白条目）
   assert.equal(validateEntryDraft("标题", "   ").ok, false);
@@ -178,7 +178,7 @@ test("validateEntryDraft：必填 / 20000 字符上限 / 字节上限三道门",
   assert.equal(overChars.ok, false);
   assert.match(overChars.error, /20000 字符上限/);
   // 默认门槛下字符门先拦（码元≤20000 ⇒ UTF-8≤40000B）；字节门是 maxlength 被绕过
-  // （脚本赋值/拖放/存量超长）时的纵深防线——自定义参数钉独立逻辑（P3-14）。
+  // （脚本赋值/拖放/存量超长）时的纵深防线——自定义参数钉独立逻辑。
   const emoji = "😀".repeat(5001); // 10002 码元 / 20004 UTF-8 字节
   assert.equal(validateEntryDraft("标题", emoji).ok, true); // 默认门槛放行
   const overBytes = validateEntryDraft("标题", emoji, { maxBytes: 20000 });
@@ -219,7 +219,7 @@ test("filterEntries：三字段小写包含；空 query 全量；null 防御", (
   assert.equal(filterEntries(null, "x").length, 0);
 });
 
-// ---- 源码模式序列化/解析（审查 P2 修复：description 往返不丢） ----
+// ---- 源码模式序列化/解析（description 往返不丢） ----
 
 test("serializeEntries ↔ parseSourceText：含 description 的整类往返无损", () => {
   const entries = [
@@ -231,7 +231,7 @@ test("serializeEntries ↔ parseSourceText：含 description 的整类往返无�
   assert.equal(back.length, 2);
   assert.equal(back[0].title, "团队技术栈");
   assert.equal(back[0].name, "team-stack.md");
-  assert.equal(back[0].description, "包管理与运行时", "description 必须随注释往返（审查 P2 回归钉）");
+  assert.equal(back[0].description, "包管理与运行时", "description 必须随注释往返（回归钉）");
   assert.equal(back[0].content, "统一 pnpm + Node 24。");
   assert.equal(back[1].description, "");
 });
@@ -252,7 +252,7 @@ test("parseSourceText：desc 含 --> 时转义往返；头部不合规块跳过�
   assert.equal(parsed[1].name, "b.md");
 });
 
-test("serializeEntries：desc 含换行折叠为空格（审查 P3-15：单行注释协议防失配丢 name）", () => {
+test("serializeEntries：desc 含换行折叠为空格（单行注释协议防失配丢 name）", () => {
   const text = serializeEntries([
     { title: "T", name: "t.md", description: "第一行\n第二行", content: "正文" },
   ]);
@@ -264,7 +264,7 @@ test("serializeEntries：desc 含换行折叠为空格（审查 P3-15：单行�
   assert.equal(back[0].description, "第一行 第二行");
 });
 
-// ---- 提取管道可观测（U1/U2/U6 + V-7/V-11：/state 新字段 tolerant 消费纯函数） ----
+// ---- 提取管道可观测（/state 新字段 tolerant 消费纯函数） ----
 
 test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed，顺序稳定（分桶展示序）", () => {
   assert.deepEqual(EXTRACTION_BUCKET_KEYS, [
@@ -272,7 +272,7 @@ test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed，顺序稳�
   ]);
 });
 
-test("modelShortName：取路径末段（U2 门牌车型）；无斜杠原样；空/null 防御", () => {
+test("modelShortName：取路径末段（门牌车型）；无斜杠原样；空/null 防御", () => {
   assert.equal(modelShortName("group/chat-model"), "chat-model");
   assert.equal(modelShortName("a/b/c"), "c");
   assert.equal(modelShortName("auto-glm"), "auto-glm");
@@ -300,12 +300,12 @@ test("relativeTimeOf：刚刚/秒/分/时/天；超 30 天回落绝对日期；�
   assert.match(relativeTimeOf(now - 40 * 86400000, now), /^\d{4}-\d{2}-\d{2}$/, "超 30 天回落 YYYY-MM-DD");
 });
 
-test("extractionStreakOf：对象取 streak / 缺字段 0 / 旧数字形态原值（V-11 混搭矩阵）", () => {
+test("extractionStreakOf：对象取 streak / 缺字段 0 / 旧数字形态原值（混搭矩阵）", () => {
   assert.equal(extractionStreakOf({ streak: 0 }), 0);
   assert.equal(extractionStreakOf({ streak: 1 }), 1);
   assert.equal(extractionStreakOf({ streak: 10 }), 10);
   assert.equal(extractionStreakOf({}), 0);
-  assert.equal(extractionStreakOf(5), 5); // 旧数字形态（P-PIPE1 之前的服务端）
+  assert.equal(extractionStreakOf(5), 5); // 旧数字形态
   assert.equal(extractionStreakOf(null), 0);
   assert.equal(extractionStreakOf(void 0), 0);
 });
@@ -318,19 +318,19 @@ test("pipeHealthLevel 三态矩阵：红 streak≥1 / 灰 busy / 黄 恢复<24h 
   assert.equal(pipeHealthLevel({ streak: 0 }, { inFlight: true }), "busy");
   assert.equal(pipeHealthLevel({ streak: 0, retried: 2 }), "yellow");
   assert.equal(pipeHealthLevel({ streak: 0, lastRecoveredAt: now - 3600_000 }, { now }), "yellow", "24h 内恢复过");
-  assert.equal(pipeHealthLevel({ streak: 0, retried: 1, lastRecoveredAt: now - 30 * 3600_000 }, { now }), "yellow", "retried>0 且 streak=0（E-4 黄态）");
+  assert.equal(pipeHealthLevel({ streak: 0, retried: 1, lastRecoveredAt: now - 30 * 3600_000 }, { now }), "yellow", "retried>0 且 streak=0（黄态）");
   assert.equal(pipeHealthLevel({ streak: 0 }, { now }), "green");
   assert.equal(pipeHealthLevel({ streak: 0, retried: 0, lastRecoveredAt: now - 30 * 3600_000 }, { now }), "green", "恢复超 24h 且无重试痕迹回绿");
   assert.equal(pipeHealthLevel(3), "red", "旧数字形态按 streak");
   assert.equal(pipeHealthLevel(null), "green", "旧服务端无失败字段：绿灯");
 });
 
-test("extractionNoticeText：新版带病因+车型短名；streak 0 → 空；旧形态沿用旧单行文案（V-11 零回归）", () => {
+test("extractionNoticeText：新版带病因+车型短名；streak 0 → 空；旧形态沿用旧单行文案（零回归）", () => {
   const OLD = (n) => `记忆自动提取最近连续失败 ${n} 次，期间对话内容可能未被记录——请检查服务端日志。`;
   assert.equal(extractionNoticeText(null), "");
   assert.equal(extractionNoticeText(0), "");
   assert.equal(extractionNoticeText({ streak: 0, recent: [] }), "");
-  // 新版主形态（U2 行1：计数 · 病因（车型末段））
+  // 新版主形态（计数 · 病因（车型末段））
   assert.equal(
     extractionNoticeText({ streak: 3, recent: [{ reason: "llm-error", at: 1, provider: "acme", model: "group/chat-model", message: "429 …" }] }),
     "自动提取失败 3 次 · 最近：llm-error（chat-model）",
@@ -348,7 +348,7 @@ test("extractionNoticeText：新版带病因+车型短名；streak 0 → 空；�
   assert.equal(extractionNoticeText(3), OLD(3));
 });
 
-test("extractionRangeText：seq X 之后的轮次…（V-3 收紧措辞）；条件不满足 → 空", () => {
+test("extractionRangeText：seq X 之后的轮次…（收紧措辞）；条件不满足 → 空", () => {
   const TEXT = "seq 473 之后的轮次尚未记录，恢复后自动补提";
   assert.equal(extractionRangeText({ streak: 3 }, { from: 473, to: 478 }), TEXT);
   assert.equal(extractionRangeText({ streak: 1 }, { from: 473 }), TEXT);
@@ -397,7 +397,7 @@ test("diagnosticTextOf：版本/全量分桶（含零值）/最近失败摘要/�
   assert.equal(typeof diagnosticTextOf(null, now), "string");
 });
 
-// ---- 批次A 注入面摘要（/state.injection tolerant 消费纯函数） ----
+// ---- 注入面摘要（/state.injection tolerant 消费纯函数） ----
 
 test("injectionSummary：正常值「已注入 N 次 · 最近 X 字符」；丢段/渲染失败附加；空与 undefined → null", () => {
   assert.equal(injectionSummary({ count: 3, lastChars: 1200 }), "已注入 3 次 · 最近 1200 字符");

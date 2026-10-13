@@ -1,4 +1,4 @@
-// scope-route：提取 ops 的 scope 协议路由（方案C §13 + R9/R10）。
+// scope-route：提取 ops 的 scope 协议路由。
 //   未知 scope 显式 skip+warn；global 开关关过滤计数；project 开关关过滤计数；
 //   recent-activity host 盖 timestamp；project ops 走项目根原逻辑。
 import assert from "node:assert/strict";
@@ -79,7 +79,7 @@ test("applyScopedOps：global op 走全局分类根（type: global 落盘）", (
   }
 });
 
-test("applyScopedOps：recent-activity 写入 host 盖 timestamp（R9，不信模型报时）", () => {
+test("applyScopedOps：recent-activity 写入 host 盖 timestamp（不信模型报时）", () => {
   const { storageRoot, projectRoot } = freshRoot();
   try {
     const before = Date.now();
@@ -115,7 +115,7 @@ test("applyScopedOps：未知 scope 显式 skip + warn（不炸整批，好 op �
   }
 });
 
-test("applyScopedOps：allowGlobal=false → global ops 过滤计数（R10），project 照落", () => {
+test("applyScopedOps：allowGlobal=false → global ops 过滤计数，project 照落", () => {
   const { storageRoot, projectRoot } = freshRoot();
   try {
     const result = applyScopedOps({ storageRoot, projectRoot }, [

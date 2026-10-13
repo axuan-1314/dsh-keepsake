@@ -47,7 +47,7 @@ test("sanitizeMemoryName: 越界/点段/黑名单/控制符/冒号", () => {
   assert.equal(sanitizeMemoryName("a\u0000b.md"), "ab.md"); // 控制符剥除
   assert.equal(sanitizeMemoryName("MEMORY.md"), null); // 索引保留
   assert.equal(sanitizeMemoryName("memory.md"), null); // win32 大小写不敏感
-  // 审查 P1 修复：无扩展名的 "memory" 补 .md 后恰为索引文件——旧实现保留名检查在追加之前，漏拦
+  // 无扩展名的 "memory" 补 .md 后恰为索引文件——旧实现保留名检查在追加之前，漏拦
   assert.equal(sanitizeMemoryName("memory"), null, "无扩展名 memory 应拒（追加 .md 后即 MEMORY.md）");
   assert.equal(sanitizeMemoryName("Memory"), null);
   assert.equal(sanitizeMemoryName("sub/memory"), null, "嵌套末段同样应拒");
@@ -57,7 +57,7 @@ test("sanitizeMemoryName: 越界/点段/黑名单/控制符/冒号", () => {
   assert.equal(sanitizeMemoryName("."), null);
 });
 
-test("Windows 保留设备名段（审查 P3-6）：含带扩展名形态", () => {
+test("Windows 保留设备名段：含带扩展名形态", () => {
   for (const name of ["con.md", "CON.MD", "prn.md", "aux.md", "nul.md", "com1.md", "com9.md", "lpt1.md", "lpt9.md", "nul"]) {
     assert.equal(sanitizeMemoryName(name), null, `应拒绝保留名: ${name}`);
   }
@@ -81,7 +81,7 @@ test("INDEX_FILENAME 保留名核对", () => {
   assert.equal(INDEX_FILENAME, "MEMORY.md");
 });
 
-test("全面审查 P3-1：保留设备名剥到首点（nul.tar.md 一族拒绝）", () => {
+test("保留设备名剥到首点（nul.tar.md 一族拒绝）", () => {
   assert.equal(isReservedDeviceSegment("nul.tar.md"), true);
   assert.equal(isReservedDeviceSegment("aux.tar.gz.md"), true);
   assert.equal(isReservedDeviceSegment("lpt1.tar.md"), true);
@@ -91,7 +91,7 @@ test("全面审查 P3-1：保留设备名剥到首点（nul.tar.md 一族拒绝�
   assert.equal(sanitizeMemoryName("my-notes.tar.md"), "my-notes.tar.md"); // 非保留名不受影响
 });
 
-test("全面审查 P3-2：中间段冒充索引名拒绝（x/memory.md/y.md 一族）", () => {
+test("中间段冒充索引名拒绝（x/memory.md/y.md 一族）", () => {
   assert.equal(sanitizeMemoryName("x/memory.md/y.md"), null);
   assert.equal(sanitizeMemoryName("memory.md/y.md"), null);
   assert.equal(sanitizeMemoryName("x/MEMORY.md"), null); // 末段同样拒（既有语义保持）
@@ -99,7 +99,7 @@ test("全面审查 P3-2：中间段冒充索引名拒绝（x/memory.md/y.md 一�
 });
 
 test("stripControlAndBidi：值域剥控制符/bidi", () => {
-  assert.equal(stripControlAndBidi("小" + String.fromCharCode(0) + "舟"), "小舟");
+  assert.equal(stripControlAndBidi("好" + String.fromCharCode(0) + "的"), "好的");
   assert.equal(stripControlAndBidi("a" + String.fromCharCode(0x200b) + "b"), "ab");
   assert.equal(stripControlAndBidi("普通文本"), "普通文本");
 });

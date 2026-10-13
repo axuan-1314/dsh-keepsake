@@ -10,6 +10,8 @@
 - **Requirements**: DSH installed (any profile); Node ≥ 18; **zero runtime dependencies** (no `npm install`).
 - **License**: MIT (see [LICENSE](LICENSE))
 
+Design informed by the project-memory subsystems of comparable agents; v1 uses a single LLM call for simplified extraction.
+
 ## Contents
 
 - [What is this](#what-is-this)
@@ -259,7 +261,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 ## Development & testing
 
 ```bash
-npm test        # node --test, 309 tests (incl. the anti-drift gate test/client-source.test.mjs)
+npm test        # node --test, 320 tests (incl. the anti-drift gate test/client-source.test.mjs)
 npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 
@@ -269,12 +271,18 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 
 ## Known limitations
 
-- **No single-entry edit history** (intentional): single-entry overwrite replaces the old text; batch paths are auto-backed-up.
-- **Injection/recall blocks can accumulate** within a session (only compaction converges them; observable via `/state`).
-- **Anti-feedback covers only own injections**: the extraction side excludes only `plugin:*` sources; host-official injections are still treated as ordinary user content.
-- **`injectMaxChars` is a soft cap**: the appended truncation notice is not counted, so the final size may slightly exceed it.
-- **Recall embeds the query every turn**: the first enable embeds all entries once; the endpoint is circuit-broken for 60s after consecutive failures.
-- **markdown is the only source of truth**: no JSON source of truth.
-- **Not on npm**: distributed via git.
+- **Spec task-type filter not ported**: the upstream spec gates extraction eligibility by task type (interactive/fork/…); this plugin runs on all sessions and relies on the skip gates (no ≥3-word prose / direct-write turn) to suppress noise.
+- **Relative-path `file_path` direct-write detection is conservative**: `transcript.js` resolves write/edit `file_path` against memoryRoot, so a relative path that lands inside the memory dir is treated as a direct-write turn and skips extraction — conservative (more skips, never misses a save).
+- **Single LLM call** (not a subagent extraction loop, whose API surface is not established in DSH): when updating old memories the model only sees manifest descriptions + recent small files, not all old text; mitigated by attaching bodies (≤3000 chars × most recent 10 files).
+- **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-memory"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
+- **desktop/headless config changes need a restart** (see rollback section); no uniform hot reload.
+- **No single-entry edit history** (intentional): PUT persona / PUT entry replaces the old text — a bad paste overwrites it; batch paths (reset/import/restore) are auto-backed-up.
+- **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (40-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
+- **Injection blocks can accumulate within a session**: on content change a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them; each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
+- **`injectMaxChars` is a soft cap**: the appended visible truncation notice is not counted, so the final size may slightly exceed it (not triggered at the 60000 default; a guardrail only).
+- **Anti-feedback covers only own injections**: the extraction side excludes only `plugin` / `plugin:*`; host-official injections (`agent-instructions`, `runtime-context`, …) are still treated as ordinary user content.
+- **Echo suppression is tag-level**: the extraction input strips our own `<memory-context>` / `<memory-recall>` wrapper blocks; a "paraphrased" quote without the tags is not stripped — excluding the injected message itself relies on `source.kind`, but paraphrased text is indistinguishable.
+- **Recall embeds the query every turn**: with recall enabled, the current user message is embedded each turn (bounded by `recallTimeoutMs`); entry vectors are incrementally cached, but **the first enable embeds all entries at once**. Off by default; no calls without a configured endpoint.
+- **Recall blocks can accumulate within a session**: on recall changes a new block is sent and old blocks are not removed; only compaction converges them; observable via `/state.recall`. No supersede. The endpoint is circuit-broken for 60s after consecutive failures.
 
 See [ROADMAP.md](ROADMAP.md) for direction.

@@ -1,5 +1,5 @@
-// client.js / panel.html 防漂移检查（U-DRI1 短平快第一步 + 各修复的结构钉）
-//   + 提取管道可观测（U1/U2/U6/V-1/V-5/V-7/V-9）：兜底-实现表驱动一致 + 面板消费锚。
+// client.js / panel.html 防漂移检查（短平快第一步 + 各修复的结构钉）
+//   + 提取管道可观测：兜底-实现表驱动一致 + 面板消费锚。
 //   源码 grep 型 + 兜底函数提取执行对比：lib/client.js 的内联兜底、web/panel.html 的
 //   协议字面量与行为锚点，任何一边改动立刻红——防止"检查测的是没被消费的那份"。
 import assert from "node:assert/strict";
@@ -25,13 +25,13 @@ const panelSrc = readFileSync(path.join(root, "web", "panel.html"), "utf8");
 function extractFactoryFn(src, name, params) {
   const re = new RegExp(`^ {4}function ${name}\\(${params}\\) \\{([\\s\\S]*?)\\n {4}\\}$`, "m");
   const m = src.match(re);
-  assert.ok(m, `client.js 必须保留内联兜底 ${name}（U-DRI1：动态 import 失败的退路）`);
+  assert.ok(m, `client.js 必须保留内联兜底 ${name}（动态 import 失败的退路）`);
   return new Function(...params.split(",").map((p) => p.trim().split("=")[0].trim()), m[1]);
 }
 
-// ---- U-DRI1：单一事实源与内联兜底 ----
+// ---- 单一事实源与内联兜底 ----
 
-test("防漂移：client.js 动态 import 消费 panel-logic（U-DRI1 根治面在位）", () => {
+test("防漂移：client.js 动态 import 消费 panel-logic（根治面在位）", () => {
   assert.match(clientSrc, /import\("\/dsh-memory\/panel\/panel-logic\.js"\)/, "client.js 必须动态加载自供 panel-logic 模块");
   assert.match(clientSrc, /LOGIC \? LOGIC\.ladderNoteOf/, "ladderNoteOf 必须经 panel-logic 优先分发");
   assert.match(clientSrc, /LOGIC \? LOGIC\.decideLadderTier/, "decideLadderTier 必须经 panel-logic 优先分发");
@@ -70,7 +70,7 @@ test("防漂移：协议常量 client.js 定义侧与 panel.html 字面量侧一
   }
 });
 
-test("防漂移：collectThemeVars 死导出保持删除（U-DRI1 收敛，不许回潮）", () => {
+test("防漂移：collectThemeVars 死导出保持删除（收敛，不许回潮）", () => {
   assert.ok(!clientSrc.includes("exports.collectThemeVars"), "client.js 不得再导出 collectThemeVars（零消费者的死拷贝）");
 });
 
@@ -80,9 +80,9 @@ test("防漂移：称呼防抖常量双端一致（漂移表 #7：600ms 魔数�
   assert.doesNotMatch(panelSrc, /\}, 600\);/, "panel.html 不得残留防抖魔数（用常量）");
 });
 
-// ---- U-LAD1 / P3-2 / P3-3：梯子生命周期结构钉 ----
+// ---- 梯子生命周期结构钉 ----
 
-test("结构钉：梯子代际号 + 中止检查在位（U-LAD1）", () => {
+test("结构钉：梯子代际号 + 中止检查在位", () => {
   assert.match(clientSrc, /ladderGenRef/, "代际 ref 必须存在");
   assert.match(clientSrc, /const gen = \+\+ladderGenRef\.current/, "openPanel 入口必须取新代际");
   assert.match(clientSrc, /gen !== ladderGenRef\.current \|\| !frame\.isConnected\) return/, "giveUp 必须双条件守卫（代际 + frame 连接）");
@@ -90,12 +90,12 @@ test("结构钉：梯子代际号 + 中止检查在位（U-LAD1）", () => {
   assert.match(clientSrc, /useEffect\(\(\) => \(\) => \{ ladderGenRef\.current \+= 1; \}, \[\]\)/, "Plaque 卸载必须作废代际");
 });
 
-test("结构钉：握手消息校验 ev.source（P3-3 并发两梯互不误点亮）", () => {
+test("结构钉：握手消息校验 ev.source（并发两梯互不误点亮）", () => {
   assert.match(clientSrc, /ev\.source === frame\.contentWindow/, "iframe 档 ready 只认本 frame");
   assert.match(clientSrc, /ev\.source === win/, "window 档 ready 只认本窗口");
 });
 
-test("结构钉：openPanel 入口复位档位 + 清旧 iframe（P3-2 双面板并存）", () => {
+test("结构钉：openPanel 入口复位档位 + 清旧 iframe（双面板并存）", () => {
   assert.match(clientSrc, /iframeHostRef\.current\) iframeHostRef\.current\.innerHTML = ""/, "openPanel 必须清理旧内嵌面板");
 });
 
@@ -113,15 +113,15 @@ test("结构钉：请求序号防线 + 写后强刷（[已知] 轮询在途回�
   assert.match(clientSrc, /if \(!busyRef\.current\) setMainOn/, "busy 期间不得回写开关");
 });
 
-// ---- U-THE1 / panel.html 行为锚 ----
+// ---- panel.html 行为锚 ----
 
-test("结构钉：主题桥手动断桥 + 内联清理 + 失效退路（U-THE1）", () => {
+test("结构钉：主题桥手动断桥 + 内联清理 + 失效退路", () => {
   assert.match(panelSrc, /if \(manualTheme\) return 0;/, "bridgeApply 必须 manualTheme 早退（断桥）");
   assert.match(panelSrc, /removeProperty\(name\)/, "手动钮必须 removeProperty 清 --dsw-alias-* 内联");
   assert.match(panelSrc, /bridgeLastOk/, "桥失效退路（lastOk 标记）必须在位");
 });
 
-test("结构钉：确认弹窗栈式（P3-5 不覆写下层对话框）", () => {
+test("结构钉：确认弹窗栈式（不覆写下层对话框）", () => {
   assert.match(panelSrc, /dialogHost\.appendChild\(layer\)/, "confirmDialog 必须 append 独立层");
   assert.doesNotMatch(
     panelSrc.slice(panelSrc.indexOf("function confirmDialog"), panelSrc.indexOf("function entryCard")),
@@ -130,7 +130,7 @@ test("结构钉：确认弹窗栈式（P3-5 不覆写下层对话框）", () => 
   );
 });
 
-test("结构钉：长度上限可见化（U-TRU1 / P3-12 双端）", () => {
+test("结构钉：长度上限可见化（双端）", () => {
   assert.match(clientSrc, /const ADDRESS_MAX_LEN = 40;/, "门牌称呼上限常量");
   assert.match(clientSrc, /maxLength: ADDRESS_MAX_LEN/, "门牌称呼输入必须 maxLength");
   assert.match(panelSrc, /maxlength="40"/, "面板称呼输入必须 maxlength=40");
@@ -139,9 +139,9 @@ test("结构钉：长度上限可见化（U-TRU1 / P3-12 双端）", () => {
   assert.match(panelSrc, /validateEntryDraft\(/, "保存前必须走草稿预检（必填/字符/字节）");
 });
 
-// ---- U2/U6/V-7/V-9：提取管道可观测（门牌红条两行制 + 双端一致） ----
+// ---- 提取管道可观测（门牌红条两行制 + 双端一致） ----
 
-test("防漂移：提取可观测纯函数经 panel-logic 优先分发（U6 消费分发锚）", () => {
+test("防漂移：提取可观测纯函数经 panel-logic 优先分发（消费分发锚）", () => {
   assert.match(clientSrc, /LOGIC \? LOGIC\.extractionStreakOf/, "streak 归一必须经 panel-logic 优先分发");
   assert.match(clientSrc, /LOGIC \? LOGIC\.extractionNoticeText/, "红条文案必须经 panel-logic 优先分发");
   assert.match(clientSrc, /LOGIC \? LOGIC\.extractionRangeText/, "错过区间文案必须经 panel-logic 优先分发");
@@ -191,7 +191,7 @@ test("防漂移：错过区间兜底 extractionRangeTextFallback 与实现表驱
   assert.ok(clientSrc.includes("`seq ${from} 之后的轮次尚未记录，恢复后自动补提`"));
 });
 
-test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示（U2/V-9/V-10）", () => {
+test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示", () => {
   assert.match(clientSrc, /openPanel\("#\/settings"\)/, "「详情」必须 openPanel 深链 #/settings（三档梯子同带）");
   assert.match(clientSrc, /extractionRangeText\(efRaw, state\.lastFailedRange\)/, "行2 错过区间消费 state.lastFailedRange");
   assert.match(clientSrc, /lastStreakRef/, "「红条从有到无」判断沿必须存 ref");
@@ -199,23 +199,23 @@ test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示�
   assert.match(clientSrc, /typeof hash === "string"/, "openPanel 深链参数必须防 React 事件对象误入");
 });
 
-// ---- U1/V-1/V-4/V-5/V-7/V-8：面板健康卡结构钉 ----
+// ---- 面板健康卡结构钉 ----
 
-test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（V-7 消费锚）", () => {
+test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（消费锚）", () => {
   assert.match(panelSrc, /L\.extractionNoticeText\(/, "健康卡红态 headline 必须走共享文案纯函数");
   assert.match(panelSrc, /L\.pipeHealthLevel\(/, "三态判定必须走纯函数");
   assert.match(panelSrc, /L\.modelShortName\(/, "车型短名必须走纯函数");
   assert.match(panelSrc, /L\.relativeTimeOf\(/, "相对时间必须走纯函数");
   assert.match(panelSrc, /L\.extractionStreakOf\(/, "streak 归一必须走纯函数");
   assert.match(panelSrc, /L\.diagnosticTextOf\(/, "复制诊断必须走纯函数组装");
-  assert.match(panelSrc, /id = "data-pipe-health"/, "健康卡锚点 id 在场（V-9 深链滚动目标）");
-  assert.match(panelSrc, /宿主版本较旧，未提供失败详情/, "旧服务端文案在位（V-11）");
-  assert.match(panelSrc, /extraction-errors\.log/, "失败日志路径行在位（V-10）");
+  assert.match(panelSrc, /id = "data-pipe-health"/, "健康卡锚点 id 在场（深链滚动目标）");
+  assert.match(panelSrc, /宿主版本较旧，未提供失败详情/, "旧服务端文案在位（旧版宿主）");
+  assert.match(panelSrc, /extraction-errors\.log/, "失败日志路径行在位（路径展示）");
   assert.match(panelSrc, /title="\$\{esc\(msg\)\}"/, "recent[].message 不可信——全量必须进 title 且过 esc()");
   assert.match(panelSrc, /msg\.length > 60 \? msg\.slice\(0, 60\)/, "message 摘要截 60 字符");
 });
 
-test("结构钉：立即重试三段式（V-1/V-6）——retry 只在 click handler、busy disabled、轮询只 GET state", () => {
+test("结构钉：立即重试三段式——retry 只在 click handler、busy disabled、轮询只 GET state", () => {
   const hits = panelSrc.match(/extract\/retry/g) ?? [];
   assert.equal(hits.length, 1, "extract/retry 全文件只允许出现一次（确认弹窗 onConfirm 内）——轮询路径绝不调 retry");
   const clickIdx = panelSrc.indexOf('retryBtn.addEventListener("click"');
@@ -223,13 +223,13 @@ test("结构钉：立即重试三段式（V-1/V-6）——retry 只在 click han
   assert.ok(clickIdx >= 0 && retryIdx > clickIdx, "retry 调用必须位于重试按钮 click handler 内");
   assert.match(panelSrc, /retryBtn\.disabled = true/, "202 后按钮 busy disabled");
   assert.match(panelSrc, /retryBtn\.textContent = "提取中…"/, "busy 文案「提取中…」");
-  assert.match(panelSrc, /toast\("提取已恢复"\)/, "streak 清零才 toast 成功（V-1 禁同步假承诺）");
+  assert.match(panelSrc, /toast\("提取已恢复"\)/, "streak 清零才 toast 成功（禁同步假承诺）");
   assert.match(panelSrc, /重试后仍未恢复，查看失败详情/, "60s 超时文案");
   assert.match(panelSrc, /setTimeout\(poll, 2000\)/, "2s 轮询节奏");
   assert.match(panelSrc, /Date\.now\(\) \+ 60000/, "轮询上限 60s");
 });
 
-test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer（V-5）", () => {
+test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer", () => {
   assert.match(panelSrc, /function stopPipePoll\(\)/, "清 timer 入口在位");
   assert.match(panelSrc, /\}, 5000\)/, "5s 轮询节奏");
   assert.match(panelSrc, /function render\(\) \{\r?\n  stopPipePoll\(\)/, "render 切路由必须先清健康卡轮询");
@@ -254,7 +254,7 @@ test("结构钉：设置页嵌入服务卡（面板配置嵌入端点的入口�
   assert.match(panelSrc, /validateEmbeddingDraft/, "面板侧校验接入");
 });
 
-test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {
+test("结构钉：细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {
   assert.match(panelSrc, /\.tableScroll \{ overflow: auto/, "tableScroll 样式在位");
   const wrapped = panelSrc.match(/<div class="tableScroll"><table class="preview">/g) ?? [];
   assert.ok(wrapped.length >= 2, "导入预览表与失败详情表都必须包 tableScroll 容器");
@@ -265,7 +265,7 @@ test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期�
   assert.match(panelSrc, /\.dot\.red \{ background: #d5564d; \}/, "灯点红 #d5564d");
 });
 
-// ---- 批次A：注入面（消息通道）防漂移 ----
+// ---- 注入面（消息通道）防漂移 ----
 
 test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱动一致（含纯失败告警）", () => {
   const fn = extractFactoryFn(clientSrc, "injectionSummaryFallback", "injection");
@@ -273,7 +273,7 @@ test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱
     null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
     { count: 0 }, // 未注入无异常：null
     { count: 0, lastChars: 5 }, // count=0（lastChars 无意义）：null
-    { count: 0, renderFailures: 2 }, // 纯失败：仍出告警（M1 显式可见，不静默藏）
+    { count: 0, renderFailures: 2 }, // 纯失败：仍出告警（显式可见，不静默藏）
     { count: -1, renderFailures: 0 }, // 非法 count 无异常：null
     { count: 3, lastChars: 1200 },
     { count: 3, lastChars: 1200, droppedSegments: 2 },

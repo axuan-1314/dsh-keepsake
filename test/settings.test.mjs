@@ -11,7 +11,7 @@ function freshRoot() {
   return mkdtempSync(join(tmpdir(), "dsh-memory-settings-"));
 }
 
-test("缺省：文件不存在 = 三开关全开（R4）", () => {
+test("缺省：文件不存在 = 三开关全开", () => {
   const root = freshRoot();
   try {
     const s = readSettings(root);

@@ -84,7 +84,7 @@ test("createEntry：重名自动 -2 避让", () => {
   }
 });
 
-test("createEntry：recent-activity 由 host 盖 timestamp（R9）", () => {
+test("createEntry：recent-activity 由 host 盖 timestamp", () => {
   const root = freshRoot();
   try {
     const before = Date.now();
@@ -224,14 +224,14 @@ test("isCategoryId / deriveEntryName / isSafeBackupId 纯函数", () => {
   assert.equal(isSafeBackupId("2026-10-08T14-00-00-000Z"), true);
   assert.equal(isSafeBackupId("../escape"), false);
   assert.equal(isSafeBackupId("a".repeat(100)), false);
-  // 审查 P2 修复：旧字符集正则放行 "." 与 ":"——restoreBackup(".") 曾把 global/ 清空不恢复
+  // 旧字符集正则放行 "." 与 ":"——restoreBackup(".") 曾把 global/ 清空不恢复
   assert.equal(isSafeBackupId("."), false, "单点目录名应拒绝");
   assert.equal(isSafeBackupId(":"), false, "盘符根应拒绝");
   assert.equal(isSafeBackupId(".."), false);
   assert.equal(isSafeBackupId("2026-10-08T14-00-00-000Z/../../evil"), false);
 });
 
-test("writeEntryDirect：嵌套名拒绝（审查 P2——嵌套条目会绕过 listEntries/clearCategory/滚动清理成幽灵）", () => {
+test("writeEntryDirect：嵌套名拒绝（嵌套条目会绕过 listEntries/clearCategory/滚动清理成幽灵）", () => {
   const root = freshRoot();
   try {
     assert.equal(writeEntryDirect(root, "work-profile", { name: "tools/rust.md", title: "R", content: "c" }), null);
@@ -243,7 +243,7 @@ test("writeEntryDirect：嵌套名拒绝（审查 P2——嵌套条目会绕过 
   }
 });
 
-test("restoreBackup：非法 id 抛错不清库（审查 P2 回归钉）", () => {
+test("restoreBackup：非法 id 抛错不清库（回归钉）", () => {
   const root = freshRoot();
   try {
     createEntry(root, "work-profile", { title: "W", content: "工" });
@@ -267,7 +267,7 @@ test("persona：不存在 = 出厂模板（isDefault）", () => {
   }
 });
 
-test("persona：写入后读回（stripFrontmatter）；reset 恢复默认模板（R5 非清空）", () => {
+test("persona：写入后读回（stripFrontmatter）；reset 恢复默认模板（非清空）", () => {
   const root = freshRoot();
   try {
     writePersona(root, "# 我的人设\n直接一点。");
@@ -304,14 +304,14 @@ test("addressing：缺省空；写入读回；部分更新；40 字符截断；�
   const root = freshRoot();
   try {
     assert.deepEqual(readAddressing(root), { dshName: "", userAlias: "", corrupt: false });
-    writeAddressing(root, { dshName: "小舟" });
-    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "", corrupt: false });
-    writeAddressing(root, { userAlias: "老板" });
-    assert.deepEqual(readAddressing(root), { dshName: "小舟", userAlias: "老板", corrupt: false });
+    writeAddressing(root, { dshName: "小助手" });
+    assert.deepEqual(readAddressing(root), { dshName: "小助手", userAlias: "", corrupt: false });
+    writeAddressing(root, { userAlias: "朋友" });
+    assert.deepEqual(readAddressing(root), { dshName: "小助手", userAlias: "朋友", corrupt: false });
     const long = writeAddressing(root, { dshName: "x".repeat(50) });
     assert.equal(long.dshName.length, 40);
-    const dirty = writeAddressing(root, { dshName: "小" + String.fromCharCode(0) + "舟" });
-    assert.equal(dirty.dshName, "小舟"); // 全面审查 P3：控制符被剥
+    const dirty = writeAddressing(root, { dshName: "小" + String.fromCharCode(0) + "助手" });
+    assert.equal(dirty.dshName, "小助手"); // 控制符被剥
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -324,8 +324,8 @@ test("addressing：损坏 JSON = 空称呼 + corrupt 标记（可见降级），
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "addressing.json"), "{bad", "utf8");
     const read = readAddressing(root, { warn: () => {} });
-    assert.deepEqual(read, { dshName: "", userAlias: "", corrupt: true }); // 全面审查 H-COR1：不再静默
-    writeAddressing(root, { dshName: "小舟" });
+    assert.deepEqual(read, { dshName: "", userAlias: "", corrupt: true }); // 不再静默
+    writeAddressing(root, { dshName: "小助手" });
     const preserved = readdirSync(dir).filter((f) => f.startsWith("addressing.json.corrupt-"));
     assert.equal(preserved.length, 1); // 原损坏档备份，不被覆盖丢尸
     assert.equal(readAddressing(root).corrupt, false);
@@ -415,14 +415,14 @@ test("exportAll：五分类 + persona + addressing 结构化导出", () => {
   try {
     createEntry(root, "work-profile", { title: "W", content: "工" });
     createEntry(root, "long-term", { title: "L", content: "长" });
-    writeAddressing(root, { dshName: "小舟", userAlias: "老板" });
+    writeAddressing(root, { dshName: "小助手", userAlias: "朋友" });
     writePersona(root, "人设正文");
     const all = exportAll(root);
     assert.equal(all.version, 1);
     assert.equal(all.categories["work-profile"].length, 1);
     assert.equal(all.categories["long-term"].length, 1);
     assert.equal(all.categories["recent-activity"].length, 0);
-    assert.equal(all.addressing.dshName, "小舟");
+    assert.equal(all.addressing.dshName, "小助手");
     assert.match(all.persona, /人设正文/);
     assert.ok(all.exportedAt);
   } finally {
@@ -488,9 +488,9 @@ test("globalRoot/categoryDir：路径拼装与分类校验", () => {
   assert.throws(() => categoryDir("/r", "evil"));
 });
 
-// ---- 全面审查修复批 A 回归钉 ----
+// ---- 修复回归钉 ----
 
-test("IMP-1/嵌套名：createEntry 嵌套名显式拒绝（与 writeEntryDirect 统一）", () => {
+test("嵌套名：createEntry 嵌套名显式拒绝（与 writeEntryDirect 统一）", () => {
   const root = freshRoot();
   try {
     assert.equal(createEntry(root, "long-term", { title: "X", content: "c", name: "a/b.md" }), null);
@@ -500,7 +500,19 @@ test("IMP-1/嵌套名：createEntry 嵌套名显式拒绝（与 writeEntryDirect
   }
 });
 
-test("H-BAK1：备份滚动上限（只留最新 BACKUP_KEEP 份）", () => {
+test("createEntry：标题含 \"/\" 派生命名取末段（不整条拒绝）", () => {
+  const root = freshRoot();
+  try {
+    const created = createEntry(root, "long-term", { title: "API/DB 设计", content: "c" });
+    assert.ok(created !== null, "标题含斜杠应可落盘（旧行为整条拒绝）");
+    assert.ok(!created.name.includes("/"), `落盘名不得含嵌套路径：${created.name}`);
+    assert.equal(listEntries(root, "long-term").length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("备份滚动上限（只留最新 BACKUP_KEEP 份）", () => {
   const root = freshRoot();
   try {
     createEntry(root, "long-term", { title: "keep", content: "c" });
@@ -514,7 +526,7 @@ test("H-BAK1：备份滚动上限（只留最新 BACKUP_KEEP 份）", () => {
   }
 });
 
-test("H-RES1：半备份拒绝恢复（complete:false 与无 meta 两形态）", () => {
+test("半备份拒绝恢复（complete:false 与无 meta 两形态）", () => {
   const root = freshRoot();
   try {
     const sRoot = root;
@@ -538,7 +550,7 @@ test("H-RES1：半备份拒绝恢复（complete:false 与无 meta 两形态）",
   }
 });
 
-test("H-RES1：恢复后原态可被 pre 备份找回（换入语义不丢档）", () => {
+test("恢复后原态可被 pre 备份找回（换入语义不丢档）", () => {
   const root = freshRoot();
   try {
     const sRoot = root;
@@ -555,7 +567,7 @@ test("H-RES1：恢复后原态可被 pre 备份找回（换入语义不丢档）
   }
 });
 
-test("H-COR1 persona：损坏回退出厂 + corrupt 标记 + 写前备份", () => {
+test("persona：损坏回退出厂 + corrupt 标记 + 写前备份", () => {
   const root = freshRoot();
   try {
     const gDir = globalRoot(root);
@@ -575,7 +587,7 @@ test("H-COR1 persona：损坏回退出厂 + corrupt 标记 + 写前备份", () =
   }
 });
 
-test("P3-3/sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
+test("sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
   const root = freshRoot();
   try {
     const sRoot = root;
@@ -593,7 +605,7 @@ test("P3-3/sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
   }
 });
 
-test("O-A2/recentTsOf：未来时间戳钳制回 mtime、坏值回退、字符串 ISO 支持", () => {
+test("recentTsOf：未来时间戳钳制回 mtime、坏值回退、字符串 ISO 支持", () => {
   const now = Date.now();
   assert.equal(recentTsOf({ timestamp: new Date(now - 5000).toISOString(), mtimeMs: now - 9000 }), now - 5000); // ISO 字符串
   assert.equal(recentTsOf({ timestamp: now - 5000, mtimeMs: now - 9000 }), now - 5000); // 数值
@@ -602,7 +614,7 @@ test("O-A2/recentTsOf：未来时间戳钳制回 mtime、坏值回退、字符�
   assert.equal(recentTsOf({ timestamp: "garbage" }), 0); // 双坏 = 0
 });
 
-test("O-A2：未来时间戳条目不再永生（prune 判龄同源 recentTsOf）", () => {
+test("未来时间戳条目不再永生（prune 判龄同源 recentTsOf）", () => {
   const root = freshRoot();
   try {
     const old = new Date(Date.now() - 40 * 86400_000).toISOString();

@@ -1,5 +1,5 @@
-// 批F1 提取调用重试韧性：错误分类（E-1 route on code）/ 重试链+drain 纪律（E-2）/
-// 退避参数与纯函数（E-3）/ retried·lastRecoveredAt 计数（E-4）/ fallback 换道接线（E-5 + 批次A M6）。
+// 提取调用重试韧性：错误分类（route on code）/ 重试链+drain 纪律/
+// 退避参数与纯函数 / retried·lastRecoveredAt 计数 / fallback 换道接线。
 // 假 ctx 配方照 test/entry.test.mjs；DATA_DIR 隔离照各测试的 mkdtempSync(tmpdir())，
 // 不写 ~/.dsh 真实数据、不真实调用任何 LLM（stream 全假队列）。
 import assert from "node:assert/strict";
@@ -147,9 +147,9 @@ function authSettled() {
   return authSettleTicks >= 2;
 }
 
-// ---- E-1: isRetryableFailure 表驱动钉 ----
+// ---- isRetryableFailure 表驱动钉 ----
 
-test("F1 E-1 isRetryableFailure 表驱动：可重试 code 逐个断言", () => {
+test("isRetryableFailure 表驱动：可重试 code 逐个断言", () => {
   for (const code of ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"]) {
     assert.equal(isRetryableFailure({ code, message: "irrelevant" }), true, `code=${code} 应可重试`);
     // code 一致即可重试——message 再无害也不翻转结论（route on code, never by parsing message）
@@ -157,14 +157,14 @@ test("F1 E-1 isRetryableFailure 表驱动：可重试 code 逐个断言", () => 
   }
 });
 
-test("F1 E-1 isRetryableFailure 表驱动：确定性失败 code 逐个断言不可重试", () => {
+test("isRetryableFailure 表驱动：确定性失败 code 逐个断言不可重试", () => {
   for (const code of ["AUTH", "INVALID_REQUEST", "QUOTA", "NO_ADAPTER", "CONTEXT_WINDOW_EXCEEDED", "MISSING_CREDENTIAL"]) {
     assert.equal(isRetryableFailure({ code, message: "429 slow down please" }), false, `code=${code} 应不可重试`);
   }
 });
 
-test("F1 E-1 isRetryableFailure：code 缺失时的保守消息兜底（最后手段）", () => {
-  // 现场真实形态（方案 §1.1 证据）：真实 429 的 failure.code 是 null，message 是唯一线索
+test("isRetryableFailure：code 缺失时的保守消息兜底（最后手段）", () => {
+  // 现场真实形态：真实 429 的 failure.code 是 null，message 是唯一线索
   assert.equal(
     isRetryableFailure({ code: null, message: "OpenCode Zen Free: Upstream request failed: Endpoint is unavailable." }, "dsh-memory: 提取调用异常结束 kind=error"),
     true,
@@ -179,9 +179,9 @@ test("F1 E-1 isRetryableFailure：code 缺失时的保守消息兜底（最后�
   assert.equal(isRetryableFailure(undefined, ""), false);
 });
 
-// ---- E-2: 重试链集成钉 ----
+// ---- 重试链集成钉 ----
 
-test("F1 E-2 重试链：可重试 code 失败后重试成功——3 次 attempt、retried=2、落盘、lastRecoveredAt 打点", async () => {
+test("重试链：可重试 code 失败后重试成功——3 次 attempt、retried=2、落盘、lastRecoveredAt 打点", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-retry-"));
@@ -212,7 +212,7 @@ test("F1 E-2 重试链：可重试 code 失败后重试成功——3 次 attempt
   }
 });
 
-test("F1 E-2 重试链：不可重试 code（AUTH）只 attempt 1 次即摊牌", async () => {
+test("重试链：不可重试 code（AUTH）只 attempt 1 次即摊牌", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-auth-"));
@@ -246,7 +246,7 @@ test("F1 E-2 重试链：不可重试 code（AUTH）只 attempt 1 次即摊牌",
   }
 });
 
-test("F1 E-2 重试链：三次全败——llm-error 只 +1、retried=+2（E-4/E-8 口径钉）", async () => {
+test("重试链：三次全败——llm-error 只 +1、retried=+2（口径钉）", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-exhaust-"));
@@ -277,7 +277,7 @@ test("F1 E-2 重试链：三次全败——llm-error 只 +1、retried=+2（E-4/E
   }
 });
 
-test("F1 E-2 drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", async () => {
+test("drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-drain-"));
@@ -344,7 +344,7 @@ test("F1 E-2 drain 纪律：退避 sleep 期间 dispose——不发起后续 att
   }
 });
 
-test("F1 E-2 drain 纪律：dispose 挂起中的 stream（永不 finish）后不再有后续 attempt", async () => {
+test("drain 纪律：dispose 挂起中的 stream（永不 finish）后不再有后续 attempt", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-hang-"));
@@ -396,9 +396,9 @@ test("F1 E-2 drain 纪律：dispose 挂起中的 stream（永不 finish）后不
   }
 });
 
-// ---- E-3: 退避纯函数 ----
+// ---- 退避纯函数 ----
 
-test("F1 E-3 retryDelayMs：指数退避+jitter 范围+cap+providerRetryAfterMs 优先", () => {
+test("retryDelayMs：指数退避+jitter 范围+cap+providerRetryAfterMs 优先", () => {
   const opts = { backoffMs: 500, maxDelayMs: 2000, jitterRatio: 0.2 };
   // 指数形状：base*2^(n-1) 钳 maxDelay——n=1 基准 500，n=2 基准 1000，
   // n=3 起 2000 触顶（这才是正确的指数退避：第 3 次重试已到 cap）。
@@ -431,9 +431,9 @@ test("F1 E-3 retryDelayMs：指数退避+jitter 范围+cap+providerRetryAfterMs 
   assert.ok(retryDelayMs(0, { backoffMs: 500, maxDelayMs: 2000, rand: 0 }) >= 1);
 });
 
-// ---- E-3/E-5: resolveConfig 钉 ----
+// ---- resolveConfig 钉 ----
 
-test("F1 E-3 resolveConfig：retry 参数合法值+缺省+非法值 fail loud", () => {
+test("resolveConfig：retry 参数合法值+缺省+非法值 fail loud", () => {
   const base = { enabled: true };
   // 缺省（batch 契约：3 attempt / 500 / 2000）
   const cfg = resolveConfig(base);
@@ -456,7 +456,7 @@ test("F1 E-3 resolveConfig：retry 参数合法值+缺省+非法值 fail loud", 
   assert.throws(() => resolveConfig({ ...base, retryMaxDelayMs: 2147483648 }), /too large/);
 });
 
-test("F1 E-5 resolveConfig：fallback 校验矩阵（空/合法/超量/重复/撞主道/缺配对）", () => {
+test("resolveConfig：fallback 校验矩阵（空/合法/超量/重复/撞主道/缺配对）", () => {
   const base = { enabled: true };
   // 缺省空 = 纯重试不换道（inert）
   assert.deepEqual(resolveConfig(base).fallback, []);
@@ -497,7 +497,7 @@ test("F1 E-5 resolveConfig：fallback 校验矩阵（空/合法/超量/重复/�
   assert.throws(() => resolveConfig({ ...base, fallback: [{ provider: "p", model: "m", weight: 2 }] }), /unknown fallback entry key/);
 });
 
-test("F1 E-5 resolveConfig：未知键 did-you-mean 提示（failbacks→fallback）", () => {
+test("resolveConfig：未知键 did-you-mean 提示（failbacks→fallback）", () => {
   assert.throws(() => resolveConfig({ enabled: true, fallbacks: [] }), /unknown config key "fallbacks" \(did you mean "fallback"\?\)/);
   // 无近邻时裸报错（不再脑补）
   assert.throws(() => resolveConfig({ enabled: true, zzzzqqq: 1 }), /unknown config key "zzzzqqq"$/);
@@ -505,7 +505,7 @@ test("F1 E-5 resolveConfig：未知键 did-you-mean 提示（failbacks→fallbac
   assert.throws(() => resolveConfig({ enabled: true, retryMaxDelay: 1 }), /did you mean "retryMaxDelayMs"\?/);
 });
 
-test("批次A M6 fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + 落盘", async () => {
+test("fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + 落盘", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-wire-"));
@@ -540,7 +540,7 @@ test("批次A M6 fallback 换道接线：主道耗尽→换道成功→记 fallb
   }
 });
 
-test("批次A M6 fallback：配了但全败 → 报 error、fallbackUsed 不加、不落盘", async () => {
+test("fallback：配了但全败 → 报 error、fallbackUsed 不加、不落盘", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-fail-"));
@@ -572,9 +572,9 @@ test("批次A M6 fallback：配了但全败 → 报 error、fallbackUsed 不加�
   }
 });
 
-// ---- E-4: metrics 计数与恢复语义 ----
+// ---- metrics 计数与恢复语义 ----
 
-test("F1 E-4 metrics：retried / lastRecoveredAt / fallbackUsed 契约", () => {
+test("metrics：retried / lastRecoveredAt / fallbackUsed 契约", () => {
   __resetMetricsForTest();
   let snap = extractionFailureSnapshot();
   assert.equal(snap.retried, 0);

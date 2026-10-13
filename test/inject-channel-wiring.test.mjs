@@ -1,4 +1,4 @@
-// inject-channel-wiring：批次A（v0.2.0）消息通道注入接线验收。
+// inject-channel-wiring：消息通道注入接线。
 //   模拟宿主 rc.2 的 agent/pre-step 契约（payload:{agent,messages,step,signal} + next()）
 //   与 agent.session.{header.cwd,surface.nodes,eventAt(seq)}，验证：
 //   minimal 场景不再依赖 section、视野去重（同内容不重复）、内容变化补发、视野丢失补发、
@@ -64,7 +64,7 @@ const run = (handler, payload, decision) => handler(payload, async () => decisio
 const textOf = (message) => message.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
 const userMsg = (text) => ({ role: "user", content: [{ type: "text", text }] });
 
-test("批次A：默认 message 模式——pre-step 注入 memory-context（不依赖 section，minimal 场景根治）", async () => {
+test("默认 message 模式——pre-step 注入 memory-context（不依赖 section，minimal 场景根治）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -89,7 +89,7 @@ test("批次A：默认 message 模式——pre-step 注入 memory-context（不�
     assert.equal(typeof injected.source.digest, "string");
     const text = textOf(injected);
     assert.match(text, /^<memory-context>/);
-    assert.match(text, /Reference memory from earlier sessions/); // B3 免责/署名行
+    assert.match(text, /Reference memory from earlier sessions/); // 免责/署名行
     assert.match(text, /Global memory index/); // 全局索引段
     assert.match(text, /Uses pnpm/); // 条目内容
     assert.match(text, /Persistent project memory/); // 项目使用说明段（cwd 有效）
@@ -103,7 +103,7 @@ test("批次A：默认 message 模式——pre-step 注入 memory-context（不�
   }
 });
 
-test("批次A：同内容已在视野 → 不重复注入；内容变化 → 补发；视野丢失 → 补发", async () => {
+test("同内容已在视野 → 不重复注入；内容变化 → 补发；视野丢失 → 补发", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -138,7 +138,7 @@ test("批次A：同内容已在视野 → 不重复注入；内容变化 → 补
   }
 });
 
-test("批次A：非注入场景一律原样返回（reject / step≠1 / 空批 / 批内已含我方消息 / 开关关）", async () => {
+test("非注入场景一律原样返回（reject / step≠1 / 空批 / 批内已含我方消息 / 开关关）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -175,7 +175,7 @@ test("批次A：非注入场景一律原样返回（reject / step≠1 / 空批 /
   }
 });
 
-test("批次A：projectMemory 关 → 消息模式不注入项目段，路由段也不指项目目录（口径一致）", async () => {
+test("projectMemory 关 → 消息模式不注入项目段，路由段也不指项目目录（口径一致）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -199,7 +199,7 @@ test("批次A：projectMemory 关 → 消息模式不注入项目段，路由段
   }
 });
 
-test("批次A：subagent 会话不注入（session.header.origin === 'subagent'）", async () => {
+test("subagent 会话不注入（session.header.origin === 'subagent'）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -217,7 +217,7 @@ test("批次A：subagent 会话不注入（session.header.origin === 'subagent'�
   }
 });
 
-test("批次A：injectMaxChars 预算触发整段丢弃 + 可见截断提示 + droppedSegments 记账", async () => {
+test("injectMaxChars 预算触发整段丢弃 + 可见截断提示 + droppedSegments 记账", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -237,7 +237,7 @@ test("批次A：injectMaxChars 预算触发整段丢弃 + 可见截断提示 + d
   }
 });
 
-test("批次A：injectChannel=section → 不注册 pre-step，恢复旧四段", () => {
+test("injectChannel=section → 不注册 pre-step，恢复旧四段", () => {
   const root = freshRoot();
   try {
     const { ctx, sections, handlers } = fakeCtx();
@@ -249,7 +249,7 @@ test("批次A：injectChannel=section → 不注册 pre-step，恢复旧四段",
   }
 });
 
-test("批次A：注入消息以 user/message 落事件流 → 提取侧 skip 门槛不被架空（防自食）", () => {
+test("注入消息以 user/message 落事件流 → 提取侧 skip 门槛不被架空（防自食）", () => {
   const root = freshRoot();
   try {
     const injected = { role: "user", content: [{ type: "text", text: "很长很长的一段注入记忆内容".repeat(20) }], source: { kind: "plugin:dsh-memory", form: "memory-context" } };
@@ -260,7 +260,7 @@ test("批次A：注入消息以 user/message 落事件流 → 提取侧 skip 门
   }
 });
 
-// ---- 批次B B1：嵌入语义召回接线 ----
+// ---- 嵌入语义召回接线 ----
 
 /** 确定性 stub 嵌入端点：向量按关键词命中（无需真实服务）。 */
 function stubFetch() {
@@ -285,7 +285,7 @@ async function withFetch(impl, fn) {
 
 const RECALL_CONFIG = { recallEnabled: true, embeddingBaseUrl: "http://stub/embeddings", embeddingProvider: "stub", embeddingModel: "stub-embed" };
 
-test("批次B B1：recallEnabled 时按语义召回注入 <memory-recall> 块（主块不受影响）", async () => {
+test("recallEnabled 时按语义召回注入 <memory-recall> 块（主块不受影响）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -308,7 +308,7 @@ test("批次B B1：recallEnabled 时按语义召回注入 <memory-recall> 块（
   }
 });
 
-test("批次B B1：recallEnabled 默认关 → 无召回块且零嵌入调用（行为与批次A 一致）", async () => {
+test("recallEnabled 默认关 → 无召回块且零嵌入调用", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -329,7 +329,7 @@ test("批次B B1：recallEnabled 默认关 → 无召回块且零嵌入调用（
   }
 });
 
-test("批次B B1：同查询二次 pre-step → 召回块不重复注入（视野去重）", async () => {
+test("同查询二次 pre-step → 召回块不重复注入（视野去重）", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -353,7 +353,7 @@ test("批次B B1：同查询二次 pre-step → 召回块不重复注入（视�
   }
 });
 
-test("批次B B1：嵌入响应畸形（缺 data）→ 降级不召回、记 errors", async () => {
+test("嵌入响应畸形（缺 data）→ 降级不召回、记 errors", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -372,7 +372,7 @@ test("批次B B1：嵌入响应畸形（缺 data）→ 降级不召回、记 err
   }
 });
 
-test("批次B B1：条目向量缓存——第二次 pre-step 不再重嵌条目，只嵌查询", async () => {
+test("条目向量缓存——第二次 pre-step 不再重嵌条目，只嵌查询", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -392,7 +392,7 @@ test("批次B B1：条目向量缓存——第二次 pre-step 不再重嵌条目
   }
 });
 
-test("批次B B1：嵌入端点失败 → 降级不召回、主块不受影响、记 errors", async () => {
+test("嵌入端点失败 → 降级不召回、主块不受影响、记 errors", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {

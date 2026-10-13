@@ -1,5 +1,5 @@
-// 批F2 观测面钉：extraction-errors.log 落盘+轮转（E-6）、recent 环形/区间/在途/用车（metrics）、
-// retry 端点契约（V-1/V-6）、scheduler.retryPending 单飞复用（V-1）。
+// 观测面钉：extraction-errors.log 落盘+轮转、recent 环形/区间/在途/用车（metrics）、
+// retry 端点契约、scheduler.retryPending 单飞复用。
 // 全部走临时目录，不碰 ~/.dsh 真实数据；假流配方照 test/retry.test.mjs。
 import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -29,16 +29,16 @@ import {
 import { makeApiRoutes } from "../lib/api.js";
 import { createScheduler } from "../lib/state.js";
 
-// ---- E-6: errorlog 纯函数 ----
+// ---- errorlog 纯函数 ----
 
-test("F2 E-6 sanitizeLogMessage：剥 CR/LF 防注入假行 + 截 200", () => {
+test("sanitizeLogMessage：剥 CR/LF 防注入假行 + 截 200", () => {
   assert.equal(sanitizeLogMessage("line1\nline2\r\nline3"), "line1 line2 line3");
   assert.equal(sanitizeLogMessage("a".repeat(500)).length, 200);
   assert.equal(sanitizeLogMessage(null), "");
   assert.equal(sanitizeLogMessage(42), "42");
 });
 
-test("F2 E-6 formatErrorLogLine：[ISO] [pid] reason provider/model 摘要", () => {
+test("formatErrorLogLine：[ISO] [pid] reason provider/model 摘要", () => {
   const line = formatErrorLogLine({ at: 1730000000000, reason: "llm-error", provider: "acme", model: "group/chat-model", message: "429: Endpoint is unavailable" }, 4321);
   assert.ok(line.startsWith("[2025-10-27T") || line.startsWith("[20"), line);
   assert.ok(line.includes("[4321] llm-error provider=acme model=group/chat-model 429: Endpoint is unavailable\n"), line);
@@ -47,9 +47,9 @@ test("F2 E-6 formatErrorLogLine：[ISO] [pid] reason provider/model 摘要", () 
   assert.ok(bare.includes("] no-cwd x"), bare);
 });
 
-// ---- E-6: 落盘与轮转 ----
+// ---- 落盘与轮转 ----
 
-test("F2 E-6 appendExtractionError：追加一行 + >512KB 先删旧 .1 再轮转", () => {
+test("appendExtractionError：追加一行 + >512KB 先删旧 .1 再轮转", () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-elog-"));
   try {
     appendExtractionError(root, { reason: "llm-error", provider: "p", model: "m", message: "first" });
@@ -71,7 +71,7 @@ test("F2 E-6 appendExtractionError：追加一行 + >512KB 先删旧 .1 再轮�
   }
 });
 
-test("F2 E-6 appendExtractionError：storageRoot 异常/IO 失败永不炸主流程", () => {
+test("appendExtractionError：storageRoot 异常/IO 失败永不炸主流程", () => {
   assert.doesNotThrow(() => appendExtractionError("", { reason: "x" }));
   assert.doesNotThrow(() => appendExtractionError(null, { reason: "x" }));
   // 指向一个「文件占位的路径」让 appendFileSync 必炸
@@ -86,7 +86,7 @@ test("F2 E-6 appendExtractionError：storageRoot 异常/IO 失败永不炸主流
 
 // ---- metrics 观测面 ----
 
-test("F2 metrics：recent 环形 ≤5 新在前 + 字段截断", () => {
+test("metrics：recent 环形 ≤5 新在前 + 字段截断", () => {
   __resetMetricsForTest();
   for (let i = 1; i <= 7; i += 1) {
     pushRecentFailure({ reason: "llm-error", message: `m${i}`, provider: `p${i}`, model: `model-${i}` });
@@ -107,7 +107,7 @@ test("F2 metrics：recent 环形 ≤5 新在前 + 字段截断", () => {
   assert.equal(extractionFailureSnapshot().recent[0].reason, "llm-error");
 });
 
-test("F2 metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷贝", () => {
+test("metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷贝", () => {
   __resetMetricsForTest();
   setExtractionFailedRange(473, 478);
   setExtractionInFlight(true);
@@ -129,9 +129,9 @@ test("F2 metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷�
   assert.equal(extractionObservationSnapshot().lastUsedRoute, null, "复位生效");
 });
 
-// ---- 批次A 注入面（消息通道注入健康：记账 / 异常计数 / 快照不可变） ----
+// ---- 注入面（消息通道注入健康：记账 / 异常计数 / 快照不可变） ----
 
-test("批次A metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ 缺省入参按 0", () => {
+test("metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ 缺省入参按 0", () => {
   __resetMetricsForTest();
   // 空态：字段恒在（缺失=旧版判据），值全零
   assert.deepEqual(injectionSnapshot(), {
@@ -156,7 +156,7 @@ test("批次A metrics：recordInjection 记账（count/chars/resend/dropped/last
   __resetMetricsForTest();
 });
 
-test("批次A metrics：recordInjectionError → renderFailures；快照不可变（改返回值不影响内部态）", () => {
+test("metrics：recordInjectionError → renderFailures；快照不可变（改返回值不影响内部态）", () => {
   __resetMetricsForTest();
   recordInjectionError();
   recordInjectionError();
@@ -175,7 +175,7 @@ test("批次A metrics：recordInjectionError → renderFailures；快照不可�
   assert.equal(injectionSnapshot().lastAt, null);
 });
 
-// ---- V-1/V-6: retry 端点契约 ----
+// ---- retry 端点契约 ----
 
 function mockReqRes() {
   const req = { method: "POST", socket: { remoteAddress: "127.0.0.1" }, headers: { host: "127.0.0.1:1" }, on() {}, destroy() {} };
@@ -215,7 +215,7 @@ function makeReq(method, path) {
   };
 }
 
-test("F2 api：POST extract/retry 202/409（在途+节流）/无 extraction 依赖 404", async () => {
+test("api：POST extract/retry 202/409（在途+节流）/无 extraction 依赖 404", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-retry-"));
   const log = { info() {}, warn() {}, error() {} };
   try {
@@ -269,7 +269,7 @@ test("F2 api：POST extract/retry 202/409（在途+节流）/无 extraction 依�
   }
 });
 
-test("F2 api：GET state 带批F2 新字段（观测面+双模型卡数据源）", async () => {
+test("api：GET state 带新字段（观测面+双模型卡数据源）", async () => {
   __resetMetricsForTest();
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-state-"));
   const log = { info() {}, warn() {}, error() {} };
@@ -286,7 +286,7 @@ test("F2 api：GET state 带批F2 新字段（观测面+双模型卡数据源）
     const res = mockRes();
     await handler(makeReq("GET", "state"), res);
     const body = JSON.parse(res.body);
-    // 批F2 契约字段恒在（缺失=旧版判定依据）
+    // 契约字段恒在（缺失=旧版判定依据）
     assert.ok(Array.isArray(body.extractionFailures.recent));
     assert.equal(body.extractionFailures.retried, 0);
     assert.equal(body.extractionFailures.fallbackUsed, 0);
@@ -327,9 +327,9 @@ test("api：只配 embeddingModel（不配 provider 标签）时 embeddingConfig
   }
 });
 
-// ---- V-1: scheduler.retryPending 单飞复用 ----
+// ---- scheduler.retryPending 单飞复用 ----
 
-test("F2 scheduler.retryPending：落后会话补提 + 在途合并 pending 不双跑", async () => {
+test("scheduler.retryPending：落后会话补提 + 在途合并 pending 不双跑", async () => {
   const calls = [];
   const extractCallsPerSession = new Map();
   const scheduler = createScheduler({

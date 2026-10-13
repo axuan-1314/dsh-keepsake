@@ -84,18 +84,18 @@ test("skipReason: 参数非 JSON 的 write 不误判", () => {
   assert.equal(skipReason(events, ROOT), null);
 });
 
-test("clipTail 保最新丢最旧 + 截断标记行（审查 P3-7 + P-PIPE2）", () => {
+test("clipTail 保最新丢最旧 + 截断标记行", () => {
   const lines = Array.from({ length: 10 }, (_, i) => `[seq ${i}] User: m${i}`);
   const text = lines.join("\n");
   const cut = clipTail(text, 40);
-  assert.match(cut, /^\[\.\.\.earlier content omitted \(extraction backlog truncated\)\.\.\.\]/); // P-PIPE2 模型可见标记
+  assert.match(cut, /^\[\.\.\.earlier content omitted \(extraction backlog truncated\)\.\.\.\]/); // 模型可见标记
   assert.match(cut, /m9$/); // 最新保留
   assert.doesNotMatch(cut, /m0 /); // 最旧丢弃
   assert.match(cut, /\[seq \d+\] User: m\d/); // 正文无残行
   assert.equal(clipTail(text, 100000), text); // 未超预算原样
 });
 
-test("clipTail/clip 码点安全（P3-4：切点不切出孤立代理对）", () => {
+test("clipTail/clip 码点安全（切点不切出孤立代理对）", () => {
   const text = "a".repeat(10) + "😀".repeat(4) + "b".repeat(10);
   const cut = clipTail(text, 12);
   assert.ok(cut.includes("😀"), "emoji 成对保留");
@@ -122,9 +122,9 @@ test("renderTranscript: 摘录含用户/助手/工具行并截断", () => {
   assert.doesNotMatch(text, /思考/); // reasoning 不进摘录
 });
 
-// ── M3 防自食：插件注入消息（source.kind 属插件）不进门槛、不进摘录 ──
+// ── 防自食：插件注入消息（source.kind 属插件）不进门槛、不进摘录 ──
 
-test("M3: 纯插件注入长文不算用户散文（≥3 词门槛不被架空）", () => {
+test("纯插件注入长文不算用户散文（≥3 词门槛不被架空）", () => {
   const longText = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
   const events = [
     {
@@ -138,7 +138,7 @@ test("M3: 纯插件注入长文不算用户散文（≥3 词门槛不被架空�
   assert.equal(skipReason(events, ROOT, 3), "no-user-prose");
 });
 
-test("M3: 前缀判定覆盖 kind='plugin'（无冒号）", () => {
+test("前缀判定覆盖 kind='plugin'（无冒号）", () => {
   const events = [
     {
       type: "user/message",
@@ -152,7 +152,7 @@ test("M3: 前缀判定覆盖 kind='plugin'（无冒号）", () => {
   assert.doesNotMatch(renderTranscript(events), /User:/);
 });
 
-test("M3 回归：正常用户消息（无 source / 非 plugin kind）仍过门槛", () => {
+test("回归：正常用户消息（无 source / 非 plugin kind）仍过门槛", () => {
   const noSource = [
     { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "one two three" }] } },
   ];
@@ -181,7 +181,7 @@ test("M3 回归：正常用户消息（无 source / 非 plugin kind）仍过门�
   assert.equal(hasEnoughUserProse(mixed, 3), true); // 跳过注入后，正常散文仍达标
 });
 
-test("M3: renderTranscript 剔除插件注入行，保留正常用户/助手/工具行", () => {
+test("renderTranscript 剔除插件注入行，保留正常用户/助手/工具行", () => {
   const injected = `MEMORY-CONTEXT-SHOULD-NOT-APPEAR ${"x".repeat(50)}`;
   const events = [
     {
@@ -204,7 +204,7 @@ test("M3: renderTranscript 剔除插件注入行，保留正常用户/助手/工
   assert.match(text, /\[seq 5\] ToolResult: 工具结果/);
 });
 
-test("B4: renderTranscript 剥掉助手回复里回声的注入块（<memory-context> 整段）", () => {
+test("renderTranscript 剥掉助手回复里回声的注入块（<memory-context> 整段）", () => {
   const echoed = "好的，我按记忆来。<memory-context>\n注入的记忆正文 SHOULD-NOT-APPEAR\n</memory-context> 以上。";
   const events = [
     { type: "assistant/message", surfaceOp: "append", seq: 1, data: { message: { content: [{ type: "text", text: echoed }] } } },

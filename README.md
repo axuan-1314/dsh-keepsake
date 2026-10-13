@@ -58,7 +58,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 | 注入段 | 模型看到什么 | 预算 |
 |---|---|---|
-| 人设 | 「用户叫你小舟」「希望你称呼他为老板」+ 你编辑的补充人设正文 | 400 行 / 16k 字符 |
+| 人设 | 「用户叫你小助手」「希望你称呼他为朋友」+ 你编辑的补充人设正文 | 400 行 / 16k 字符 |
 | 全局记忆索引 | 四分类 + 长期记忆的条目索引；近期动态带年龄与过期倒计时（如「3 天前 · 27 天后过期」） | 每类 40 行，总 120 行 / 12k 字符 |
 | 项目使用说明 | 记忆目录在哪、索引怎么读、怎么按你的要求直写/删除记忆 | 固定短文 |
 | 项目记忆索引 | 该项目 `MEMORY.md` 索引（每行指向一个记忆文件，模型按需 Read） | 200 行 / 25k 字符，超限保最新丢最旧并附 WARNING |
@@ -193,7 +193,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
-| `recallTimeoutMs` | 8000 | 单次嵌入调用超时。**实机实测**：本地 CPU 嵌入服务独立调用 ~0.6s，但**宿主进程内**竞争下可达数秒——故默认留足余量；端点真死会连接被拒秒退，只有慢端点才吃满（超时按失败降级：本轮不召回） |
+| `recallTimeoutMs` | 8000 | 单次嵌入调用超时。**实测**：本地 CPU 嵌入服务独立调用 ~0.6s，但**宿主进程内**竞争下可达数秒——故默认留足余量；端点真死会连接被拒秒退，只有慢端点才吃满（超时按失败降级：本轮不召回） |
 
 失败分类：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
 
@@ -282,14 +282,15 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
 - **debug 日志口**：`DSH_MEMORY_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
 - **备份策略**：reset/import/restore 前自动全量备份到 `backups/`，滚动保留最新 **20 份**；半备份（meta 无 complete）标记 incomplete 且拒绝恢复。
-- **逐项检查脚本**：`tools/m1-api-walkthrough.sh` 会清空目标宿主的记忆数据——默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`（只对一次性验收容器跑）。
 
 ## 开发与测试
 
 ```bash
-npm test    # node --test，309 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，320 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
+
+- **API 冒烟**：`tools/api-walkthrough.sh` 对一次性测试实例把全部 REST 端点走一遍（默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`；会清空目标实例的记忆数据）。
 
 模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入）、`lib/inject-channel.js`（注入块拼装/预算裁剪/来源判据）、`lib/state.js`（提取状态机）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
 
@@ -305,6 +306,8 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **注入块在会话内可能累积**：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
 - **`injectMaxChars` 是软上限**：超限追加的可见截断提示行不计入预算，最终字符数可能略超该值（默认 60000 下不触发，仅护栏）。
 - **防自食只覆盖自家注入**：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
-- **回声抑制是标签级**：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind`（M3）兜底，但意译文本不可辨。
+- **回声抑制是标签级**：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind` 兜底，但意译文本不可辨。
 - **语义召回按轮嵌入查询**：开启后每轮对当前用户消息嵌一次（受 `recallTimeoutMs` 约束，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
 - **召回块的会话内累积**：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。
+
+下一版方向与有意不做的清单见 [ROADMAP.md](ROADMAP.md)。

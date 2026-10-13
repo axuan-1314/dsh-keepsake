@@ -101,7 +101,7 @@ test("首见判定：小 seq 新会话 cursor=0 全量纳入；大 seq 恢复会
   void scheduler.dispose();
 });
 
-test("drop 清除强持有（审查 P3-5）：drop 后 see 重新首见生效", async () => {
+test("drop 清除强持有：drop 后 see 重新首见生效", async () => {
   const scheduler = createScheduler({ extract: async () => "ok" });
   const session = fakeSession(7);
   scheduler.see(session, { seq: 0 }); // cursor=0
@@ -132,7 +132,7 @@ test("已覆盖区间（toSeq ≤ cursor）不重复调度", async () => {
   await scheduler.dispose();
 });
 
-test("P3-5 cursor 钳制：宿主 seq 滞后时不跨过未物化区间（宁可重叠不丢）", async () => {
+test("cursor 钳制：宿主 seq 滞后时不跨过未物化区间（宁可重叠不丢）", async () => {
   const calls = [];
   const scheduler = createScheduler({
     extract: async (session, from, to) => {
@@ -153,7 +153,7 @@ test("P3-5 cursor 钳制：宿主 seq 滞后时不跨过未物化区间（宁可
   await scheduler.dispose();
 });
 
-test("P3-7 drop 后 pending 链不再续跑（已释放会话不提取）", async () => {
+test("drop 后 pending 链不再续跑（已释放会话不提取）", async () => {
   let release;
   const gate = new Promise((resolve) => {
     release = resolve;

@@ -123,7 +123,7 @@ test("⑧ digestOf：稳定且区分输入", () => {
   assert.equal(digestOf(""), digestOf(""));
 });
 
-test("⑨ B3 免责/署名行：intro 在开标签后首行、计入预算；缺省不破坏既有形态", () => {
+test("⑨ 免责/署名行：intro 在开标签后首行、计入预算；缺省不破坏既有形态", () => {
   const segments = { persona: "人格" };
   assert.equal(buildMemoryContext(segments).text, "<memory-context>\n人格\n</memory-context>", "无 intro 形态不变");
   const { text } = buildMemoryContext(segments, { intro: "INTRO" });
@@ -135,7 +135,7 @@ test("⑨ B3 免责/署名行：intro 在开标签后首行、计入预算；缺
   assert.ok(tight.text.includes(MEMORY_CONTEXT_INTRO), "intro 仍在（先保 intro 再截正文）");
 });
 
-test("⑩ B4 stripMemoryMarkup：剥 <memory-context>/<memory-recall> 整段，保留其余", () => {
+test("⑩ stripMemoryMarkup：剥 <memory-context>/<memory-recall> 整段，保留其余", () => {
   const squash = (s) => s.replace(/\s+/g, " ").trim();
   assert.equal(squash(stripMemoryMarkup("前 <memory-context>\nA\n</memory-context> 后")), "前 后");
   assert.equal(stripMemoryMarkup("<memory-recall>x</memory-recall>"), "");

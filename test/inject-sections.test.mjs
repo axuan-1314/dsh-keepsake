@@ -1,7 +1,7 @@
-// inject-sections：4990 人设段 / 4995 全局索引段渲染快照 + 四段开关矩阵（方案C §4 验收）。
-//   开关语义（§4+R2/R3/R10 组合推定）：
+// inject-sections：4990 人设段 / 4995 全局索引段渲染快照 + 四段开关矩阵。
+//   开关语义：
 //     总开关关 = 四段全灭；projectMemory 关 = 5000/5001 灭（4990/4995 不受影响）；
-//     globalExtraction 关 = 四段不受影响（4995 跟随数据非空，R2）。
+//     globalExtraction 关 = 四段不受影响（4995 跟随数据非空）。
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,7 +53,7 @@ function setup(root) {
 
 const NO_CTX = {};
 
-/** 造 cwd=root 的项目记忆（条目+索引），让 5000/5001 在 withCwd 下有内容——无 cwd 的空串断言无甄别力（审查 P1 假绿修复）。 */
+/** 造 cwd=root 的项目记忆（条目+索引），让 5000/5001 在 withCwd 下有内容——无 cwd 的空串断言无甄别力（假绿修复）。 */
 function seedProjectMemory(root) {
   const { memoryDir } = projectMemoryPaths(root, root);
   mkdirSync(memoryDir, { recursive: true });
@@ -67,13 +67,13 @@ function seedProjectMemory(root) {
 test("4990：称呼两句 + 人设正文组合渲染", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟", userAlias: "老板" });
+    writeAddressing(root, { dshName: "小助手", userAlias: "朋友" });
     writePersona(root, "回答要直接。");
     const s = setup(root);
     const text = s.persona.text(NO_CTX);
     assert.match(text, /^## 用户为 DSH 设定的补充人设/);
-    assert.match(text, /用户叫你「小舟」。/);
-    assert.match(text, /希望你称呼他为「老板」。/);
+    assert.match(text, /用户叫你「小助手」。/);
+    assert.match(text, /希望你称呼他为「朋友」。/);
     assert.match(text, /回答要直接。/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -83,11 +83,11 @@ test("4990：称呼两句 + 人设正文组合渲染", () => {
 test("4990：只有称呼 / 只有正文 两种半满态", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟" });
+    writeAddressing(root, { dshName: "小助手" });
     writePersona(root, ""); // 正文清空
     const s = setup(root);
     let text = s.persona.text(NO_CTX);
-    assert.match(text, /用户叫你「小舟」。/);
+    assert.match(text, /用户叫你「小助手」。/);
     assert.doesNotMatch(text, /称呼他为/);
     // 只有正文
     writeAddressing(root, { dshName: "", userAlias: "" });
@@ -101,7 +101,7 @@ test("4990：只有称呼 / 只有正文 两种半满态", () => {
   }
 });
 
-test("4990：称呼空 + 正文空 = 空段丢弃（§4 注入条件）", () => {
+test("4990：称呼空 + 正文空 = 空段丢弃（注入条件）", () => {
   const root = freshRoot();
   try {
     writeAddressing(root, { dshName: "", userAlias: "" });
@@ -113,7 +113,7 @@ test("4990：称呼空 + 正文空 = 空段丢弃（§4 注入条件）", () => 
   }
 });
 
-test("4990：出厂默认模板非空 → 全新环境段存在（R5 默认模板保证非空）", () => {
+test("4990：出厂默认模板非空 → 全新环境段存在（默认模板保证非空）", () => {
   const root = freshRoot();
   try {
     const s = setup(root);
@@ -126,7 +126,7 @@ test("4990：出厂默认模板非空 → 全新环境段存在（R5 默认模�
 
 // ---- 4995 全局索引段渲染快照 ----
 
-test("4995：全分类空 = 空段丢弃（R2 注入跟随数据非空）", () => {
+test("4995：全分类空 = 空段丢弃（注入跟随数据非空）", () => {
   const root = freshRoot();
   try {
     const s = setup(root);
@@ -185,10 +185,10 @@ test("4995：不依赖 cwd（无 cwd 会话同样注入，功能4 落点）", ()
 
 // ---- 开关矩阵 ----
 
-test("开关矩阵：总开关关 = 四段全灭（R3 一刀切）", () => {
+test("开关矩阵：总开关关 = 四段全灭（一刀切）", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟" });
+    writeAddressing(root, { dshName: "小助手" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
     const withCwd = seedProjectMemory(root); // 5000/5001 需要 cwd 且需有内容，否则空串断言假绿
     const s = setup(root);
@@ -210,7 +210,7 @@ test("开关矩阵：总开关关 = 四段全灭（R3 一刀切）", () => {
 test("开关矩阵：projectMemory 关 = 5000/5001 灭；4990/4995 不受影响", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟" });
+    writeAddressing(root, { dshName: "小助手" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
     const withCwd = seedProjectMemory(root);
     const s = setup(root);
@@ -226,10 +226,10 @@ test("开关矩阵：projectMemory 关 = 5000/5001 灭；4990/4995 不受影响"
   }
 });
 
-test("开关矩阵：globalExtraction 关 = 四段不受影响（4995 跟随数据，R2）", () => {
+test("开关矩阵：globalExtraction 关 = 四段不受影响（4995 跟随数据）", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟" });
+    writeAddressing(root, { dshName: "小助手" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
     const withCwd = seedProjectMemory(root);
     const s = setup(root);
@@ -237,7 +237,7 @@ test("开关矩阵：globalExtraction 关 = 四段不受影响（4995 跟随数�
     assert.notEqual(s.persona.text(NO_CTX), "");
     assert.notEqual(s.globalIndex.text(NO_CTX), "");
     assert.notEqual(s.instructions.text(withCwd), "");
-    assert.notEqual(s.index.text(withCwd), ""); // 5001 同样不受全局提取开关影响（审查补漏）
+    assert.notEqual(s.index.text(withCwd), ""); // 5001 同样不受全局提取开关影响（补漏）
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -246,7 +246,7 @@ test("开关矩阵：globalExtraction 关 = 四段不受影响（4995 跟随数�
 test("开关矩阵：全开基线 = 4990/4995 非空", () => {
   const root = freshRoot();
   try {
-    writeAddressing(root, { dshName: "小舟" });
+    writeAddressing(root, { dshName: "小助手" });
     createEntry(root, "work-profile", { title: "W", content: "工" });
     const s = setup(root);
     assert.notEqual(s.persona.text(NO_CTX), "");
@@ -256,8 +256,8 @@ test("开关矩阵：全开基线 = 4990/4995 非空", () => {
   }
 });
 
-test("T-GRA1③ 4995 两级注入预算：每类 40 行 + 总 120 行截断（F2/F3 变异坐实的假绿补钉）", () => {
-  // 相位 A（F2 每类预算）：单类 50 条 → 只见 40 行，且未触总预算无 WARNING
+test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实的假绿补钉）", () => {
+  // 相位 A（每类预算）：单类 50 条 → 只见 40 行，且未触总预算无 WARNING
   const rootA = freshRoot();
   try {
     for (let i = 0; i < 50; i += 1) {
@@ -272,7 +272,7 @@ test("T-GRA1③ 4995 两级注入预算：每类 40 行 + 总 120 行截断（F2
   } finally {
     rmSync(rootA, { recursive: true, force: true });
   }
-  // 相位 B（F3 总预算）：五类各 40 条共 200 行 > 120 → 截断 + WARNING
+  // 相位 B（总预算）：五类各 40 条共 200 行 > 120 → 截断 + WARNING
   const rootB = freshRoot();
   try {
     for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {

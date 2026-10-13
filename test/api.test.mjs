@@ -117,7 +117,7 @@ test("非 loopback 请求 → 403", async () => {
   }
 });
 
-test("未知端点 → 404；方法不匹配 → 405（全面审查 P3-7 语义统一）", async () => {
+test("未知端点 → 404；方法不匹配 → 405（语义统一）", async () => {
   const root = freshRoot();
   try {
     const a = await callApi(root, { method: "GET", path: `${API_PREFIX}nope` });
@@ -183,7 +183,7 @@ test("persona：GET 默认模板 → PUT 写入 → POST reset 恢复", async ()
     const reset = await callApi(root, { method: "POST", path: `${API_PREFIX}persona/reset` });
     assert.equal(reset.status, 200);
     assert.match(reset.json.content, /补充人设/);
-    assert.ok(reset.json.backupId, "persona reset 前应自动留档备份（方案C §5）");
+    assert.ok(reset.json.backupId, "persona reset 前应自动留档备份");
     const after = await callApi(root, { method: "GET", path: `${API_PREFIX}persona` });
     assert.equal(after.json.isDefault, true, "reset 后 GET 应回到默认态（回归）");
   } finally {
@@ -191,7 +191,7 @@ test("persona：GET 默认模板 → PUT 写入 → POST reset 恢复", async ()
   }
 });
 
-test("PUT persona：超 100KB 上限 → 413 或 400（分级体积上限 R7）", async () => {
+test("PUT persona：超 100KB 上限 → 413 或 400（分级体积上限）", async () => {
   const root = freshRoot();
   try {
     const big = "x".repeat(101 * 1024);
@@ -206,10 +206,10 @@ test("PUT persona：超 100KB 上限 → 413 或 400（分级体积上限 R7）"
 test("addressing：GET/PUT 往返", async () => {
   const root = freshRoot();
   try {
-    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}addressing`, body: { dshName: "小舟", userAlias: "老板" } });
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}addressing`, body: { dshName: "小助手", userAlias: "朋友" } });
     assert.equal(put.status, 200);
     const get = await callApi(root, { method: "GET", path: `${API_PREFIX}addressing` });
-    assert.deepEqual({ dshName: get.json.dshName, userAlias: get.json.userAlias }, { dshName: "小舟", userAlias: "老板" });
+    assert.deepEqual({ dshName: get.json.dshName, userAlias: get.json.userAlias }, { dshName: "小助手", userAlias: "朋友" });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -428,7 +428,7 @@ test("planImport：未知分类 / 未知格式 / 空内容 显式报错", () => 
   }
 });
 
-// ---- 单项目导出（方案C §6 附行，审查 P2 补齐） ----
+// ---- 单项目导出 ----
 
 test("project/:id/export：已知项目导出条目；未知项目 404；穿越形态 404", async () => {
   const root = freshRoot();
@@ -452,9 +452,9 @@ test("project/:id/export：已知项目导出条目；未知项目 404；穿越�
   }
 });
 
-// ---- 全面审查修复批 A 回归钉 ----
+// ---- 修复回归钉 ----
 
-test("IMP-1：导入批内同名去重（dryRun 标 rename、confirm 全落盘不互覆）", async () => {
+test("导入批内同名去重（dryRun 标 rename、confirm 全落盘不互覆）", async () => {
   const root = freshRoot();
   try {
     const payload = { category: "long-term", format: "json", payload: { entries: [
@@ -478,7 +478,7 @@ test("IMP-1：导入批内同名去重（dryRun 标 rename、confirm 全落盘�
   }
 });
 
-test("U-TRU1：条目写入超 20000 字符显式 413（不静默截断）；markdown 导入超长显式报错", async () => {
+test("条目写入超 20000 字符显式 413（不静默截断）；markdown 导入超长显式报错", async () => {
   const root = freshRoot();
   try {
     const over = "x".repeat(20001);
@@ -496,7 +496,7 @@ test("U-TRU1：条目写入超 20000 字符显式 413（不静默截断）；mar
   }
 });
 
-test("H-RES1/H-BAK1：restore id 校验前置（无效 id 不白落备份）+ 半备份 404 带 code", async () => {
+test("restore id 校验前置（无效 id 不白落备份）+ 半备份 404 带 code", async () => {
   const root = freshRoot();
   try {
     const before = listBackups(root).length;
@@ -511,7 +511,7 @@ test("H-RES1/H-BAK1：restore id 校验前置（无效 id 不白落备份）+ �
   }
 });
 
-test("state：extractionFailures 计数面在场（P-PIPE1 观测口）", async () => {
+test("state：extractionFailures 计数面在场（观测口）", async () => {
   const root = freshRoot();
   try {
     const s = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
@@ -525,7 +525,7 @@ test("state：extractionFailures 计数面在场（P-PIPE1 观测口）", async 
   }
 });
 
-test("state：injection 注入面字段在场（批次A，服务端恒在；缺失=旧版）", async () => {
+test("state：injection 注入面字段在场（服务端恒在；缺失=旧版）", async () => {
   const root = freshRoot();
   try {
     const s = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
@@ -538,6 +538,30 @@ test("state：injection 注入面字段在场（批次A，服务端恒在；缺�
     }
     assert.equal(typeof inj.count, "number");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("真实 http：超长请求体返回显式 413（不再 ECONNRESET；mock 掩盖过该缺陷）", async () => {
+  const { createServer } = await import("node:http");
+  const root = freshRoot();
+  const routes = makeApiRoutes({ storageRoot: root, log: silentLog, onGlobalWrite: () => {} });
+  const server = createServer((req, res) => routes[0].handler(req, res));
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  try {
+    const big = "x".repeat(120 * 1024); // 超过 persona 100KB 体积上限
+    const res = await fetch(`http://127.0.0.1:${port}${API_PREFIX}persona`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: big }),
+    });
+    assert.equal(res.status, 413);
+    const j = await res.json();
+    assert.match(String(j.error), /上限/);
+    assert.equal(readPersona(root).isDefault, true); // 未写入
+  } finally {
+    await new Promise((r) => server.close(r));
     rmSync(root, { recursive: true, force: true });
   }
 });

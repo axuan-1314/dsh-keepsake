@@ -22,7 +22,7 @@ function fakeCtx(streamImpl) {
     effect(fn, label) {
       effects.push({ fn, label });
     },
-    // M0 起宿主面扩展（方案C §2）：ctx.inject(["webServer"], (sctx) => …)
+    // 宿主面扩展：ctx.inject(["webServer"], (sctx) => …)
     // mock：立即执行 setup 并触发其注册的 effect（模拟宿主启动），路由可被断言。
     inject(deps, setup) {
       const pending = [];
@@ -76,25 +76,25 @@ function fakeSession(cwd, events) {
 
 test("入口元数据与注入段注册", () => {
   assert.equal(name, "dsh-memory");
-  // M0 起含 webServer（方案C §2 host 挂载面）
+  // 含 webServer（host 挂载面）
   assert.deepEqual(inject.sort(), ["llm", "systemPrompt", "webServer"]);
   const { ctx, sections, registeredRoutes } = fakeCtx();
   apply(ctx, { enabled: false });
   assert.equal(sections.length, 0); // 关闭时不注入
-  apply(ctx, {}); // 审查 P2-1：缺省关（fail-closed），无显式 enabled: true 不启用
+  apply(ctx, {}); // 缺省关（fail-closed），无显式 enabled: true 不启用
   assert.equal(sections.length, 0);
   apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry") });
-  // 批次A：默认 injectChannel=message → section 侧只留一条静态路由兜底段
+  // 默认 injectChannel=message → section 侧只留一条静态路由兜底段
   assert.equal(sections.length, 1);
   assert.equal(sections[0].name, "dsh-memory:routing");
   assert.equal(sections[0].order, 5000);
   assert.equal(sections[0].interpolate, false);
-  // M1 路由已注册（API prefix 总入口 + panel exact/prefix）
+  // 路由已注册（API prefix 总入口 + panel exact/prefix）
   assert.ok(registeredRoutes.length >= 3);
   assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-memory/api"));
   assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/panel/"));
 
-  // 批次A：显式 injectChannel=section → 旧四段（M1 方案C §4）：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
+  // 显式 injectChannel=section → 旧四段：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
   const sectioned = fakeCtx();
   apply(sectioned.ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry"), injectChannel: "section" });
   assert.equal(sectioned.sections.length, 4);
@@ -214,7 +214,7 @@ test("非 completed 轮不触发", async () => {
   assert.equal(streamCalls.length, 0);
 });
 
-test("总开关关 = 提取全停（R3 提取半边；审查 P2 补覆盖——此前该闸零测试）", async () => {
+test("总开关关 = 提取全停（提取半边；补覆盖——此前该闸零测试）", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
   const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
   try {
@@ -237,7 +237,7 @@ test("总开关关 = 提取全停（R3 提取半边；审查 P2 补覆盖——�
   }
 });
 
-test("路由兜底（M3 desktop 实测加固）：无 request/header 时 assistant/message.source 提供路由", async () => {
+test("路由兜底（desktop 实测加固）：无 request/header 时 assistant/message.source 提供路由", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
   const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
   try {
@@ -278,7 +278,7 @@ test("config 未知键 fail loud", () => {
   assert.throws(() => apply(ctx, { enabled: true, whatever: 1 }));
 });
 
-test("config 注入通道键 fail loud（批次A）：injectChannel 非法值 / injectMaxChars 非正/非整数", () => {
+test("config 注入通道键 fail loud：injectChannel 非法值 / injectMaxChars 非正/非整数", () => {
   const { ctx } = fakeCtx();
   assert.throws(() => apply(ctx, { enabled: true, injectChannel: "bogus" }), /injectChannel/);
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 0 }), /injectMaxChars/);
@@ -311,9 +311,9 @@ test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即�
   assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
 });
 
-// ---- 全面审查 T-GRA1 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
+// ---- 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
 
-test("T-GRA1① DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
+test("DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-dbg-"));
   const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-dbg-"));
   const prev = process.env.DSH_MEMORY_DEBUG;
@@ -342,7 +342,7 @@ test("T-GRA1① DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行"
   }
 });
 
-test("T-GRA1② 路由优先级：assistant/message.source 不覆盖 request/header 已捕获路由", async () => {
+test("路由优先级：assistant/message.source 不覆盖 request/header 已捕获路由", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-prio-"));
   const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-prio-"));
   try {

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { NOTHING_TO_SAVE, applyOps, isValidModelIndexLine, parseExtractionOutput, renderMemoryFile } from "../lib/extract.js";
 
-test("isValidModelIndexLine（审查 P3-8）：格式/长度/文件名一致性", () => {
+test("isValidModelIndexLine：格式/长度/文件名一致性", () => {
   assert.equal(isValidModelIndexLine("- [Uses pnpm](uses-pnpm.md) — 包管理器选择", "uses-pnpm.md"), true);
   assert.equal(isValidModelIndexLine("- [T](x.md) — hook", "x.md"), true);
   // 非法：空/超长/无 em dash/普通文本/文件名不匹配/路径越界
@@ -60,7 +60,7 @@ test("parseExtractionOutput: 裸 JSON 与围栏 JSON", () => {
   }
 });
 
-test("parseExtractionOutput: 整批不可解析抛错；单条畸形跳单容错（P-PIPE3）", () => {
+test("parseExtractionOutput: 整批不可解析抛错；单条畸形跳单容错", () => {
   // 整批级：payload 非 JSON / 缺 ops 数组 → 抛（cursor 不推进）
   assert.throws(() => parseExtractionOutput(""));
   assert.throws(() => parseExtractionOutput("没有 JSON"));

@@ -18,3 +18,11 @@ cordis.local.patch.yml
 Thumbs.db
 .idea/
 .vscode/
+
+# local memory / usage data (never commit runtime data dumps)
+# 注意：docs/*.png 是仓库真需要的展示图，刻意不加图片通配（若将来要加，必须补 !docs/*.png 白名单）
+data/
+memory/
+backups/
+*.jsonl
+settings.json

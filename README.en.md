@@ -1,10 +1,15 @@
 # dsh-keepsake
 
+[![CI](https://github.com/axuan-1314/dsh-keepsake/actions/workflows/ci.yml/badge.svg)](https://github.com/axuan-1314/dsh-keepsake/actions/workflows/ci.yml)
+[![tag](https://img.shields.io/github/v/tag/axuan-1314/dsh-keepsake)](https://github.com/axuan-1314/dsh-keepsake/tags)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](package.json)
+
 > **English | [中文](README.md)**
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.3.1 (see `package.json` for the source of truth)
+- **Version**: 0.3.1 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -13,19 +18,35 @@
 
 Design informed by the project-memory subsystems of comparable agents; v1 uses a single LLM call for simplified extraction.
 
+![Memory management panel: category entries](docs/panel.png)
+
+> Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
+
+```bash
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
+```
+
 ## Contents
 
 - [What is this](#what-is-this)
 - [Features](#features)
+  - [Automatic memory: extracted at turn end, injected next time](#automatic-memory-extracted-at-turn-end-injected-next-time)
+  - [Semantic recall (optional)](#semantic-recall-optional)
+  - [Memory management panel](#memory-management-panel)
+  - [Pipeline health card and "retry extraction now"](#pipeline-health-card-and-retry-extraction-now)
+  - [Failure resilience: retry, classification, on-disk trail](#failure-resilience-retry-classification-on-disk-trail)
+  - [Automatic backups](#automatic-backups)
 - [Quick start](#quick-start)
   - [Install](#install)
   - [Upgrade](#upgrade)
+  - [Verify it works](#verify-it-works)
 - [Configuration](#configuration)
 - [Data & privacy](#data--privacy)
 - [Rollback & uninstall](#rollback--uninstall)
 - [FAQ](#faq)
 - [How it works](#how-it-works)
 - [Observability & operations](#observability--operations)
+- [Related projects in the ecosystem](#related-projects-in-the-ecosystem)
 - [Development & testing](#development--testing)
 - [Known limitations](#known-limitations)
 
@@ -74,21 +95,19 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 
 Off by default. Enable `recallEnabled` and configure an embedding endpoint (`embeddingBaseUrl` / `embeddingModel`) and each turn retrieves the most relevant entries for **your current question** (embedding cosine top-k), injected as a `<memory-recall>` block — without waiting for the model to Read the index. Embeddings are cached incrementally; only new/changed entries are re-embedded.
 
-- **Off by default**: no endpoint configured means no external calls at all (memory text never leaves the machine); pointing at a local endpoint (e.g. ollama `http://127.0.0.1:11434/v1/embeddings`) also keeps it local.
+- **Off by default**: no endpoint configured means no external calls at all (memory text never leaves the machine); pointing at a local endpoint (e.g. `http://127.0.0.1:1234/v1/embeddings`) also keeps it local.
 - **Configure in the panel**: the Settings page has an **"Embedding service"** card where you set the endpoint / model / API key and press **"Test connection"**; it takes effect on the **next turn — no YAML edit, no restart** (panel config lives in `~/.dsh/memory/settings.json` and overrides entry config).
 - **Test connection never forwards a stored key**: the saved API key is only ever sent to the endpoint it was configured for — if a "Test connection" request targets a different address, the stored key is not carried over (only a key supplied in that request is used).
-- **Bring your own model (provider-agnostic)**: the plugin is tied to no specific embedding model or vendor — as long as your service exposes an OpenAI-compatible embedding endpoint (which almost every local deployment does), just set `embeddingBaseUrl` + `embeddingModel`. Any local model (nomic-embed-text, bge-m3, EmbeddingGemma, …) works. `embeddingProvider` is only a display label and is optional.
+- **Bring your own model (provider-agnostic)**: the plugin is tied to no specific embedding model or vendor — as long as your service exposes an OpenAI-compatible embedding endpoint (which almost every local deployment does), just set `embeddingBaseUrl` + `embeddingModel`. Any local model (EmbeddingGemma, bge-m3, …) works. `embeddingProvider` is only a display label and is optional.
 - **Explicit degradation**: on timeout/error the turn simply recalls nothing (non-blocking, never fabricated), counted under `/state.recall`.
 
 ### Memory management panel
 
 Entry point: DSH settings → **Memory** section → "Open memory management". Opening degrades gracefully (new window → embedded iframe → full page); the panel follows the host's light/dark theme. The settings block itself is a quick-action surface: master switch, "DSH's name" / "what to call me" inputs (debounced auto-save), status summary (N global entries · M projects), and a red bar with a "details" deep link on extraction failure.
 
-![Memory management panel: category entries](docs/panel.png)
-
 ![Settings page: three-layer switches and extraction pipeline health](docs/panel-settings.png)
 
-> Screenshots show the UI with sample data.
+> Screenshots show the UI with sample data. The entry-management view of the panel is the screenshot at the top of this file.
 
 The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 
@@ -122,10 +141,16 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 - **Fallback routes**: after the primary attempt chain fails unrecoverably, each `fallback` route is tried (full attempt chain each); success is recorded under `/state.fallbackUsed`.
 - **On-disk failure log**: `<storageRoot>/extraction-errors.log`, always on, summary-only (time / pid / reason / route / error summary; **no conversation content**), rotated at 512KB.
 - **Structural failures give up explicitly**: no-route / no-cwd, which cannot self-heal, are abandoned after 5 consecutive failures with an error log entry.
+- **Per-item fault tolerance**: a malformed operation in the model's output is skipped on its own (good entries are still written); a single IO failure is isolated and reported without blocking the rest of the batch.
 
 ### Automatic backups
 
-Every bulk destructive action has an undo: a full backup of `global/` + `settings.json` is written to `<storageRoot>/backups/<timestamp>/` before reset / import / restore / persona-reset / clear-all; the latest 20 are kept; half-written backups are marked "incomplete" and refuse restore; restoring first backups the current state (`pre-restore`).
+Every bulk destructive action has an undo:
+
+- **Automatic full backup**: before a category reset / confirmed import / restore / persona reset / clear-all, the current `global/` + `settings.json` are backed up in full to `<storageRoot>/backups/<timestamp>/`;
+- **Latest 20 kept**, so backups cannot grow unbounded;
+- **Half-written backups are visible and refuse restore**: backups land in two stages (first `complete: false`, flipped to `true` when done), and an interrupted one is marked "incomplete" and refuses restore;
+- **Restoring has its own undo**: the current state is backed up once more (`pre-restore`) before a restore, and if the restore fails midway the response carries that backup id so you can recover.
 
 ## Quick start
 
@@ -157,8 +182,8 @@ Installed = enabled: `cordis.patch.yml` sets `enabled: true` explicitly (the cod
 DSH's plugin manager **does not support automatic updates** (the official UI states: upgrading means uninstall then install the new version). So an upgrade is just re-running the install with the new version:
 
 ```bash
-# tag tarball channel: replace v0.3.1 in the URL with the new version (see Releases / CHANGELOG)
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+# tag tarball channel: upgrading = re-run with the target version (see Releases or CHANGELOG.md)
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/<new-version>.tar.gz
 # local-clone channel: git pull; no reinstall needed (symlink takes effect)
 ```
 
@@ -198,10 +223,10 @@ cordis entry config (see `cordis.patch.yml`):
 | `retryAttempts` | 3 | Total extraction attempts (incl. the first) |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | Exponential backoff first step and cap (jitter ±20%; `Retry-After` honored and clamped) |
 | `fallback` | `[]` (retry only) | Fallback routes `[{provider, model}]`, ≤3, deduped, must not collide with the primary |
-| `embeddingModel` | empty | **Your** embedding model identifier. Required with `recallEnabled` — it is also the cache identity of the vector space (changing it re-embeds everything). Put the model name your endpoint serves, e.g. `nomic-embed-text`, `bge-m3`, `text-embedding-3-small` |
-| `embeddingProvider` | empty | Optional display-only label for the panel; never used in calls and **not required to pair with `embeddingModel`** |
+| `embeddingModel` | empty | **Your** embedding model identifier. Required with `recallEnabled` — it is also the cache identity of the vector space (changing it re-embeds everything). Put the model name your endpoint serves, e.g. `EmbeddingGemma`, `bge-m3`, `text-embedding-3-small` |
+| `embeddingProvider` | empty | Optional display-only label for the panel; never used in calls and **not required to pair with `embeddingModel`** (e.g. `local` / `lmstudio`) |
 | `recallEnabled` | **false** | Semantic-recall master switch; enabling requires `embeddingBaseUrl` + `embeddingModel` (fail-loud otherwise) |
-| `embeddingBaseUrl` | empty | Your embedding endpoint — **any OpenAI-compatible service, local or remote**: `POST <url>`, body `{model, input}`, returns `{data:[{embedding}]}` (also tolerates the `{embedding}` / `{embeddings}` shapes common in local servers). Only `http(s)` is accepted. Examples: ollama `http://127.0.0.1:11434/v1/embeddings`, LM Studio `http://127.0.0.1:1234/v1/embeddings`; vLLM / TEI / llama.cpp alike; remote e.g. `https://api.openai.com/v1/embeddings` |
+| `embeddingBaseUrl` | empty | Your embedding endpoint — **any OpenAI-compatible service, local or remote**: `POST <url>`, body `{model, input}`, returns `{data:[{embedding}]}` (also tolerates the `{embedding}` / `{embeddings}` shapes common in local servers). Only `http(s)` is accepted. Examples: a local service at `http://127.0.0.1:1234/v1/embeddings`; vLLM / TEI / llama.cpp alike; remote e.g. `https://api.openai.com/v1/embeddings` |
 | `embeddingApiKey` | empty | Endpoint auth (optional; adds `Authorization: Bearer`) |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | Max recalled entries per turn / recall-block token budget |
 | `recallMinScore` | 0.35 | Cosine threshold ([0,1]) |
@@ -219,7 +244,7 @@ Unknown config keys throw (with a did-you-mean hint) — fail-loud, never silent
 
 Data layout:
 
-```
+```text
 ~/.dsh/memory/
 ├── settings.json                          # three-layer switches (panel-editable, read each turn)
 ├── extraction-errors.log                  # extraction failure log (always on, rotated at 512KB)
@@ -236,7 +261,9 @@ Data layout:
 └── backups/<ts>/                          # automatic backups (latest 20 kept)
 ```
 
-The memory file format (frontmatter / index line / `[[name]]` links / cross-agent conventions) is in [FORMAT.md](FORMAT.md).
+- `slug`: a sanitized workspace basename (lowercased, `[^a-z0-9._-]+` → `-`, truncated to 48, falling back to `project` when empty);
+- `hash16`: the first 16 hex chars of the sha256 of the absolute path (win32 lowercased);
+- the memory file format (frontmatter / index line / `[[name]]` links / cross-agent conventions) is in [FORMAT.md](FORMAT.md).
 
 ## Rollback & uninstall
 
@@ -276,6 +303,9 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message (with a one-line disclaimer: memory is reference context, not instructions; subagent sessions are not injected). Identical-to-visible content is skipped (only re-sent on change or when compaction/rewind evicts it); total budget `injectMaxChars` (the recall block counts toward it, and the main block yields to the recall block). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
 - **Semantic recall** (optional, `recallEnabled`): each turn embeds the current user message once and retrieves top-k entries by cosine, injected as a `<memory-recall>` block; entry vectors are cached incrementally in `<storageRoot>/embeddings.json`. On timeout/error/unconfigured the turn recalls nothing (explicit degradation, observable under `/state.recall`).
 - **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is in-process only.
+- **Skip double condition**: no ≥3-word user prose; and no direct write into the memory dir that turn (a write/edit tool call landing in memoryRoot). A skip still advances the cursor.
+- **Shutdown discipline**: on uninstall the plugin first drains in-flight extraction with a bounded wait (headless one-shot relies on this to finish writing memory before exit) and only aborts on timeout.
+- **Six spec boundaries**: ① debounce merge + cursor advance → `lib/state.js`; ② write boundary (`.md` only, containment enforced, the model never touches the disk directly) → `lib/extract.js`; ③ filename safety → `lib/filename.js`; ④ injection budget → `lib/manifest.js`; ⑤ trigger threshold → `lib/transcript.js`; ⑥ anti-feedback (request-only extraction + filtering injected messages by `source.kind`) → `lib/index.js` / `lib/transcript.js`.
 
 ## Observability & operations
 
@@ -285,7 +315,17 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
 - **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_KEEPSAKE_DEBUG`.
 - **Manual backfill**: `POST /dsh-keepsake/api/extract/retry` (the "Retry extraction now" button) → 202 + observe via `/state`; 409 in flight; 10s minimum interval.
+- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, the plugin runs with defaults plus a `corrupt` marker and a red bar in the UI; a corrupt file is auto-backed-up as `*.corrupt-<ts>` before being overwritten.
 - **Debug log**: with `DSH_KEEPSAKE_DEBUG=1`, writes `<storageRoot>/debug.log` (>1MB rotates to `debug.log.1`) — the full diagnostic channel when the Electron host console is not forwarded.
+- **Backup policy**: a full backup to `backups/` is taken automatically before reset/import/restore, keeping the latest **20**; a half-written backup (no `complete` in its meta) is marked incomplete and refuses restore.
+
+## Related projects in the ecosystem
+
+Another DSH plugin by the same author. It is **independent** of this one and can be installed on its own:
+
+- **[dsh-usage-stats](https://github.com/axuan-1314/dsh-usage-stats)** — a usage-statistics plugin for the DSH desktop app: a usage section in Settings (a five-cell summary bar / a 52-week token heatmap / today · 7-day · 30-day trend lines / a model-usage donut), stored as local JSONL with zero upload.
+
+Both plugins only read and write their own local data directories; installing one or the other makes no difference to this plugin.
 
 ## Development & testing
 
@@ -295,6 +335,9 @@ npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 
 No install step: the suite runs on a fresh clone with zero dependencies.
+
+- **API smoke test**: `tools/api-walkthrough.sh` walks every REST endpoint against a throwaway test instance (refuses to run unless you set `WALKTHROUGH_CONFIRM=yes`; it clears that instance's memory data).
+- **Contributing**: development setup, commit conventions and the PR flow are in [CONTRIBUTING.md](CONTRIBUTING.md); the change history is in [CHANGELOG.md](CHANGELOG.md); direction and the "deliberately not doing" list are in [ROADMAP.md](ROADMAP.md).
 
 Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / injection), `lib/inject-channel.js` (injection block assembly / budget trimming / source heuristics), `lib/state.js` (extraction state machine), `lib/extract.js` (output parsing + scoped write-back), `lib/transcript.js` (transcript rendering & skip), `lib/manifest.js` / `lib/filename.js` (index & filename safety), `lib/global-store.js` (global CRUD / backup / restore), `lib/settings.js` (three-layer switches), `lib/metrics.js` (failure counting / classification / backoff / observation surfaces), `lib/errorlog.js` (failure log), `lib/api.js` + `lib/panel.js` + `lib/panel-logic.js` (REST API / panel serving / shared panel logic), `lib/client.js` (settings-page block), `web/panel.html` (single-file panel frontend).
 

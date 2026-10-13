@@ -1,10 +1,15 @@
 # dsh-keepsake
 
+[![CI](https://github.com/axuan-1314/dsh-keepsake/actions/workflows/ci.yml/badge.svg)](https://github.com/axuan-1314/dsh-keepsake/actions/workflows/ci.yml)
+[![tag](https://img.shields.io/github/v/tag/axuan-1314/dsh-keepsake)](https://github.com/axuan-1314/dsh-keepsake/tags)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933.svg)](package.json)
+
 > **[English](README.en.md) | 中文**
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.3.1（以 `package.json` 为准）
+- **插件版本**：0.3.1（以 `package.json` 为准；变更记录见 [CHANGELOG.md](CHANGELOG.md)）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）；`package.json` 声明了 DSH peer 范围，安装/启动时宿主会做版本兼容检查，不匹配会让用户显式确认后才装
 - **分发**：GitHub 仓库 tag tarball 渠道（+ 本地 clone 作开发）；升级方式见[「升级」](#升级)（DSH 插件不支持自动更新）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
@@ -12,6 +17,14 @@
 - **许可**：MIT License（见 [LICENSE](LICENSE)）
 
 设计参考同类 agent 的项目记忆子系统；v1 采用单次 LLM 调用简化提取。
+
+![记忆管理面板：分类条目管理](docs/panel.png)
+
+> 上图为界面示意（使用示例数据渲染）。最快上手（完整步骤见[快速开始](#快速开始)）：
+
+```bash
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
+```
 
 ## 目录
 
@@ -26,12 +39,14 @@
 - [快速开始](#快速开始)
   - [安装](#安装)
   - [升级](#升级)
+  - [验证生效](#验证生效)
 - [配置](#配置)
 - [数据与隐私](#数据与隐私)
 - [回滚与卸载](#回滚与卸载)
 - [FAQ](#faq)
 - [工作原理](#工作原理)
 - [可观测与运维](#可观测与运维)
+- [生态内相关项目](#生态内相关项目)
 - [开发与测试](#开发与测试)
 - [已知限制](#已知限制)
 
@@ -80,21 +95,19 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 默认关闭。开启 `recallEnabled` 并配好嵌入端点（`embeddingBaseUrl` / `embeddingModel`）后，每轮对话会按你**当前的问题**语义检索最相关的记忆条目（嵌入余弦 top-k），以 `<memory-recall>` 块注入——不必等模型按索引主动 Read。条目向量按内容增量缓存，只有新写/改动过的条目才重新嵌入。
 
-- **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 ollama `http://127.0.0.1:11434/v1/embeddings`）则记忆文本也不出本机。
+- **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 `http://127.0.0.1:1234/v1/embeddings`）则记忆文本也不出本机。
 - **面板里配置**：设置页「嵌入服务」卡直接填端点 / 模型 / API Key，带「测试连接」按钮；保存后**下一轮对话即生效，不必改 `cordis.patch.yml`、不必重启**（面板配置存于 `~/.dsh/memory/settings.json`，优先于 entry config）。
 - **测试连接不转发已存密钥**：已保存的 API Key 只发往它自己配置的那个端点；若「测试连接」的请求指向别的地址，不会把已存密钥带过去（只有请求体里当场填的 Key 才随该地址发送）。
-- **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（nomic-embed-text、bge-m3、EmbeddingGemma…）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
+- **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（EmbeddingGemma、bge-m3 等）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 
 ### 记忆管理面板
 
 入口：DSH 设置页「记忆」区块（门牌）→「打开记忆管理」。打开方式自动三级降级（新窗口 → 内嵌 iframe → 整页跳转），面板主题自动跟随宿主深浅色。门牌本身也是速操台：总开关、「DSH 的名字」「对我的称呼」两个输入框（防抖自动保存）、状态摘要（全局 N 条 · M 个项目）、提取失败红条 + 「详情」深链。
 
-![记忆管理面板：分类条目管理](docs/panel.png)
-
 ![设置页：三层开关与提取管道健康卡](docs/panel-settings.png)
 
-> 上图为界面示意（使用示例数据渲染）。
+> 上图为设置页示意（使用示例数据渲染）。记忆管理面板的条目管理见文首截图。
 
 面板（`/dsh-keepsake/panel/`，仅本机可访问）包含：
 
@@ -173,8 +186,8 @@ dsh plugin --profile web add <克隆到本地的仓库路径>   # 或 git URL
 DSH 的插件管理器**不支持自动更新**（官方文案：升级 = 先卸载再装新版）。所以升级 = 用新版本重跑一次安装命令：
 
 ```bash
-# tag tarball 渠道：把 URL 里的 v0.3.1 换成新版本号（版本号见 Releases / CHANGELOG）
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+# tag tarball 渠道：升级 = 用目标版本号重跑一次（版本号见 Releases 或 CHANGELOG.md）
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/<新版本号>.tar.gz
 # 本地克隆渠道：git pull 后无需重装（软链生效）
 ```
 
@@ -214,10 +227,10 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `retryAttempts` | 3 | 提取 LLM 调用总 attempt 数（含首次） |
 | `retryBackoffMs` / `retryMaxDelayMs` | 500 / 2000 | 指数退避首档与上限（jitter ±20%；上游带 Retry-After 时优先、钳 ≤3×上限） |
 | `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
-| `embeddingModel` | 空 | **你的**嵌入模型标识。开启 `recallEnabled` 后必填——它同时是向量空间的缓存身份（换模型＝整库重嵌）。填你端点上的模型名即可，如 `nomic-embed-text`、`bge-m3`、`text-embedding-3-small` |
-| `embeddingProvider` | 空 | 可选，纯面板显示标签，不参与调用，**不要求与 `embeddingModel` 成对**（如 `ollama` / `lmstudio`） |
+| `embeddingModel` | 空 | **你的**嵌入模型标识。开启 `recallEnabled` 后必填——它同时是向量空间的缓存身份（换模型＝整库重嵌）。填你端点上的模型名即可，如 `EmbeddingGemma`、`bge-m3`、`text-embedding-3-small` |
+| `embeddingProvider` | 空 | 可选，纯面板显示标签，不参与调用，**不要求与 `embeddingModel` 成对**（如 `local` / `lmstudio`） |
 | `recallEnabled` | **false** | 语义召回总开关；开启需配 `embeddingBaseUrl` + `embeddingModel`（缺一启动即抛，fail loud） |
-| `embeddingBaseUrl` | 空 | 你的嵌入端点，**任意 OpenAI 兼容服务即可（本地或远程）**：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`（也容忍 `{embedding}` / `{embeddings}` 两种本地常见形态）。仅接受 `http(s)`。示例：ollama `http://127.0.0.1:11434/v1/embeddings`、LM Studio `http://127.0.0.1:1234/v1/embeddings`，vLLM / TEI / llama.cpp 同形；远程如 `https://api.openai.com/v1/embeddings` |
+| `embeddingBaseUrl` | 空 | 你的嵌入端点，**任意 OpenAI 兼容服务即可（本地或远程）**：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`（也容忍 `{embedding}` / `{embeddings}` 两种本地常见形态）。仅接受 `http(s)`。示例：本地服务 `http://127.0.0.1:1234/v1/embeddings`，vLLM / TEI / llama.cpp 等同形；远程如 `https://api.openai.com/v1/embeddings` |
 | `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
@@ -237,7 +250,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 数据布局：
 
-```
+```text
 ~/.dsh/memory/
 ├── settings.json                          # 三层开关（面板可改，每轮读取）
 ├── extraction-errors.log                  # 提取失败日志（常开，>512KB 轮转两档）
@@ -312,6 +325,14 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **debug 日志口**：`DSH_KEEPSAKE_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
 - **备份策略**：reset/import/restore 前自动全量备份到 `backups/`，滚动保留最新 **20 份**；半备份（meta 无 complete）标记 incomplete 且拒绝恢复。
 
+## 生态内相关项目
+
+同作者的另一个 DSH 插件，与本插件**互不依赖**，可分别独立安装：
+
+- **[dsh-usage-stats](https://github.com/axuan-1314/dsh-usage-stats)** —— DSH 桌面版「使用统计」插件：设置页新增使用统计分区（五格摘要条 / 52 周 Token 热力图 / 今日·近 7 日·近 30 日趋势折线 / 模型用量环形图），全本地 JSONL 落盘、零上传。
+
+两者都只读写各自的本地数据目录，装不装另一个都不影响本插件工作。
+
 ## 开发与测试
 
 ```bash
@@ -320,6 +341,7 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 ```
 
 - **API 冒烟**：`tools/api-walkthrough.sh` 对一次性测试实例把全部 REST 端点走一遍（默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`；会清空目标实例的记忆数据）。
+- **参与贡献**：开发环境、提交约定与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本变更记录见 [CHANGELOG.md](CHANGELOG.md)；后续方向与「有意不做」清单见 [ROADMAP.md](ROADMAP.md)。
 
 模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入）、`lib/inject-channel.js`（注入块拼装/预算裁剪/来源判据）、`lib/state.js`（提取状态机）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
 

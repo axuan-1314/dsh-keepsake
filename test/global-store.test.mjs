@@ -38,7 +38,7 @@ import {
 import { recentTsOf } from "../lib/recent-ts.js";
 
 function freshRoot() {
-  return mkdtempSync(join(tmpdir(), "dsh-memory-gstore-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-gstore-"));
 }
 
 // ---- 条目 CRUD ----

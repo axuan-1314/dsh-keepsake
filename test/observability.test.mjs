@@ -50,7 +50,7 @@ test("formatErrorLogLine：[ISO] [pid] reason provider/model 摘要", () => {
 // ---- 落盘与轮转 ----
 
 test("appendExtractionError：追加一行 + >512KB 先删旧 .1 再轮转", () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-elog-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-elog-"));
   try {
     appendExtractionError(root, { reason: "llm-error", provider: "p", model: "m", message: "first" });
     const file = join(root, ERROR_LOG_NAME);
@@ -75,7 +75,7 @@ test("appendExtractionError：storageRoot 异常/IO 失败永不炸主流程", (
   assert.doesNotThrow(() => appendExtractionError("", { reason: "x" }));
   assert.doesNotThrow(() => appendExtractionError(null, { reason: "x" }));
   // 指向一个「文件占位的路径」让 appendFileSync 必炸
-  const blocker = mkdtempSync(join(tmpdir(), "dsh-memory-elog-block-"));
+  const blocker = mkdtempSync(join(tmpdir(), "dsh-keepsake-elog-block-"));
   try {
     writeFileSync(join(blocker, ERROR_LOG_NAME), "", "utf8"); // 是文件不是目录 → join 后再 append 会 ENOTDIR? 实际同路径 append 正常
     assert.doesNotThrow(() => appendExtractionError(join(blocker, "no-such-parent", ".."), { reason: "x" }));
@@ -207,7 +207,7 @@ function findRoute(routes, method, pattern) {
 function makeReq(method, path) {
   return {
     method,
-    url: `${"/dsh-memory/api/"}${path}`,
+    url: `${"/dsh-keepsake/api/"}${path}`,
     socket: { remoteAddress: "127.0.0.1" },
     headers: { host: "127.0.0.1:1" },
     on() {},
@@ -216,7 +216,7 @@ function makeReq(method, path) {
 }
 
 test("api：POST extract/retry 202/409（在途+节流）/无 extraction 依赖 404", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-retry-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-retry-"));
   const log = { info() {}, warn() {}, error() {} };
   try {
     // 旧形态（无 extraction 依赖）→ 404
@@ -271,7 +271,7 @@ test("api：POST extract/retry 202/409（在途+节流）/无 extraction 依赖 
 
 test("api：GET state 带新字段（观测面+双模型卡数据源）", async () => {
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-state-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-state-"));
   const log = { info() {}, warn() {}, error() {} };
   try {
     const handler = findRoute(makeApiRoutes({
@@ -306,7 +306,7 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
 
 test("api：只配 embeddingModel（不配 provider 标签）时 embeddingConfig 不再误判为未配置", async () => {
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-api-embcfg-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-embcfg-"));
   const log = { info() {}, warn() {}, error() {} };
   try {
     const handler = findRoute(makeApiRoutes({

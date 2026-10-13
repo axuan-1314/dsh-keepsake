@@ -120,7 +120,7 @@
   <div id="dialogHost"></div>
 
 <script type="module">
-import * as L from "/dsh-memory/panel/panel-logic.js";
+import * as L from "/dsh-keepsake/panel/panel-logic.js";
 
 const $ = (id) => document.getElementById(id);
 const page = $("page");
@@ -159,7 +159,7 @@ function startThemeBridge() {
   if (Object.keys(vars).length > 0) bridgeApply(vars);
   else $("bridgeNotice").classList.add("show");
   window.addEventListener("message", (ev) => {
-    if (ev && ev.data && ev.data.type === "dsh-memory:theme" && ev.data.vars) bridgeApply(ev.data.vars);
+    if (ev && ev.data && ev.data.type === "dsh-keepsake:theme" && ev.data.vars) bridgeApply(ev.data.vars);
   });
   try {
     let pending = false;
@@ -172,7 +172,7 @@ function startThemeBridge() {
     observer.observe(hostWindow.document.body, { attributes: true, attributeFilter: filter });
     observer.observe(hostWindow.document.documentElement, { attributes: true, attributeFilter: filter });
   } catch (e) { /* 保留静态变量 */ }
-  try { hostWindow.postMessage({ type: "dsh-memory:panel-ready" }, "*"); } catch (e) {}
+  try { hostWindow.postMessage({ type: "dsh-keepsake:panel-ready" }, "*"); } catch (e) {}
 }
 $("themeToggle").addEventListener("click", () => {
   manualTheme = true; // 单向断桥（再点只切换深浅，桥不再接管）
@@ -197,7 +197,7 @@ $("backBtn").addEventListener("click", () => {
   const act = L.panelBackAction(hasOpener, hasParent, window.history.length, backDepth);
   if (act.mode === "close") { try { window.close(); } catch (e) {} return; }
   if (act.mode === "notify-host") {
-    try { window.parent.postMessage({ type: "dsh-memory:panel-close" }, "*"); } catch (e) {}
+    try { window.parent.postMessage({ type: "dsh-keepsake:panel-close" }, "*"); } catch (e) {}
     return;
   }
   if (act.mode === "back") { window.history.go(-act.steps); return; }
@@ -209,7 +209,7 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 async function api(path, options) {
-  const res = await fetch("/dsh-memory/api/" + path, options);
+  const res = await fetch("/dsh-keepsake/api/" + path, options);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || "HTTP " + res.status);
   return body;
@@ -794,7 +794,7 @@ async function renderProjectsPage() {
         const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = `dsh-memory-project-${id}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `dsh-keepsake-project-${id}-${new Date().toISOString().slice(0, 10)}.json`;
         a.click();
         URL.revokeObjectURL(a.href);
         toast(`已导出 ${out.entries.length} 条`);
@@ -979,7 +979,7 @@ function buildPipeModelCard(data) {
     <div class="kv"><b>提取路由</b><span>${route}<span class="meta"> · fallback：${fbText}</span></span></div>
     <div class="kv"><b>最近一次提取用车</b><span>${usedText}</span></div>
     <div class="kv"><b>嵌入模型（语义召回）</b><span>${embText}</span></div>
-    <div class="meta">提取默认跟随会话路由；要指定更稳的模型，在 cordis.patch.yml 给 dsh-memory 配 provider/model 或 fallback（配法见 README，不硬编码任何模型）。</div>`;
+    <div class="meta">提取默认跟随会话路由；要指定更稳的模型，在 cordis.patch.yml 给 dsh-keepsake 配 provider/model 或 fallback（配法见 README，不硬编码任何模型）。</div>`;
   return card;
 }
 
@@ -1148,7 +1148,7 @@ async function renderSettingsPage() {
       const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `dsh-memory-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `dsh-keepsake-export-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(a.href);
       toast("已导出");

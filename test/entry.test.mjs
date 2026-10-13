@@ -75,7 +75,7 @@ function fakeSession(cwd, events) {
 }
 
 test("入口元数据与注入段注册", () => {
-  assert.equal(name, "dsh-memory");
+  assert.equal(name, "dsh-keepsake");
   // 含 webServer（host 挂载面）
   assert.deepEqual(inject.sort(), ["llm", "systemPrompt", "webServer"]);
   const { ctx, sections, registeredRoutes } = fakeCtx();
@@ -83,35 +83,35 @@ test("入口元数据与注入段注册", () => {
   assert.equal(sections.length, 0); // 关闭时不注入
   apply(ctx, {}); // 缺省关（fail-closed），无显式 enabled: true 不启用
   assert.equal(sections.length, 0);
-  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry") });
+  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry") });
   // 默认 injectChannel=message → section 侧只留一条静态路由兜底段
   assert.equal(sections.length, 1);
-  assert.equal(sections[0].name, "dsh-memory:routing");
+  assert.equal(sections[0].name, "dsh-keepsake:routing");
   assert.equal(sections[0].order, 5000);
   assert.equal(sections[0].interpolate, false);
   // 路由已注册（API prefix 总入口 + panel exact/prefix）
   assert.ok(registeredRoutes.length >= 3);
-  assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-memory/api"));
-  assert.ok(registeredRoutes.some((r) => r.path === "/dsh-memory/panel/"));
+  assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-keepsake/api"));
+  assert.ok(registeredRoutes.some((r) => r.path === "/dsh-keepsake/panel/"));
 
   // 显式 injectChannel=section → 旧四段：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
   const sectioned = fakeCtx();
-  apply(sectioned.ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry"), injectChannel: "section" });
+  apply(sectioned.ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry"), injectChannel: "section" });
   assert.equal(sectioned.sections.length, 4);
-  assert.equal(sectioned.sections[0].name, "dsh-memory:persona");
+  assert.equal(sectioned.sections[0].name, "dsh-keepsake:persona");
   assert.equal(sectioned.sections[0].order, 4990);
-  assert.equal(sectioned.sections[1].name, "dsh-memory:global-index");
+  assert.equal(sectioned.sections[1].name, "dsh-keepsake:global-index");
   assert.equal(sectioned.sections[1].order, 4995);
-  assert.equal(sectioned.sections[2].name, "dsh-memory:instructions");
+  assert.equal(sectioned.sections[2].name, "dsh-keepsake:instructions");
   assert.equal(sectioned.sections[2].order, 5000);
-  assert.equal(sectioned.sections[3].name, "dsh-memory:index");
+  assert.equal(sectioned.sections[3].name, "dsh-keepsake:index");
   assert.equal(sectioned.sections[3].order, 5001);
   for (const section of sectioned.sections) assert.equal(section.interpolate, false);
 });
 
 test("事件→提取→落盘 全链路", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-"));
   try {
     const { ctx, handlers, sections, streamCalls } = fakeCtx(async function* () {
       yield {
@@ -141,7 +141,7 @@ test("事件→提取→落盘 全链路", async () => {
     assert.equal(streamCalls.length, 1);
     assert.equal(streamCalls[0].provider, "prov");
     assert.equal(streamCalls[0].model, "model-x");
-    assert.equal(streamCalls[0].purpose, "dsh-memory-extraction");
+    assert.equal(streamCalls[0].purpose, "dsh-keepsake-extraction");
     assert.equal(streamCalls[0].sessionId, "s-test");
     // 注入段：项目索引段（sections[3]）此时能读到 MEMORY.md
     const indexText = sections[3].text({ agent: { session: { header: { cwd: workspace } } } });
@@ -158,8 +158,8 @@ test("事件→提取→落盘 全链路", async () => {
 });
 
 test("skip 轮（无散文）不调 LLM 但推进", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-"));
   try {
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       throw new Error("不应被调用");
@@ -178,8 +178,8 @@ test("skip 轮（无散文）不调 LLM 但推进", async () => {
 });
 
 test("直写轮跳过（skip 双条件②）", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-"));
   try {
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       throw new Error("不应被调用");
@@ -207,7 +207,7 @@ test("非 completed 轮不触发", async () => {
   const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
     throw new Error("不应被调用");
   });
-  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-memory-entry-x"), provider: "prov", model: "m" });
+  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry-x"), provider: "prov", model: "m" });
   const session = fakeSession("D:\\nowhere", [USER_EVENT]);
   handlers.get("session/event")(session, { type: "turn/end", seq: 4, data: { turn: 1, reason: { kind: "aborted" } } });
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -215,8 +215,8 @@ test("非 completed 轮不触发", async () => {
 });
 
 test("总开关关 = 提取全停（提取半边；补覆盖——此前该闸零测试）", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-"));
   try {
     resetSettingsCache();
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
@@ -238,8 +238,8 @@ test("总开关关 = 提取全停（提取半边；补覆盖——此前该闸�
 });
 
 test("路由兜底（desktop 实测加固）：无 request/header 时 assistant/message.source 提供路由", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-"));
   try {
     resetSettingsCache();
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
@@ -287,7 +287,7 @@ test("config 注入通道键 fail loud：injectChannel 非法值 / injectMaxChar
 });
 
 test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即抛、section 冲突、端点 scheme 收紧、阈值/超时越界", () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-recall-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-recall-"));
   const { ctx } = fakeCtx();
   assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true }), /embeddingBaseUrl/);
   assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://x" }), /embeddingModel/);
@@ -313,12 +313,12 @@ test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即�
 
 // ---- 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
 
-test("DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-dbg-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-dbg-"));
-  const prev = process.env.DSH_MEMORY_DEBUG;
+test("DSH_KEEPSAKE_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-dbg-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-dbg-"));
+  const prev = process.env.DSH_KEEPSAKE_DEBUG;
   try {
-    process.env.DSH_MEMORY_DEBUG = "1";
+    process.env.DSH_KEEPSAKE_DEBUG = "1";
     const { ctx, handlers } = fakeCtx(async function* () {
       yield { type: "text-delta", index: 0, text: "Nothing to save." };
       yield { type: "finish", reason: { kind: "stop" } };
@@ -332,19 +332,19 @@ test("DSH_MEMORY_DEBUG 文件日志口：debug.log 落盘含标记行", async ()
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     const logged = readFileSync(join(root, "debug.log"), "utf8");
-    assert.match(logged, /\[dsh-memory\]/, "debug.log 应含插件日志行（Electron 宿主唯一可见通道）");
+    assert.match(logged, /\[dsh-keepsake\]/, "debug.log 应含插件日志行（Electron 宿主唯一可见通道）");
     assert.match(logged, /提取|路由|webServer/, "应记录提取链路事件");
   } finally {
-    if (prev === void 0) delete process.env.DSH_MEMORY_DEBUG;
-    else process.env.DSH_MEMORY_DEBUG = prev;
+    if (prev === void 0) delete process.env.DSH_KEEPSAKE_DEBUG;
+    else process.env.DSH_KEEPSAKE_DEBUG = prev;
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
   }
 });
 
 test("路由优先级：assistant/message.source 不覆盖 request/header 已捕获路由", async () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-entry-prio-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-prio-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-prio-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-prio-"));
   try {
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       yield { type: "text-delta", index: 0, text: "Nothing to save." };

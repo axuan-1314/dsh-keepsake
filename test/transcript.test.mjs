@@ -135,7 +135,7 @@ test("纯插件注入长文不算用户散文（≥3 词门槛不被架空）", 
       type: "user/message",
       surfaceOp: "append",
       seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-memory" }, content: [{ type: "text", text: longText }] },
+      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: longText }] },
     },
   ];
   assert.equal(hasEnoughUserProse(events, 3), false);
@@ -178,7 +178,7 @@ test("回归：正常用户消息（无 source / 非 plugin kind）仍过门槛"
       type: "user/message",
       surfaceOp: "append",
       seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-memory" }, content: [{ type: "text", text: `注入 ${"y ".repeat(30)}` }] },
+      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: `注入 ${"y ".repeat(30)}` }] },
     },
     { type: "user/message", surfaceOp: "append", seq: 2, data: { role: "user", content: [{ type: "text", text: "one two three" }] } },
   ];
@@ -192,7 +192,7 @@ test("renderTranscript 剔除插件注入行，保留正常用户/助手/工具�
       type: "user/message",
       surfaceOp: "append",
       seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-memory" }, content: [{ type: "text", text: injected }] },
+      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: injected }] },
     },
     { type: "user/message", surfaceOp: "append", seq: 2, data: { role: "user", content: [{ type: "text", text: "真实用户发言" }] } },
     { type: "assistant/message", surfaceOp: "append", seq: 3, data: { message: { content: [{ type: "text", text: "助手答复" }] } } },

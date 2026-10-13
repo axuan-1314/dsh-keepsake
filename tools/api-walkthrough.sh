@@ -1,4 +1,4 @@
-# dsh-memory API 冒烟脚本：headless curl 把全部 REST 端点走一遍
+# dsh-keepsake API 冒烟脚本：headless curl 把全部 REST 端点走一遍
 # 顺序：0 清场（可重入）→ state → 改 settings → persona 写/重置 → 四分类增删改/移动 →
 #       reset（验备份）→ import dryRun/confirm → export → backup list/restore → 收尾复位
 # 用法：BASE=http://127.0.0.1:3080 bash tools/api-walkthrough.sh
@@ -6,7 +6,7 @@
 #    故带 body 的请求一律先写临时文件再 --data-binary @file，绕开命令行参数。
 set -u
 BASE="${BASE:-http://127.0.0.1:3080}"
-API="$BASE/dsh-memory/api"
+API="$BASE/dsh-keepsake/api"
 
 # 安全门：step 0 会 reset/清空目标宿主的全部记忆数据，
 # 只许对一次性测试容器跑。默认拒绝执行；必须显式 WALKTHROUGH_CONFIRM=yes。

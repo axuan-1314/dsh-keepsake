@@ -19,7 +19,7 @@ test("isValidModelIndexLine：格式/长度/文件名一致性", () => {
 });
 
 test("applyOps: 非法 indexLine 回退规范行（防索引重复累积）", () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-test-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
   try {
     const log = { warn: () => {} };
     applyOps(
@@ -91,7 +91,7 @@ test("renderMemoryFile: frontmatter 形态（name/description/metadata.type/node
 });
 
 test("applyOps: 安全写+索引重建+黑名单跳过+删除", () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-test-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
   try {
     const log = { warn: () => {} };
     let result = applyOps(
@@ -122,7 +122,7 @@ test("applyOps: 安全写+索引重建+黑名单跳过+删除", () => {
 });
 
 test("applyOps: MEMORY.md 本体不可被模型写", () => {
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-test-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
   try {
     const result = applyOps(root, [{ action: "write", name: "MEMORY.md", content: "hijack", type: "project", title: "M", description: "" }], { log: { warn: () => {} } });
     assert.equal(result.writes, 0);

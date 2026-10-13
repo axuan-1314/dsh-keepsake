@@ -8,7 +8,7 @@ import { defaultSettings, effectiveEmbedding, readSettings, resetSettingsCache, 
 
 function freshRoot() {
   resetSettingsCache();
-  return mkdtempSync(join(tmpdir(), "dsh-memory-settings-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-settings-"));
 }
 
 test("缺省：文件不存在 = 三开关全开", () => {

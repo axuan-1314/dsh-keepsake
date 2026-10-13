@@ -32,7 +32,7 @@ function extractFactoryFn(src, name, params) {
 // ---- 单一事实源与内联兜底 ----
 
 test("防漂移：client.js 动态 import 消费 panel-logic（根治面在位）", () => {
-  assert.match(clientSrc, /import\("\/dsh-memory\/panel\/panel-logic\.js"\)/, "client.js 必须动态加载自供 panel-logic 模块");
+  assert.match(clientSrc, /import\("\/dsh-keepsake\/panel\/panel-logic\.js"\)/, "client.js 必须动态加载自供 panel-logic 模块");
   assert.match(clientSrc, /LOGIC \? LOGIC\.ladderNoteOf/, "ladderNoteOf 必须经 panel-logic 优先分发");
   assert.match(clientSrc, /LOGIC \? LOGIC\.decideLadderTier/, "decideLadderTier 必须经 panel-logic 优先分发");
   assert.match(clientSrc, /LOGIC\.collectThemeVarsFromDoc\(document\)/, "主题收集必须优先消费 collectThemeVarsFromDoc");
@@ -61,9 +61,9 @@ test("防漂移：档位决策兜底 decideLadderTierFallback 与 decideLadderTi
 
 test("防漂移：协议常量 client.js 定义侧与 panel.html 字面量侧一致", () => {
   for (const [name, lit] of [
-    ["PANEL_READY_MSG", "dsh-memory:panel-ready"],
-    ["THEME_MSG", "dsh-memory:theme"],
-    ["PANEL_CLOSE_MSG", "dsh-memory:panel-close"],
+    ["PANEL_READY_MSG", "dsh-keepsake:panel-ready"],
+    ["THEME_MSG", "dsh-keepsake:theme"],
+    ["PANEL_CLOSE_MSG", "dsh-keepsake:panel-close"],
   ]) {
     assert.ok(clientSrc.includes(`const ${name} = "${lit}";`), `client.js 必须以常量定义 ${name}`);
     assert.ok(panelSrc.includes(`"${lit}"`), `panel.html 必须含字面量 "${lit}"（改名必漏一边）`);

@@ -39,6 +39,6 @@
 ### 修复
 - `enabled` 缺省关（fail-closed）；索引缓存键加项目维度；Windows 保留设备名段防穿越；截断保最新；直写判定按结果成败校验；CJK 词数折算；关停 drain 纪律；debug 日志口。
 
-[未发布]: https://github.com/axuan-1314/dsh-memory/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/axuan-1314/dsh-memory/releases/tag/v0.2.0
-[0.1.0]: https://github.com/axuan-1314/dsh-memory/releases/tag/v0.1.0
+[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.2.0
+[0.1.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.1.0

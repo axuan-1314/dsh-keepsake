@@ -16,7 +16,7 @@ import {
 } from "../lib/recall-store.js";
 
 function freshRoot() {
-  return mkdtempSync(join(tmpdir(), "dsh-memory-recall-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-recall-"));
 }
 
 /** 在 root 下直接落一个 embeddings.json（不走 save，测坏档容错）。 */

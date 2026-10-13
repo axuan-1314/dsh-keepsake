@@ -15,7 +15,7 @@ import {
 } from "../lib/inject-channel.js";
 
 test("常量：来源标识/ form / 顺序", () => {
-  assert.equal(INJECT_SOURCE_KIND, "plugin:dsh-memory");
+  assert.equal(INJECT_SOURCE_KIND, "plugin:dsh-keepsake");
   assert.equal(MEMORY_CONTEXT_FORM, "memory-context");
   assert.deepEqual(INJECT_SEGMENT_ORDER, ["persona", "globalIndex", "usage", "projectIndex"]);
   assert.deepEqual(INJECT_DROPPABLE_ORDER, ["globalIndex", "projectIndex", "usage"]);
@@ -107,7 +107,7 @@ test("⑥ sameInjectionText：空白差异判等、类型不符判否", () => {
 
 test("⑦ isPluginSourcedMessage：plugin / plugin:xxx / 普通 / undefined", () => {
   assert.equal(isPluginSourcedMessage({ source: { kind: "plugin" } }), true);
-  assert.equal(isPluginSourcedMessage({ source: { kind: "plugin:dsh-memory" } }), true);
+  assert.equal(isPluginSourcedMessage({ source: { kind: "plugin:dsh-keepsake" } }), true);
   assert.equal(isPluginSourcedMessage({ source: { kind: "agent-instructions" } }), false);
   assert.equal(isPluginSourcedMessage({}), false);
   assert.equal(isPluginSourcedMessage(undefined), false);

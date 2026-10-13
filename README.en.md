@@ -1,4 +1,4 @@
-# dsh-memory
+# dsh-keepsake
 
 > **English | [中文](README.md)**
 
@@ -28,7 +28,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 
 ## What is this
 
-Every new DSH session starts from scratch: your work context, the decision history of a project, the conventions you settled on last week — all of it has to be repeated. dsh-memory automates this:
+Every new DSH session starts from scratch: your work context, the decision history of a project, the conventions you settled on last week — all of it has to be repeated. dsh-keepsake automates this:
 
 1. **Automatic extraction** — at the end of each turn, the plugin decides whether anything is worth remembering (user preferences, project decisions, durable conclusions…) and, if so, writes it to local Markdown files.
 2. **Automatic injection** — on every later turn, the recorded content is injected into the session as a plugin-owned user message (four segments: persona / global-memory index / project usage notes / project-memory index), so the model "remembers" you.
@@ -65,7 +65,7 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 | Project memory | project notes/index are no longer injected, project-class writes are filtered (count visible) |
 | Global auto-extraction | no new global entries; existing ones still inject |
 
-- **Anti-feedback**: injected messages carry `source.kind = "plugin:dsh-memory"`; the extraction side excludes them from "user prose", so the model never re-records injected memory into memory.
+- **Anti-feedback**: injected messages carry `source.kind = "plugin:dsh-keepsake"`; the extraction side excludes them from "user prose", so the model never re-records injected memory into memory.
 
 ### Semantic recall (optional)
 
@@ -86,7 +86,7 @@ Entry point: DSH settings → **Memory** section → "Open memory management". O
 
 > Screenshots show the UI with sample data.
 
-The panel (`/dsh-memory/panel/`, localhost only) includes:
+The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 
 - **Four category pages + long-term page**: entry cards (title / description / filename / updated time / body) supporting —
   - **browse & search**: instant filter on the long-term page (title / description / body); recent-activity entries carry an age badge;
@@ -143,7 +143,7 @@ Installed = enabled: `cordis.patch.yml` sets `enabled: true` explicitly (the cod
 1. Open a new session and chat a few turns with real content (full sentences, not single-word commands);
 2. Check the disk: look for `MEMORY.md` and memory files under `~/.dsh/memory/projects/<slug>-<hash16>/memory/`, or entries under a global category dir (e.g. `~/.dsh/memory/global/work-profile/`);
 3. Check injection: in a new turn, ask the model to recap "what do you remember about me / this project" — if it cites memory, injection works;
-4. Or query the API: `GET /dsh-memory/api/state` (loopback) for `counts` and `extractionFailures` (should be all zero);
+4. Or query the API: `GET /dsh-keepsake/api/state` (loopback) for `counts` and `extractionFailures` (should be all zero);
 5. Open DSH settings → **Memory** → "Open memory management"; the pages should browse normally.
 
 Note: changing entry config such as `cordis.patch.yml` on desktop / headless requires restarting that instance (web picks it up via HMR); the panel switches, addressing, and persona live in `~/.dsh/memory/settings.json` and take effect on the **next turn without a restart**.
@@ -185,7 +185,7 @@ Unknown config keys throw (with a did-you-mean hint) — fail-loud, never silent
 
 - **All data is local**: memory, settings, backups and logs live under `~/.dsh/memory/` (a dedicated dir; uninstalling does not touch other components);
 - **Extraction uses the session route**: the extraction call reuses your current conversation's model channel (`ctx.llm.stream`); there is no separate cloud upload path;
-- **The failure log contains no conversation content**: it records time / pid / reason / route / error summary only. The diagnostic log `debug.log` is enabled only when `DSH_MEMORY_DEBUG=1`;
+- **The failure log contains no conversation content**: it records time / pid / reason / route / error summary only. The diagnostic log `debug.log` is enabled only when `DSH_KEEPSAKE_DEBUG=1`;
 - **API and panel are loopback-only**: every endpoint passes a loopback guard (127.0.0.1 / localhost, with Host and Origin checks).
 
 Data layout:
@@ -194,7 +194,7 @@ Data layout:
 ~/.dsh/memory/
 ├── settings.json                          # three-layer switches (panel-editable, read each turn)
 ├── extraction-errors.log                  # extraction failure log (always on, rotated at 512KB)
-├── debug.log                              # diagnostic log when DSH_MEMORY_DEBUG=1
+├── debug.log                              # diagnostic log when DSH_KEEPSAKE_DEBUG=1
 ├── embeddings.json                        # semantic-recall vector cache (created when recallEnabled)
 ├── global/                                # global memory
 │   ├── persona.md                         # persona (starts from the factory template)
@@ -214,7 +214,7 @@ The memory file format (frontmatter / index line / `[[name]]` links / cross-agen
 1. **Disable without uninstalling**: set `enabled` to `false` in the profile's `cordis.patch.yml` (or bundle patch). Web picks it up via HMR; desktop/headless require a restart. To pause memory temporarily, just use the panel's master switch (next turn, no restart).
    - To revert **only the injection channel**: set `injectChannel` to `"section"`.
    - To disable **only semantic recall**: set `recallEnabled` to `false` (or remove it) — back to index-only, no embedding calls.
-2. **Uninstall**: `dsh plugin --profile <name> remove dsh-memory`.
+2. **Uninstall**: `dsh plugin --profile <name> remove dsh-keepsake`.
 3. **Clear data**: delete `~/.dsh/memory/`.
 
 ## FAQ
@@ -223,7 +223,7 @@ The memory file format (frontmatter / index line / `[[name]]` links / cross-agen
 Two layers. Entry config in `cordis.patch.yml` (provider/model, budgets…) is HMR for web but needs a restart for desktop/headless. The panel switches, addressing and persona live in `~/.dsh/memory/settings.json`, read before each turn — effective next turn with no restart.
 
 **Q2: The settings page shows "automatic extraction failed N times". What is it?**
-The pipeline reporting trouble (typically a rate-limited free pool, HTTP 429). The plugin auto-retries (3 attempts with exponential backoff) and backfills each turn; if it stays down, click "Retry extraction now", or read `<storageRoot>/extraction-errors.log`, or pin a more stable `provider`/`model` for dsh-memory in `cordis.patch.yml`.
+The pipeline reporting trouble (typically a rate-limited free pool, HTTP 429). The plugin auto-retries (3 attempts with exponential backoff) and backfills each turn; if it stays down, click "Retry extraction now", or read `<storageRoot>/extraction-errors.log`, or pin a more stable `provider`/`model` for dsh-keepsake in `cordis.patch.yml`.
 
 **Q3: I made a mistake editing an entry/persona and saved. Can I get it back?**
 No — single-entry overwrite (save entry / save persona / rename) replaces the old text with no edit history (intentional). Batch destructive paths (reset / import / restore) are auto-backed-up; export first if you want an undo for single edits.
@@ -250,13 +250,13 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 
 ## Observability & operations
 
-- **Extraction failures**: `/dsh-memory/api/state` → `extractionFailures` (bucketed + same-reason streak + `retried` + `recent[5]`). Structural failures (no-route / no-cwd) give up after 5 consecutive failures.
+- **Extraction failures**: `/dsh-keepsake/api/state` → `extractionFailures` (bucketed + same-reason streak + `retried` + `recent[5]`). Structural failures (no-route / no-cwd) give up after 5 consecutive failures.
 - **Observation surface**: `/state` also carries `lastFailedRange`, `extractionInFlight`, `lastAttemptAt`, `lastUsedRoute`, `extractionConfig`, `embeddingConfig`; the settings page's "pipeline health card" renders all of it.
 - **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); render failures are counted, never silently dropped.
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
-- **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_MEMORY_DEBUG`.
-- **Manual backfill**: `POST /dsh-memory/api/extract/retry` (the "Retry extraction now" button) → 202 + observe via `/state`; 409 in flight; 10s minimum interval.
-- **Debug log**: with `DSH_MEMORY_DEBUG=1`, writes `<storageRoot>/debug.log` (>1MB rotates to `debug.log.1`) — the full diagnostic channel when the Electron host console is not forwarded.
+- **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_KEEPSAKE_DEBUG`.
+- **Manual backfill**: `POST /dsh-keepsake/api/extract/retry` (the "Retry extraction now" button) → 202 + observe via `/state`; 409 in flight; 10s minimum interval.
+- **Debug log**: with `DSH_KEEPSAKE_DEBUG=1`, writes `<storageRoot>/debug.log` (>1MB rotates to `debug.log.1`) — the full diagnostic channel when the Electron host console is not forwarded.
 
 ## Development & testing
 
@@ -274,7 +274,7 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **Spec task-type filter not ported**: the upstream spec gates extraction eligibility by task type (interactive/fork/…); this plugin runs on all sessions and relies on the skip gates (no ≥3-word prose / direct-write turn) to suppress noise.
 - **Relative-path `file_path` direct-write detection is conservative**: `transcript.js` resolves write/edit `file_path` against memoryRoot, so a relative path that lands inside the memory dir is treated as a direct-write turn and skips extraction — conservative (more skips, never misses a save).
 - **Single LLM call** (not a subagent extraction loop, whose API surface is not established in DSH): when updating old memories the model only sees manifest descriptions + recent small files, not all old text; mitigated by attaching bodies (≤3000 chars × most recent 10 files).
-- **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-memory"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
+- **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-keepsake"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
 - **desktop/headless config changes need a restart** (see rollback section); no uniform hot reload.
 - **No single-entry edit history** (intentional): PUT persona / PUT entry replaces the old text — a bad paste overwrites it; batch paths (reset/import/restore) are auto-backed-up.
 - **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (40-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.

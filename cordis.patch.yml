@@ -1,13 +1,13 @@
-# dsh-memory — 项目记忆自动提取+注入 cordis 插件的 loader 配置。
+# dsh-keepsake — 项目记忆自动提取+注入 cordis 插件的 loader 配置。
 # 插入为独立 entry；config 为插件唯一配置面（apply(ctx, config) 第二参）。
 # enabled 默认显式开：安装即启用；回滚 = 把 enabled 改 false
 # （生效方式分 profile：web 由 HMR 自动生效，desktop/headless 需重启对应实例）
-# 或 dsh plugin --profile <name> remove dsh-memory（整包卸载）。
+# 或 dsh plugin --profile <name> remove dsh-keepsake（整包卸载）。
 # 用户可感知开关（对话记忆/项目记忆/全局提取）不在此处——走
 # ~/.dsh/memory/settings.json（host 每轮读取，改完下一轮即生效，绕开 desktop 重启限制）。
 - insert:
-    - id: dsh-memory
-      name: dsh-memory
+    - id: dsh-keepsake
+      name: dsh-keepsake
       config:
         enabled: true
         # 注入通道（v0.2.0）：message=durable 用户消息通道（默认，全 preset 生效，

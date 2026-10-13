@@ -1,5 +1,5 @@
 {
-  "name": "dsh-memory",
+  "name": "dsh-keepsake",
   "version": "0.2.0",
   "description": "项目记忆自动提取+注入（cordis 插件）：会话轮结束触发单次 LLM 提取，落盘 ~/.dsh/memory/projects/<slug>-<hash16>/memory/（.md+MEMORY.md 索引），经 durable 用户消息通道注入人设/索引（injectChannel 可回退到 systemPrompt 注入）。v1 单次调用简化提取。",
   "type": "module",
@@ -29,11 +29,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/axuan-1314/dsh-memory.git"
+    "url": "git+https://github.com/axuan-1314/dsh-keepsake.git"
   },
-  "homepage": "https://github.com/axuan-1314/dsh-memory#readme",
+  "homepage": "https://github.com/axuan-1314/dsh-keepsake#readme",
   "bugs": {
-    "url": "https://github.com/axuan-1314/dsh-memory/issues"
+    "url": "https://github.com/axuan-1314/dsh-keepsake/issues"
   },
   "author": "axuan-1314",
   "engines": {

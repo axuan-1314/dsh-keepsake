@@ -166,7 +166,7 @@ test("isRetryableFailure 表驱动：确定性失败 code 逐个断言不可重�
 test("isRetryableFailure：code 缺失时的保守消息兜底（最后手段）", () => {
   // 现场真实形态：真实 429 的 failure.code 是 null，message 是唯一线索
   assert.equal(
-    isRetryableFailure({ code: null, message: "OpenCode Zen Free: Upstream request failed: Endpoint is unavailable." }, "dsh-memory: 提取调用异常结束 kind=error"),
+    isRetryableFailure({ code: null, message: "OpenCode Zen Free: Upstream request failed: Endpoint is unavailable." }, "dsh-keepsake: 提取调用异常结束 kind=error"),
     true,
   );
   assert.equal(isRetryableFailure({ message: "HTTP 429 Too Many Requests" }, "kind=error"), true);
@@ -184,8 +184,8 @@ test("isRetryableFailure：code 缺失时的保守消息兜底（最后手段）
 test("重试链：可重试 code 失败后重试成功——3 次 attempt、retried=2、落盘、lastRecoveredAt 打点", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-retry-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-retry-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-retry-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-retry-"));
   try {
     const target = join(projectMemoryPaths(root, workspace).memoryDir, "retry-works.md");
     const queue = [failingStream({ code: "RATE_LIMIT", status: 429, message: "rate limited" }), failingStream({ code: "TRANSPORT", message: "conn reset" }), okStream()];
@@ -215,8 +215,8 @@ test("重试链：可重试 code 失败后重试成功——3 次 attempt、retr
 test("重试链：不可重试 code（AUTH）只 attempt 1 次即摊牌", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-auth-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-auth-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-auth-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-auth-"));
   try {
     const queue = [failingStream({ code: "AUTH", status: 401, message: "invalid api key" }), okStream()];
     const { streamCalls } = await runExtraction({
@@ -249,8 +249,8 @@ test("重试链：不可重试 code（AUTH）只 attempt 1 次即摊牌", async 
 test("重试链：三次全败——llm-error 只 +1、retried=+2（口径钉）", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-exhaust-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-exhaust-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-exhaust-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-exhaust-"));
   try {
     const fail = failingStream({ code: "SERVER", status: 503, message: "upstream down" }); // 流工厂（async generator function），queuedStream entry() 调用得 iterator
     const queue = [fail, fail, fail];
@@ -280,8 +280,8 @@ test("重试链：三次全败——llm-error 只 +1、retried=+2（口径钉）
 test("drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-drain-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-drain-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-drain-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-drain-"));
   try {
     // 三次全败但退避拉长（1s）：第一次失败后进入退避，此刻触发 dispose
     const fail = failingStream({ code: "SERVER", status: 503, message: "upstream down" }); // 流工厂（async generator function），queuedStream entry() 调用得 iterator
@@ -324,7 +324,7 @@ test("drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", 
     //     可取消 sleep 提前 resolve → attempt 前 aborted 检查命中，不再发起。
     apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1000, retryAttempts: 3, retryBackoffMs: 3000, retryMaxDelayMs: 3000 });
     // 摘出 lifecycle dispose 句柄（apply 注册的 ctx.effect 返回的清理函数）
-    disposeFns = effects.filter((e) => e.label === "dsh-memory lifecycle").map((e) => e.fn());
+    disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);
     handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
@@ -347,8 +347,8 @@ test("drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", 
 test("drain 纪律：dispose 挂起中的 stream（永不 finish）后不再有后续 attempt", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-hang-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-hang-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-hang-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-hang-"));
   try {
     const effects = [];
     const handlers = new Map();
@@ -379,7 +379,7 @@ test("drain 纪律：dispose 挂起中的 stream（永不 finish）后不再有�
     // timeoutMs 故意短（1500ms）：本用例验的是"挂起流不衍生重试链"而非超时收口本身，
     // 长 timeout 会让 drain 等满 60s 预算拖垮检查（attempt 级超时有单独钉）。
     apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1500, retryAttempts: 3, retryBackoffMs: 10, retryMaxDelayMs: 20 });
-    const disposeFns = effects.filter((e) => e.label === "dsh-memory lifecycle").map((e) => e.fn());
+    const disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);
     handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
@@ -508,8 +508,8 @@ test("resolveConfig：未知键 did-you-mean 提示（failbacks→fallback）", 
 test("fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + 落盘", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-wire-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-fb-wire-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-fb-wire-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-fb-wire-"));
   try {
     const fail = failingStream({ code: "SERVER", status: 503, message: "upstream down" });
     const queue = [fail, fail, okStream()]; // 主道 2 attempt 全败 → 换道 1 次成功
@@ -543,8 +543,8 @@ test("fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + �
 test("fallback：配了但全败 → 报 error、fallbackUsed 不加、不落盘", async () => {
   resetSettingsCache();
   __resetMetricsForTest();
-  const root = mkdtempSync(join(tmpdir(), "dsh-memory-fb-fail-"));
-  const workspace = mkdtempSync(join(tmpdir(), "dsh-memory-ws-fb-fail-"));
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-fb-fail-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-fb-fail-"));
   try {
     const fail = failingStream({ code: "SERVER", status: 503, message: "down" });
     const queue = [fail, fail, fail, fail]; // 主道 2 + 换道 2（换道同样走完整 attempt 链）全败

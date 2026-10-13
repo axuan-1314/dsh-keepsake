@@ -11,7 +11,7 @@ import { createEntry, listEntries, readPersona, listBackups } from "../lib/globa
 const silentLog = { info() {}, warn() {}, error() {} };
 
 function freshRoot() {
-  return mkdtempSync(join(tmpdir(), "dsh-memory-api-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-api-"));
 }
 
 function mockReq({ method, url, body, headers = {}, remoteAddress = "127.0.0.1" }) {
@@ -281,7 +281,7 @@ test("export：全量 JSON + content-disposition 附件头", async () => {
     const { status, json, headers } = await callApi(root, { method: "GET", path: `${API_PREFIX}export` });
     assert.equal(status, 200);
     assert.equal(json.categories["long-term"].length, 1);
-    assert.match(headers["content-disposition"], /attachment; filename="dsh-memory-export-/);
+    assert.match(headers["content-disposition"], /attachment; filename="dsh-keepsake-export-/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

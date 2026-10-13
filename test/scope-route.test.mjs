@@ -10,8 +10,8 @@ import { applyScopedOps, parseExtractionOutput, buildExtractionPayload, VALID_SC
 import { categoryDir, listEntries, readEntry } from "../lib/global-store.js";
 
 function freshRoot() {
-  const storageRoot = mkdtempSync(join(tmpdir(), "dsh-memory-scope-"));
-  const projectRoot = mkdtempSync(join(tmpdir(), "dsh-memory-proj-"));
+  const storageRoot = mkdtempSync(join(tmpdir(), "dsh-keepsake-scope-"));
+  const projectRoot = mkdtempSync(join(tmpdir(), "dsh-keepsake-proj-"));
   return { storageRoot, projectRoot };
 }
 

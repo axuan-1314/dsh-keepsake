@@ -35,7 +35,7 @@ function fakeCtx() {
 
 function freshRoot() {
   resetSettingsCache();
-  return mkdtempSync(join(tmpdir(), "dsh-memory-inject-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-inject-"));
 }
 
 /** 起插件并返回四段 text 函数。 */
@@ -265,7 +265,7 @@ test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实
     }
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: rootA, injectChannel: "section" });
-    const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
+    const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
     const longTermLines = text.split("\n").filter((l) => l.includes("[P-long-term-"));
     assert.equal(longTermLines.length, 40, "每类 40 行预算生效（50 条只见 40）");
     assert.doesNotMatch(text, /\[WARNING\]/, "单类 40 行未触总预算");
@@ -282,7 +282,7 @@ test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实
     }
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: rootB, injectChannel: "section" });
-    const text = sections.find((s) => s.name === "dsh-memory:global-index").text(NO_CTX);
+    const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
     assert.match(text, /\[WARNING\]/, "总预算截断应带可见 WARNING");
     const entryLines = text.split("\n").filter((l) => /^- \[P-/.test(l));
     assert.ok(entryLines.length <= 120, `注入条目行应 ≤120，实际 ${entryLines.length}`);

@@ -36,7 +36,7 @@ function fakeCtx() {
 
 function freshRoot() {
   resetSettingsCache();
-  return mkdtempSync(join(tmpdir(), "dsh-memory-wiring-"));
+  return mkdtempSync(join(tmpdir(), "dsh-keepsake-wiring-"));
 }
 
 /** 造 cwd=root 的项目记忆（条目+索引）。 */
@@ -73,7 +73,7 @@ test("默认 message 模式——pre-step 注入 memory-context（不依赖 sect
     const { ctx, sections, handlers } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: root }); // 缺省 injectChannel=message
     assert.equal(sections.length, 1, "section 侧只剩一条路由兜底段");
-    assert.equal(sections[0].name, "dsh-memory:routing");
+    assert.equal(sections[0].name, "dsh-keepsake:routing");
     const handler = handlers.get("agent/pre-step");
     assert.equal(typeof handler, "function", "message 模式应注册 pre-step");
 
@@ -84,7 +84,7 @@ test("默认 message 模式——pre-step 注入 memory-context（不依赖 sect
     assert.equal(out.messages.length, 2, "应追加一条注入消息");
     const injected = out.messages[1];
     assert.equal(injected.role, "user");
-    assert.equal(injected.source.kind, "plugin:dsh-memory");
+    assert.equal(injected.source.kind, "plugin:dsh-keepsake");
     assert.equal(injected.source.form, "memory-context");
     assert.equal(typeof injected.source.digest, "string");
     const text = textOf(injected);
@@ -158,7 +158,7 @@ test("非注入场景一律原样返回（reject / step≠1 / 空批 / 批内已
     const empty = { kind: "enter", messages: [] };
     assert.equal(await run(handler, payloadOf({ agent, messages: [] }), empty), empty);
 
-    const ours = { role: "user", content: [{ type: "text", text: "x" }], source: { kind: "plugin:dsh-memory", form: "memory-context" } };
+    const ours = { role: "user", content: [{ type: "text", text: "x" }], source: { kind: "plugin:dsh-keepsake", form: "memory-context" } };
     const already = { kind: "enter", messages: [ours, ...msgs] };
     assert.equal(await run(handler, payloadOf({ agent, messages: already.messages }), already), already);
 
@@ -252,7 +252,7 @@ test("injectChannel=section → 不注册 pre-step，恢复旧四段", () => {
 test("注入消息以 user/message 落事件流 → 提取侧 skip 门槛不被架空（防自食）", () => {
   const root = freshRoot();
   try {
-    const injected = { role: "user", content: [{ type: "text", text: "很长很长的一段注入记忆内容".repeat(20) }], source: { kind: "plugin:dsh-memory", form: "memory-context" } };
+    const injected = { role: "user", content: [{ type: "text", text: "很长很长的一段注入记忆内容".repeat(20) }], source: { kind: "plugin:dsh-keepsake", form: "memory-context" } };
     const events = [{ type: "user/message", surfaceOp: "append", seq: 0, data: injected }];
     assert.equal(skipReason(events, root, 3), "no-user-prose", "纯注入批次必须 skip 提取");
   } finally {

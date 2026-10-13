@@ -1,4 +1,4 @@
-# dsh-memory
+# dsh-keepsake
 
 > **[English](README.en.md) | 中文**
 
@@ -34,7 +34,7 @@
 
 ## 这是什么
 
-DSH 每次新会话都是从零开始：你的工作背景、这个项目的决策历史、上周聊定的口径，全都得重新说一遍。dsh-memory 把这件事自动化：
+DSH 每次新会话都是从零开始：你的工作背景、这个项目的决策历史、上周聊定的口径，全都得重新说一遍。dsh-keepsake 把这件事自动化：
 
 1. **自动提取**——每轮对话结束，插件自动判断这轮有没有值得记的事（用户偏好、项目决策、长期有效的结论……），有就落盘成本地 Markdown 文件；
 2. **自动注入**——之后每一轮对话，把已记下的内容以四段形式（人设 / 全局记忆索引 / 项目使用说明 / 项目记忆索引）作为一条插件自有的用户消息注入会话，模型据此"记得"你；
@@ -71,7 +71,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 项目记忆 | 项目使用说明/项目索引不再注入，项目类记忆写入被过滤（计数可见） |
 | 全局自动提取 | 不再自动写全局记忆；已有的全局条目照常注入 |
 
-- **防自反馈**：注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记；提取侧按此标识把自家注入的消息从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。
+- **防自反馈**：注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记；提取侧按此标识把自家注入的消息从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。
 
 ### 语义召回（可选）
 
@@ -92,7 +92,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 > 上图为界面示意（使用示例数据渲染）。
 
-面板（`/dsh-memory/panel/`，仅本机可访问）包含：
+面板（`/dsh-keepsake/panel/`，仅本机可访问）包含：
 
 - **四个对话分类页 + 长期记忆页**：条目卡片流（标题 / 描述 / 文件名 / 更新时间 / 正文），支持——
   - **浏览与检索**：长期记忆页有即时过滤（标题 / 描述 / 正文）；近期动态条目带年龄徽标；
@@ -159,7 +159,7 @@ dsh --profile web --dump-config                    # 验证 entry 入树
 1. 装好后开一个新会话，正常聊几轮有实质内容的话（整句散文，而非单词命令）；
 2. 检查落盘：看 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 是否出现 `MEMORY.md` 与记忆文件，或全局分类目录（如 `~/.dsh/memory/global/work-profile/`）是否出现条目；
 3. 检查注入：新开一轮对话，让模型复述"你记得关于我/这个项目的什么"，能引用出记忆内容即注入生效；
-4. 也可直接查 API：`GET /dsh-memory/api/state`（本机 loopback）看 `counts`（全局条目数 / 项目数）与 `extractionFailures`（应为全零）；
+4. 也可直接查 API：`GET /dsh-keepsake/api/state`（本机 loopback）看 `counts`（全局条目数 / 项目数）与 `extractionFailures`（应为全零）；
 5. 打开 DSH 设置页 →「记忆」区块 →「打开记忆管理」，面板各页应能正常浏览。
 
 注意：desktop / headless profile 改 `cordis.patch.yml` 等 entry config 后需重启对应实例才生效（web profile 由 HMR 自动生效）；而面板里的三层开关、称呼、人设走 `~/.dsh/memory/settings.json`，宿主每轮读取，**下一轮对话即生效，无需重启**。
@@ -203,7 +203,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 - **数据全在本地**：所有记忆、设置、备份、日志都落在 `~/.dsh/memory/`（自有目录，卸载不影响其他组件）；
 - **提取走会话路由**：提取调用复用你当前对话的模型通道（`ctx.llm.stream`），没有独立的云端上传路径；
-- **失败日志不含会话内容**：`extraction-errors.log` 只记时间 / pid / 原因 / 路由 / 错误摘要；诊断口 `debug.log` 仅在 `DSH_MEMORY_DEBUG=1` 时开启；
+- **失败日志不含会话内容**：`extraction-errors.log` 只记时间 / pid / 原因 / 路由 / 错误摘要；诊断口 `debug.log` 仅在 `DSH_KEEPSAKE_DEBUG=1` 时开启；
 - **API 与面板仅本机可访问**：全部端点先过 loopback 守卫（仅 127.0.0.1 / localhost，校验 Host 与 Origin），DSH 反代鉴权是第一层。
 
 数据布局：
@@ -212,7 +212,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ~/.dsh/memory/
 ├── settings.json                          # 三层开关（面板可改，每轮读取）
 ├── extraction-errors.log                  # 提取失败日志（常开，>512KB 轮转两档）
-├── debug.log                              # DSH_MEMORY_DEBUG=1 时的诊断口
+├── debug.log                              # DSH_KEEPSAKE_DEBUG=1 时的诊断口
 ├── embeddings.json                        # 语义召回条目向量缓存（开启 recallEnabled 时生成）
 ├── global/                                # 全局记忆
 │   ├── persona.md                         # 人设（出厂默认模板起步）
@@ -234,7 +234,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 1. **停功能不卸包**：把 profile 的 `cordis.patch.yml`（或 bundle patch）里 `enabled` 改为 `false`。生效方式分 profile：**web profile 由 HMR 自动生效；desktop/headless 改 config 后需重启对应实例**（桌面端重启应用；headless 本就每次启动新进程）。不存在"改完即热生效"的统一行为，以上为各 profile 的实际生效路径。若只想临时停用记忆功能，用面板的总开关即可（下一轮对话生效，无需重启）。
    - 只回退**注入通道**（不停功能）：把 `injectChannel` 改为 `"section"`，回到旧的四段系统提示词注入；同样按上面的 profile 生效路径。
    - 只关**语义召回**：把 `recallEnabled` 改为 `false`（或删除），回到"仅索引、无自动召回"，不再产生任何嵌入调用。
-2. **整包卸载**：`dsh plugin --profile <name> remove dsh-memory`。
+2. **整包卸载**：`dsh plugin --profile <name> remove dsh-keepsake`。
 3. **清数据**：删 `~/.dsh/memory/`（自有目录，不影响其他组件）。
 
 ## FAQ
@@ -243,7 +243,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 分两层。`cordis.patch.yml` 里的 entry config（provider/model、预算等）改完后，web profile 走 HMR 自动生效，desktop / headless 需重启对应实例。而面板里的三层开关、称呼、人设不走这套——它们写在 `~/.dsh/memory/settings.json`，宿主每轮对话前读取，下一轮对话即生效，不受重启限制。
 
 **Q2：设置页红条「自动提取失败 N 次」是什么？怎么办？**
-这是提取管道在报障（典型场景：免费池限流 429）。长这样：门牌/面板出现红条，健康卡灯变红、显示连击数、失败分桶、最近失败详情和「seq X 之后的轮次尚未记录」的错过区间提示。插件会自动重试（3 次 attempt 指数退避）并在此后每轮自动补提；如果长期不恢复，到设置页健康卡点「立即重试提取」，或看 `<storageRoot>/extraction-errors.log`（健康卡上有路径），或在 `cordis.patch.yml` 给 dsh-memory 显式配一组更稳的 `provider`/`model`。
+这是提取管道在报障（典型场景：免费池限流 429）。长这样：门牌/面板出现红条，健康卡灯变红、显示连击数、失败分桶、最近失败详情和「seq X 之后的轮次尚未记录」的错过区间提示。插件会自动重试（3 次 attempt 指数退避）并在此后每轮自动补提；如果长期不恢复，到设置页健康卡点「立即重试提取」，或看 `<storageRoot>/extraction-errors.log`（健康卡上有路径），或在 `cordis.patch.yml` 给 dsh-keepsake 显式配一组更稳的 `provider`/`model`。
 
 **Q3：手动编辑条目/人设时粘贴错了并保存，能找回吗？**
 不能——单条覆盖写（保存条目、保存人设、改称呼）是直接替换旧文，没有编辑历史（有意不修，见已知限制）。有自动备份的是批量破坏路径（重置 / 导入 / 恢复备份），单条覆盖前请自行先导出兜底。
@@ -273,14 +273,14 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 ## 可观测与运维
 
-- **提取失败计数**：`/dsh-memory/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
+- **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
 - **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（嵌入召回配置）；面板设置页有「管道健康卡」承载以上全部。
 - **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
-- **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_MEMORY_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
-- **手动补提**：`POST /dsh-memory/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
+- **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
+- **手动补提**：`POST /dsh-keepsake/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
 - **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
-- **debug 日志口**：`DSH_MEMORY_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
+- **debug 日志口**：`DSH_KEEPSAKE_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
 - **备份策略**：reset/import/restore 前自动全量备份到 `backups/`，滚动保留最新 **20 份**；半备份（meta 无 complete）标记 incomplete 且拒绝恢复。
 
 ## 开发与测试
@@ -299,7 +299,7 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **规格 taskType 过滤未移植**：上游规格按任务类型（interactive/fork/…）过滤提取资格；本插件对所有会话生效，依赖 skip 双门槛（无 ≥3 词散文 / 直写轮）兜底抑制噪声。
 - **相对路径 file_path 的直写判定偏保守**：`transcript.js` 对 write/edit 的 `file_path` 以 memoryRoot 为基解析相对路径，恰好落在记忆目录内的相对路径会判为"直写轮"而 skip 提取——方向保守（多 skip、不漏存），安全。
 - **单次 LLM 调用**（非提取子任务 loop 形态，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
-- **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-memory"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与上游规格同构）。
+- **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与上游规格同构）。
 - **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。
 - **单条覆盖写无编辑历史**（有意不修）：PUT persona / PUT entry 直接替换旧文——粘贴错内容保存即丢旧文；批量破坏路径（reset/import/restore）有自动备份，单条覆盖请自行先导出兜底。
 - **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 40 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。

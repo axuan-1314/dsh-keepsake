@@ -1,6 +1,6 @@
 // format：存储格式版本闸（缺失补写 / 同级放行 / 过新只读拒绝 / 损坏补写）。
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -64,16 +64,32 @@ test("过新标记 = 拒绝写入（assertWritable 抛 FORMAT_TOO_NEW），且�
   }
 });
 
-test("损坏标记 = 补写当前版本（可见降级，不阻断）", () => {
+test("损坏标记 = 先备份（.corrupt-*）再补写当前版本，且保持可写不阻断", () => {
   const root = freshRoot();
   try {
-    writeFileSync(formatPath(root), "{ not json", "utf8");
+    const corruptBody = "{ not json";
+    writeFileSync(formatPath(root), corruptBody, "utf8");
     const before = readFormatState(root, silent);
     assert.equal(before.corrupt, true);
     const result = ensureFormat(root, silent);
+    // ① 返回成功，并带 corruptReset 观测字段
     assert.equal(result.ok, true);
+    assert.equal(result.corruptReset, true);
     assert.equal(result.stamped, true);
+    assert.equal(result.formatVersion, FORMAT_VERSION);
+    // ② 目录下出现备份文件，且内容为原始损坏内容（证据永不失访）
+    const evidence = readdirSync(root).filter((name) => name.startsWith(`${FORMAT_FILENAME}.corrupt-`));
+    assert.equal(evidence.length, 1);
+    assert.equal(readFileSync(join(root, evidence[0]), "utf8"), corruptBody);
+    // ③ 标记被补写为当前版本
     assert.equal(JSON.parse(readFileSync(formatPath(root), "utf8")).formatVersion, FORMAT_VERSION);
+    // ④ 再读为干净状态：corrupt:false 且版本为当前
+    resetFormatCache();
+    const after = readFormatState(root, silent);
+    assert.equal(after.corrupt, false);
+    assert.equal(after.formatVersion, FORMAT_VERSION);
+    // ⑤ 回归：损坏标记场景下写入闸不抛（保持可写）
+    assert.doesNotThrow(() => assertWritable(root, silent));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,10 +1,10 @@
 // entry：插件入口集成冒烟（假 cordis ctx）——事件订阅→skip/提取→落盘→注入段渲染。
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { apply, name, inject } from "../lib/index.js";
+import { apply, resolveConfig, name, inject } from "../lib/index.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 
@@ -76,8 +76,8 @@ function fakeSession(cwd, events) {
 
 test("入口元数据与注入段注册", () => {
   assert.equal(name, "dsh-keepsake");
-  // 含 webServer（host 挂载面）
-  assert.deepEqual(inject.sort(), ["llm", "systemPrompt", "webServer"]);
+  // 硬依赖仅 llm + systemPrompt；webServer 为可选（有则挂载 API/面板，无则记忆仍工作）
+  assert.deepEqual(inject.slice().sort(), ["llm", "systemPrompt"]);
   const { ctx, sections, registeredRoutes } = fakeCtx();
   apply(ctx, { enabled: false });
   assert.equal(sections.length, 0); // 关闭时不注入
@@ -374,4 +374,62 @@ test("路由优先级：assistant/message.source 不覆盖 request/header 已捕
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
   }
+});
+
+// ---- 本批补钉：存储格式只读闸（P2-7）/ recallTotalBudgetMs 配置键 ----
+
+test("存储格式高于本插件 → 只读保护：不提取、不落盘（P2-7）", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-ro-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-ro-"));
+  try {
+    // 造"更新版插件写入"的存储根：formatVersion=2 高于当前 FORMAT_VERSION(1)
+    writeFileSync(join(root, "keepsake-format.json"), JSON.stringify({ formatVersion: 2 }) + "\n", "utf8");
+
+    const logs = [];
+    const streamCalls = [];
+    const handlers = new Map();
+    const ctx = {
+      logger: {
+        info: (m) => logs.push(String(m)),
+        warn: (m) => logs.push(String(m)),
+        error: (m) => logs.push(String(m)),
+      },
+      on(type, fn) { handlers.set(type, fn); },
+      effect() {},
+      inject(_deps, setup) { setup({ effect(fn) { fn(); }, webServer: { register() { return () => {}; } } }); },
+      systemPrompt: { section() { return () => {}; } },
+      // 若只读闸失效，提取会真的调到 LLM 并落盘——桩会产出合法 ops 暴露之
+      llm: {
+        stream(options) {
+          streamCalls.push(options);
+          return (async function* () {
+            yield { type: "text-delta", index: 0, text: '{"ops":[{"action":"write","name":"ro.md","type":"project","title":"RO","description":"d","content":"c"}]}' };
+            yield { type: "finish", reason: { kind: "stop" } };
+          })();
+        },
+      },
+    };
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000 });
+
+    const session = fakeSession(workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, USER_EVENT);
+    handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const { memoryDir } = projectMemoryPaths(root, workspace);
+    assert.equal(streamCalls.length, 0, "只读保护下不得发起提取 LLM 调用");
+    assert.equal(existsSync(memoryDir), false, "只读保护下不得写出任何记忆文件");
+    assert.ok(logs.some((line) => /只读保护/.test(line)), "应有只读保护日志（本轮跳过提取）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("recallTotalBudgetMs 配置键：默认 20000 / 显式生效 / 超 MAX_TIMER_DELAY_MS 抛错", () => {
+  assert.equal(resolveConfig({ enabled: true }).recallTotalBudgetMs, 20000, "默认总预算 20000ms");
+  assert.equal(resolveConfig({ enabled: true, recallTotalBudgetMs: 1234 }).recallTotalBudgetMs, 1234, "显式传值应生效");
+  assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 2147483648 }), /recallTotalBudgetMs too large/);
+  assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 0 }), /recallTotalBudgetMs/);
+  assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 1.5 }), /recallTotalBudgetMs/);
 });

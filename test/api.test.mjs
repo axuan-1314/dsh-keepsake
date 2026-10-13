@@ -607,3 +607,97 @@ test("格式同级/缺失：写端点放行，/state 报 writable=true", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 写端点 null 请求体：不再 500 ----
+
+test("写端点 null 请求体（合法 JSON）不再 500：有必填字段者归一为 400", async () => {
+  const root = freshRoot();
+  try {
+    const nullBody = { body: "null", headers: { "content-type": "application/json" } };
+    // 修复前 JSON.parse("null") → null → handler 访问 body.xxx 抛 TypeError → 被兜成 500
+    const required = [
+      ["PUT", "persona"],
+      ["POST", "category/work-profile/entries"],
+      ["PUT", "entry"],
+      ["DELETE", "entry"],
+      ["POST", "import"],
+      ["POST", "backup/restore"],
+    ];
+    for (const [method, sub] of required) {
+      const { status } = await callApi(root, { method, path: `${API_PREFIX}${sub}`, ...nullBody });
+      assert.equal(status, 400, `${method} ${sub} 的 null body 应为 400（修复前 500）`);
+    }
+    // addressing 无必填字段：null 归一为 {} 后是一次合法写入（200），关键是**不再 500**
+    const addressing = await callApi(root, { method: "PUT", path: `${API_PREFIX}addressing`, ...nullBody });
+    assert.notEqual(addressing.status, 500, "addressing 的 null body 不得再落 500");
+    assert.equal(addressing.status, 200);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- embedding/test：已存密钥只发往它所属端点（安全回归） ----
+
+/** 起一个本机 sink 服务：记录收到的 Authorization，回一个合法嵌入响应。 */
+async function startEmbedSink() {
+  const { createServer } = await import("node:http");
+  const seen = [];
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => { raw += c; });
+    req.on("end", () => {
+      seen.push({ authorization: req.headers.authorization, raw });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  return { seen, baseUrl: `http://127.0.0.1:${port}/v1/embeddings`, close: () => new Promise((r) => server.close(r)) };
+}
+
+/** 带 extraction 依赖（含生效嵌入配置）调用 embedding/test。 */
+async function callEmbeddingTest(storageRoot, embeddingEffective, body) {
+  const routes = makeApiRoutes({
+    storageRoot,
+    log: silentLog,
+    onGlobalWrite: () => {},
+    extraction: { triggerRetry: () => 0, inFlight: () => false, configSummary: () => ({ embeddingEffective }) },
+  });
+  const handler = routes[0].handler;
+  const req = mockReq({ method: "POST", url: `${API_PREFIX}embedding/test`, body });
+  const res = mockRes();
+  await handler(req, res);
+  return { status: res.status, json: res.body ? JSON.parse(res.body) : null };
+}
+
+test("embedding/test：已存密钥只发往它所属端点（不随请求体任意地址外泄）", async () => {
+  const root = freshRoot();
+  const eff = await startEmbedSink();
+  const alt = await startEmbedSink();
+  try {
+    // ① 请求体自带 key → 用它发往请求体指定的地址
+    const a = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: alt.baseUrl, model: "m", apiKey: "body-key" });
+    assert.equal(a.status, 200);
+    assert.equal(a.json.ok, true);
+    assert.equal(alt.seen.length, 1);
+    assert.equal(alt.seen[0].authorization, "Bearer body-key");
+    assert.equal(eff.seen.length, 0, "未向生效端点发请求");
+
+    // ② baseUrl ≠ 生效端点且未带 key → 绝不外发已存密钥
+    const b = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: alt.baseUrl, model: "m" });
+    assert.equal(b.status, 200);
+    assert.equal(alt.seen.length, 2);
+    assert.equal(alt.seen.at(-1).authorization, void 0, "未带 key 时不得携带已存密钥");
+
+    // ③ baseUrl = 生效端点且未带 key → 使用已存密钥
+    const c = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: eff.baseUrl, model: "m" });
+    assert.equal(c.status, 200);
+    assert.equal(eff.seen.length, 1);
+    assert.equal(eff.seen[0].authorization, "Bearer stored-secret");
+  } finally {
+    await eff.close();
+    await alt.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

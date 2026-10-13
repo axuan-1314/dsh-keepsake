@@ -4,7 +4,7 @@
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.3.0（以 `package.json` 为准）
+- **插件版本**：0.3.1（以 `package.json` 为准）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）；`package.json` 声明了 DSH peer 范围，安装/启动时宿主会做版本兼容检查，不匹配会让用户显式确认后才装
 - **分发**：GitHub 仓库 tag tarball 渠道（+ 本地 clone 作开发）；升级方式见[「升级」](#升级)（DSH 插件不支持自动更新）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
@@ -62,7 +62,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 注入段 | 模型看到什么 | 预算 |
 |---|---|---|
 | 人设 | 「用户叫你小助手」「希望你称呼他为朋友」+ 你编辑的补充人设正文 | 400 行 / 16k 字符 |
-| 全局记忆索引 | 四分类 + 长期记忆的条目索引；近期动态带年龄与过期倒计时（如「3 天前 · 27 天后过期」） | 每类 40 行，总 120 行 / 12k 字符 |
+| 全局记忆索引 | 四分类 + 长期记忆的条目索引；近期动态带年龄与过期倒计时（如「3 天前 · 27 天后过期」） | 每类 22 行（超限保最新），总 120 行 / 12k 字符 |
 | 项目使用说明 | 记忆目录在哪、索引怎么读、怎么按你的要求直写/删除记忆 | 固定短文 |
 | 项目记忆索引 | 该项目 `MEMORY.md` 索引（每行指向一个记忆文件，模型按需 Read） | 200 行 / 25k 字符，超限保最新丢最旧并附 WARNING |
 
@@ -82,6 +82,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 - **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 ollama `http://127.0.0.1:11434/v1/embeddings`）则记忆文本也不出本机。
 - **面板里配置**：设置页「嵌入服务」卡直接填端点 / 模型 / API Key，带「测试连接」按钮；保存后**下一轮对话即生效，不必改 `cordis.patch.yml`、不必重启**（面板配置存于 `~/.dsh/memory/settings.json`，优先于 entry config）。
+- **测试连接不转发已存密钥**：已保存的 API Key 只发往它自己配置的那个端点；若「测试连接」的请求指向别的地址，不会把已存密钥带过去（只有请求体里当场填的 Key 才随该地址发送）。
 - **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（nomic-embed-text、bge-m3、embed-model…）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 
@@ -151,7 +152,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 **① GitHub tag tarball（推荐）** —— 从仓库 tag 直接安装，钉死版本：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
 # profile 可选 web / headless / desktop
 ```
 
@@ -172,7 +173,7 @@ dsh plugin --profile web add <克隆到本地的仓库路径>   # 或 git URL
 DSH 的插件管理器**不支持自动更新**（官方文案：升级 = 先卸载再装新版）。所以升级 = 用新版本重跑一次安装命令：
 
 ```bash
-# tag tarball 渠道：把 URL 里的 v0.3.0 换成新版本号（版本号见 Releases / CHANGELOG）
+# tag tarball 渠道：把 URL 里的 v0.3.1 换成新版本号（版本号见 Releases / CHANGELOG）
 dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
 # 本地克隆渠道：git pull 后无需重装（软链生效）
 ```
@@ -199,7 +200,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 |---|---|---|
 | `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
 | `injectChannel` | **`"message"`** | 注入通道：`"message"`=durable 用户消息通道（默认，全预设生效）；`"section"`=旧四段 systemPrompt 注入（一键回滚） |
-| `injectMaxChars` | 60000 | 消息通道注入总预算（字符）；超限按优先级整段丢弃并附可见 WARNING |
+| `injectMaxChars` | 60000 | 消息通道注入**总**预算（字符）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
 | `provider` / `model` | 空（跟随会话路由） | 提取调用的模型路由；成对出现，否则报错。缺省时自动捕获本会话路由（`request/header` 优先，`assistant/message` 的 `source` 兜底，同 session-title 策略） |
 | `minUserWords` | 3 | skip 条件的散文词数下限 |
@@ -221,6 +222,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
 | `recallMinScore` | 0.35 | 余弦相似度阈值（[0,1]，越界即抛） |
 | `recallTimeoutMs` | 8000 | 单次嵌入调用超时。**实测**：本地 CPU 嵌入服务独立调用 ~0.6s，但**宿主进程内**竞争下可达数秒——故默认留足余量；端点真死会连接被拒秒退，只有慢端点才吃满（超时按失败降级：本轮不召回） |
+| `recallTotalBudgetMs` | 20000 | 单轮召回**整体时间预算**（毫秒）。嵌入可能分批串行请求，单请求超时（`recallTimeoutMs`）不足以约束整轮耗时，故整体封顶；超出后本轮按已缓存部分召回、下次续跑（不再让一轮卡满 N×单请求超时） |
 
 失败分类：按内核 `failure.code` 判可重试（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），AUTH/INVALID_REQUEST/QUOTA 等确定性失败立即摊牌；code 缺失才退保守 message 正则。
 
@@ -291,7 +293,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并：running 期间新触发只留最新边界）。
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
-- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首一行免责/署名：记忆是参考上下文、非任务指令；subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
+- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首一行免责/署名：记忆是参考上下文、非任务指令；subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`（召回块计入其中，主块先为召回块让位）。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
 - **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 为进程内状态不持久化；插件中途挂载/恢复的会话只提取存活期间新完成的轮次，不回扫历史。
@@ -313,7 +315,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，323 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，346 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 
@@ -328,13 +330,14 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **单次 LLM 调用**（非提取子任务 loop 形态，其 API 面在 DSH 未实证）：更新老记忆时模型只见 manifest 描述 + 最近小文件正文，不见全部旧文；由 manifest 附正文（≤3000 字符 × 最近 10 文件）缓解。
 - **防自反馈与检索**：提取调用为 request-only 输入（不 append 事件）；注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记，提取侧按此排除（不计 skip 门槛、不进提取输入）——注入内容会出现在会话记录流中，但不会被记回记忆。记忆正文无自动检索，靠模型按索引主动 Read（与上游规格同构）。
 - **desktop/headless 改 config 需重启实例**（见回滚节），无统一热生效。
+- **无 webserver 的 profile 不挂载 API/面板**：插件的硬依赖只有「提取用的 LLM」与「section 模式的 systemPrompt」；在无 webserver 的 profile（如 headless）也能加载并正常做记忆注入，只是不挂载 REST API 与面板（`/dsh-keepsake/...` 不可访问）。
 - **单条覆盖写无编辑历史**（有意不修）：PUT persona / PUT entry 直接替换旧文——粘贴错内容保存即丢旧文；批量破坏路径（reset/import/restore）有自动备份，单条覆盖请自行先导出兜底。
-- **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 40 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
+- **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 22 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
 - **注入块在会话内可能累积**：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
-- **`injectMaxChars` 是软上限**：超限追加的可见截断提示行不计入预算，最终字符数可能略超该值（默认 60000 下不触发，仅护栏）。
+- **`injectMaxChars` 是注入总预算（含召回块）**：开启召回时主块为召回块让位，两段合计不超过该值；可见截断提示行也计入预算（仅当预算小到连包裹与提示行都装不下时才允许轻微越界）。
 - **防自食只覆盖自家注入**：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
 - **回声抑制是标签级**：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind` 兜底，但意译文本不可辨。
-- **语义召回按轮嵌入查询**：开启后每轮对当前用户消息嵌一次（受 `recallTimeoutMs` 约束，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
+- **语义召回按轮嵌入查询**：开启后每轮对当前用户消息嵌一次（单请求超时 `recallTimeoutMs`，整轮总预算 `recallTotalBudgetMs`，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
 - **召回块的会话内累积**：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。
 
 下一版方向与有意不做的清单见 [ROADMAP.md](ROADMAP.md)。

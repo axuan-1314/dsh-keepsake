@@ -19,6 +19,9 @@
         # 缺一启动即抛（fail loud）。不配置则不产生任何外部调用（记忆文本不出本机）。
         # 示例：ollama http://127.0.0.1:11434/v1/embeddings ；LM Studio http://127.0.0.1:1234/v1/embeddings
         recallEnabled: false
+        # 嵌入分批串行请求时，仅单请求超时不足以约束整轮耗时，故另有单轮整体时间预算；两者默认值如下（可按需覆盖）。
+        # recallTimeoutMs: 8000        # 单次嵌入调用超时（毫秒）
+        # recallTotalBudgetMs: 20000   # 单轮召回整体时间预算（毫秒）；超出则本轮按已缓存部分召回，下次续跑
         provider: null
         model: null
         minUserWords: 3

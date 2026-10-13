@@ -16,6 +16,16 @@ test("fallbackEntryName：纯中文/纯符号标题的确定性哈希兜底", ()
   assert.match(fallbackEntryName("!!!纯符号!!!"), /^entry-[0-9a-f]{10}\.md$/);
 });
 
+test("fallbackEntryName：空种子确定性（不再随调用时间变化）", () => {
+  const a = fallbackEntryName("");
+  const b = fallbackEntryName("");
+  assert.equal(a, b, "空种子两次调用同名");
+  assert.equal(a, fallbackEntryName(null), "null 与空种子同结果");
+  assert.equal(a, fallbackEntryName("   "), "纯空白与空种子同结果（trim 后为空）");
+  assert.equal(a, "entry-da39a3ee5e.md", '空种子 = sha1("") 前 10 hex（确定性锚点）');
+  assert.match(a, /^entry-[0-9a-f]{10}\.md$/);
+});
+
 test("isInsideRoot: 包含性判定", () => {
   assert.equal(isInsideRoot(ROOT, join(ROOT, "a.md")), true);
   assert.equal(isInsideRoot(ROOT, join(ROOT, "sub", "b.md")), true);

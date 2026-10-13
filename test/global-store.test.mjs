@@ -512,6 +512,27 @@ test("createEntry：标题含 \"/\" 派生命名取末段（不整条拒绝）",
   }
 });
 
+test("createEntry：显式非法 name 拒绝（返回 null，不再静默按标题派生）", () => {
+  const root = freshRoot();
+  try {
+    // 保留名 / 点段 / 黑名单段 / 嵌套路径 —— 显式给了就必须拒绝，而非改按 title 派生
+    for (const bad of ["con.md", "..", "node_modules", "a/b"]) {
+      assert.equal(
+        createEntry(root, "work-profile", { name: bad, title: "不应派生", content: "c" }),
+        null,
+        `显式非法名应拒绝: ${bad}`,
+      );
+    }
+    assert.equal(countEntries(root, "work-profile"), 0);
+    assert.equal(existsSync(join(categoryDir(root, "work-profile"), "MEMORY.md")), false, "拒绝即零落盘（不建索引）");
+    // 回归：未提供 name 时仍按标题派生
+    const derived = createEntry(root, "work-profile", { title: "Derived Title", content: "c" });
+    assert.equal(derived.name, "derived-title.md");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("备份滚动上限（只留最新 BACKUP_KEEP 份）", () => {
   const root = freshRoot();
   try {

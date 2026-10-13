@@ -256,8 +256,8 @@ test("开关矩阵：全开基线 = 4990/4995 非空", () => {
   }
 });
 
-test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实的假绿补钉）", () => {
-  // 相位 A（每类预算）：单类 50 条 → 只见 40 行，且未触总预算无 WARNING
+test("4995 两级注入预算：每类 22 行保最新 + 总预算不裁整类", () => {
+  // 相位 A（每类预算 + 保最新）：单类 50 条 → 只见 22 行（每类预算），且是**最新** 22 条（尾部保留）
   const rootA = freshRoot();
   try {
     for (let i = 0; i < 50; i += 1) {
@@ -267,12 +267,14 @@ test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实
     apply(ctx, { enabled: true, storageRoot: rootA, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
     const longTermLines = text.split("\n").filter((l) => l.includes("[P-long-term-"));
-    assert.equal(longTermLines.length, 40, "每类 40 行预算生效（50 条只见 40）");
-    assert.doesNotMatch(text, /\[WARNING\]/, "单类 40 行未触总预算");
+    assert.equal(longTermLines.length, 22, "每类 22 行预算生效（50 条只见 22）");
+    assert.match(text, /\[P-long-term-49\]/, "保最新：最新一条仍在注入里");
+    assert.doesNotMatch(text, /\[P-long-term-0\]/, "保最新：最旧一条被裁掉（此前保头部会让新记忆消失）");
+    assert.doesNotMatch(text, /\[WARNING\]/, "单类 22 行未触总预算");
   } finally {
     rmSync(rootA, { recursive: true, force: true });
   }
-  // 相位 B（总预算）：五类各 40 条共 200 行 > 120 → 截断 + WARNING
+  // 相位 B（总预算）：五类各 40 条 → 每类裁到 22 行（按总闸 120 反推），五类段落头齐全、无整类被裁
   const rootB = freshRoot();
   try {
     for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
@@ -283,11 +285,33 @@ test("4995 两级注入预算：每类 40 行 + 总 120 行截断（变异坐实
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: rootB, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
-    assert.match(text, /\[WARNING\]/, "总预算截断应带可见 WARNING");
+    assert.doesNotMatch(text, /\[WARNING\]/, "每类 22 行 + 段落头应恰好落在总闸 120 行内");
     const entryLines = text.split("\n").filter((l) => /^- \[P-/.test(l));
-    assert.ok(entryLines.length <= 120, `注入条目行应 ≤120，实际 ${entryLines.length}`);
-    assert.ok(entryLines.length >= 40, "截断后仍保留内容（非全灭）");
+    assert.equal(entryLines.length, 110, `五类各 22 行应全部保留，实际 ${entryLines.length}`);
+    assert.equal((text.match(/^### /gm) ?? []).length, 5, "五类段落头齐全（不整类被裁）");
   } finally {
     rmSync(rootB, { recursive: true, force: true });
+  }
+});
+
+test("4995 全局索引字符预算：超长钩子逐类收紧，段落头齐全、不切半行", () => {
+  const root = freshRoot();
+  try {
+    const longHook = "钩".repeat(400); // 单行约 400 字符 → 行预算装得下、字符闸装不下
+    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
+      for (let i = 0; i < 22; i += 1) {
+        createEntry(root, cat, { name: `pin-${cat}-${String(i).padStart(3, "0")}.md`, title: `P-${cat}-${i}`, description: longHook, content: "c" });
+      }
+    }
+    const { ctx, sections } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, injectChannel: "section" });
+    const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
+    assert.equal((text.match(/^### /gm) ?? []).length, 5, "超长钩子下五类段落头仍齐全（字符闸不掉头）");
+    const contentLines = text.split("\n").filter((l) => l.trim().length > 0 && !l.startsWith("##") && !l.startsWith("###") && !l.startsWith("Global memory root:") && l !== "（空）");
+    assert.ok(contentLines.length > 0, "仍有条目行");
+    assert.ok(contentLines.every((l) => l.startsWith("- [")), "内容行均为完整条目行（无半行残片）");
+    assert.ok(text.length <= 12400, `总文本应受总字符闸约束，实际 ${text.length}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

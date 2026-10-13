@@ -4,12 +4,12 @@
 //   minimal 场景不再依赖 section、视野去重（同内容不重复）、内容变化补发、视野丢失补发、
 //   开关关闭不注入、预算丢弃可见、section 模式不注册 pre-step。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { apply } from "../lib/index.js";
-import { createEntry } from "../lib/global-store.js";
+import { createEntry, writePersona } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 import { __resetMetricsForTest, injectionSnapshot, recallSnapshot } from "../lib/metrics.js";
@@ -406,6 +406,155 @@ test("嵌入端点失败 → 降级不召回、主块不受影响、记 errors",
     assert.ok(!out.messages.some((m) => m.source?.form === "memory-recall"), "失败不召回");
     assert.ok(out.messages.some((m) => m.source?.form === "memory-context"), "主块照常注入");
     assert.equal(recallSnapshot().errors, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 本批补钉：召回熔断 / 总预算 / 只读闸 / 总预算扣减召回块 / 全历史去重 ----
+
+test("召回熔断有牙（P2-7）：连续 3 次失败后冷却期内不再发起嵌入请求", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const agent = makeAgent({ cwd: root });
+    const msgs = () => [userMsg("pnpm 命令")];
+    let calls = 0;
+    const impl = async () => { calls += 1; throw new Error("embedding endpoint down"); };
+
+    // 前 3 轮：每轮真实发起一次嵌入请求并失败 → 累积 streak=3 触发冷却
+    for (let round = 1; round <= 3; round += 1) {
+      calls = 0;
+      await withFetch(impl, () => run(handler, payloadOf({ agent, messages: msgs() }), { kind: "enter", messages: msgs() }));
+      assert.equal(calls, 1, `第 ${round} 轮失败前应发起 1 次嵌入请求`);
+    }
+    assert.equal(recallSnapshot().errors, 3, "三次失败应记入召回 errors");
+
+    // 第 4 轮：冷却期内，嵌入请求次数不得再增长（0 次）——这是熔断的牙
+    calls = 0;
+    await withFetch(impl, () => run(handler, payloadOf({ agent, messages: msgs() }), { kind: "enter", messages: msgs() }));
+    assert.equal(calls, 0, "冷却期内不得再发起嵌入请求（熔断生效）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("recallTotalBudgetMs 总预算截断多批嵌入：批次数受限 + 已嵌向量增量落盘（新逻辑）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const TOTAL = 130; // ceil(130/64)=3 批
+    for (let i = 0; i < TOTAL; i += 1) {
+      createEntry(root, "long-term", { name: `b-${String(i).padStart(3, "0")}.md`, title: `B${i}`, content: "x" });
+    }
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG, recallTotalBudgetMs: 40, recallTimeoutMs: 5000 });
+    const handler = handlers.get("agent/pre-step");
+    let batchCalls = 0;
+    // 慢桩且忽略 abort signal：每批固定 50ms，单批即超 40ms 总预算
+    const impl = async (_url, options) => {
+      const input = JSON.parse(options.body).input;
+      if (input.length > 1) batchCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { ok: true, status: 200, json: async () => ({ data: input.map(() => ({ embedding: [0.1, 0.1] })) }) };
+    };
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+
+    const totalBatches = Math.ceil(TOTAL / 64); // 3
+    assert.ok(batchCalls < totalBatches, `总预算应截断批次（实际 ${batchCalls} < 全量 ${totalBatches}）`);
+    assert.equal(batchCalls, 1, "40ms 预算 + 每批 50ms → 首轮批后即超预算，只跑 1 批");
+    // 增量落盘：已嵌的那批向量不因预算截断而丢
+    const cachePath = join(root, "embeddings.json");
+    assert.equal(existsSync(cachePath), true, "逐批增量落盘：embeddings.json 应已写出");
+    const cached = JSON.parse(readFileSync(cachePath, "utf8"));
+    assert.equal(Object.keys(cached.items).length, 64, "首批发出的 64 条向量应已落盘（不因截断丢已嵌向量）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("injectMaxChars 是总预算：覆盖召回块，主块让位（新逻辑）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    writePersona(root, "人".repeat(4000)); // 主块必然超预算 → 走截断路径
+    createEntry(root, "work-profile", { title: "包管理", content: `团队统一用 pnpm 管理依赖 ${"详情".repeat(120)}` });
+    const INJECT_MAX = 900;
+    const decision = { kind: "enter", messages: [userMsg("我们 用 pnpm")] };
+    const { impl } = stubFetch();
+
+    // 召回开启：主块预算 = 总预算 − 召回块（+块间空行）
+    const on = fakeCtx();
+    apply(on.ctx, { enabled: true, storageRoot: root, injectChannel: "message", injectMaxChars: INJECT_MAX, ...RECALL_CONFIG });
+    const outOn = await withFetch(impl, () => run(on.handlers.get("agent/pre-step"), payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    const mainOn = textOf(outOn.messages.find((m) => m.source?.form === "memory-context"));
+    const recallText = textOf(outOn.messages.find((m) => m.source?.form === "memory-recall"));
+    assert.ok(recallText.length > 0, "召回块应注入");
+    assert.ok(mainOn.length > 0, "主块应注入");
+    assert.ok(mainOn.length <= INJECT_MAX, `主块应受总预算约束（实际 ${mainOn.length} ≤ ${INJECT_MAX}）`);
+
+    // 召回关闭基线：主块独享总预算 → 更长；开启时两段合计不得超基线（±2 容差）
+    const off = fakeCtx();
+    apply(off.ctx, { enabled: true, storageRoot: root, injectChannel: "message", injectMaxChars: INJECT_MAX });
+    const outOff = await run(off.handlers.get("agent/pre-step"), payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision);
+    const mainOff = textOf(outOff.messages.find((m) => m.source?.form === "memory-context"));
+    assert.ok(mainOn.length < mainOff.length, "召回开启时主块应比独享时短（为召回块让位）");
+    assert.ok(
+      mainOn.length + recallText.length <= mainOff.length + 2,
+      `主块+召回块合计（${mainOn.length + recallText.length}）应不超过主块独享时的长度（${mainOff.length}，±2）`,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回块按「全部历史块」去重：命中集变化再回到旧集不得新增第三块（新逻辑）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    createEntry(root, "work-profile", { title: "脚本", content: "用 python 写脚本" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl } = stubFetch();
+    const history = [];
+    const recallTexts = [];
+    const step = async (query) => {
+      const messages = [userMsg(query)];
+      const out = await withFetch(impl, () => run(
+        handler,
+        payloadOf({ agent: makeAgent({ cwd: root, events: [...history] }), messages }),
+        { kind: "enter", messages },
+      ));
+      const recall = out.messages.find((m) => m.source?.form === "memory-recall");
+      if (recall) {
+        recallTexts.push(textOf(recall));
+        history.push({ type: "user/message", data: recall }); // 落进视野，供下一轮去重
+      }
+      return out;
+    };
+
+    // 轮 A：命中集合 X（pnpm）→ 注入第一块
+    await step("pnpm 命令");
+    assert.equal(recallTexts.length, 1, "首轮应注入召回块 X");
+    assert.match(recallTexts[0], /pnpm/);
+
+    // 轮 B：命中集合 Y（python）≠ X → 注入第二块
+    await step("python 命令");
+    assert.equal(recallTexts.length, 2, "命中集合变化应注入第二块");
+    assert.match(recallTexts[1], /python/);
+    assert.notEqual(recallTexts[0], recallTexts[1]);
+
+    // 轮 C：回到 A 的等价查询（命中 X）→ X 已在视野（按全部历史块去重）→ 不得注入第三块
+    const outC = await step("pnpm 命令");
+    assert.equal(recallTexts.length, 2, "命中集合回到历史已注入的 X → 不得再注入");
+    assert.ok(!outC.messages.some((m) => m.source?.form === "memory-recall"), "轮 C 不应产生新召回块");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

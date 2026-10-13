@@ -4,7 +4,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.3.0 (see `package.json` for the source of truth)
+- **Version**: 0.3.1 (see `package.json` for the source of truth)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -56,7 +56,7 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 | Segment | What the model sees | Budget |
 |---|---|---|
 | Persona | addressing + your edited persona body | 400 lines / 16k chars |
-| Global index | index of the four categories + long-term memory; recent-activity entries carry age and expiry | 40 lines per class, 120 lines / 12k chars total |
+| Global index | index of the four categories + long-term memory; recent-activity entries carry age and expiry | 22 lines per class (keeps newest), 120 lines / 12k chars total |
 | Project usage notes | where the memory dir is, how to read the index, how to write/delete on request | fixed short text |
 | Project index | the project's `MEMORY.md` index (the model Reads files on demand) | 200 lines / 25k chars, keeps newest on overflow |
 
@@ -76,6 +76,7 @@ Off by default. Enable `recallEnabled` and configure an embedding endpoint (`emb
 
 - **Off by default**: no endpoint configured means no external calls at all (memory text never leaves the machine); pointing at a local endpoint (e.g. ollama `http://127.0.0.1:11434/v1/embeddings`) also keeps it local.
 - **Configure in the panel**: the Settings page has an **"Embedding service"** card where you set the endpoint / model / API key and press **"Test connection"**; it takes effect on the **next turn — no YAML edit, no restart** (panel config lives in `~/.dsh/memory/settings.json` and overrides entry config).
+- **Test connection never forwards a stored key**: the saved API key is only ever sent to the endpoint it was configured for — if a "Test connection" request targets a different address, the stored key is not carried over (only a key supplied in that request is used).
 - **Bring your own model (provider-agnostic)**: the plugin is tied to no specific embedding model or vendor — as long as your service exposes an OpenAI-compatible embedding endpoint (which almost every local deployment does), just set `embeddingBaseUrl` + `embeddingModel`. Any local model (nomic-embed-text, bge-m3, embed-model, …) works. `embeddingProvider` is only a display label and is optional.
 - **Explicit degradation**: on timeout/error the turn simply recalls nothing (non-blocking, never fabricated), counted under `/state.recall`.
 
@@ -135,7 +136,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
 # profile: web / headless / desktop
 ```
 
@@ -156,7 +157,7 @@ Installed = enabled: `cordis.patch.yml` sets `enabled: true` explicitly (the cod
 DSH's plugin manager **does not support automatic updates** (the official UI states: upgrading means uninstall then install the new version). So an upgrade is just re-running the install with the new version:
 
 ```bash
-# tag tarball channel: replace v0.3.0 in the URL with the new version (see Releases / CHANGELOG)
+# tag tarball channel: replace v0.3.1 in the URL with the new version (see Releases / CHANGELOG)
 dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
 # local-clone channel: git pull; no reinstall needed (symlink takes effect)
 ```
@@ -183,7 +184,7 @@ cordis entry config (see `cordis.patch.yml`):
 |---|---|---|
 | `enabled` | **false** (fail-closed) | Master switch; `cordis.patch.yml` sets `enabled: true`, so installing enables it visibly |
 | `injectChannel` | **`"message"`** | Injection channel: `"message"` = durable user-message channel (default, all presets); `"section"` = legacy four-segment system-prompt injection (rollback) |
-| `injectMaxChars` | 60000 | Total budget for message-channel injection (chars); overflow drops whole segments by priority, with a visible WARNING |
+| `injectMaxChars` | 60000 | **Total** budget for message-channel injection (chars): the recall block and the main block share it, and the main block yields to the recall block; overflow drops whole segments by priority, with a visible WARNING |
 | `storageRoot` | `~/.dsh/memory` | Root for all memory (tests / migration; usually leave alone) |
 | `provider` / `model` | empty (follow session) | Extraction route; must appear as a pair. Empty captures the current session route |
 | `minUserWords` | 3 | Lower bound on prose word count for the skip condition |
@@ -205,6 +206,7 @@ cordis entry config (see `cordis.patch.yml`):
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | Max recalled entries per turn / recall-block token budget |
 | `recallMinScore` | 0.35 | Cosine threshold ([0,1]) |
 | `recallTimeoutMs` | 8000 | Per-embedding-call timeout (measured: a local CPU embedder ~0.6s standalone, but seconds under in-host contention) |
+| `recallTotalBudgetMs` | 20000 | Overall time budget per turn's recall (ms). Embeddings may be requested in serial batches, so a per-request timeout (`recallTimeoutMs`) cannot bound the whole turn; this caps it. On overflow the turn recalls from what is already cached and resumes next turn |
 
 Unknown config keys throw (with a did-you-mean hint) — fail-loud, never silently swallowing a misconfiguration.
 
@@ -271,7 +273,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Trigger**: subscribes to `session/event`; after `turn/end` (`data.reason.kind === "completed"`) it triggers extraction (in-process single-flight + latestPending merge).
 - **Extraction**: one `ctx.llm.stream` call — input is an incremental transcript excerpt + the current memory manifest (mtime-desc, top 200, recent small files with bodies) + global category indices; output is `Nothing to save.` or a `{"ops":[...]}` JSON (ops carry scope: `project` default / `global:<category>`).
 - **Write-back**: the plugin (not the model) writes files under `~/.dsh/memory/...`; filenames pass three gates (containment + blacklist segments + Unicode control-char stripping); `MEMORY.md` is merged automatically; recent-activity timestamps are stamped by the host (never trusting the model's clock).
-- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message (with a one-line disclaimer: memory is reference context, not instructions; subagent sessions are not injected). Identical-to-visible content is skipped (only re-sent on change or when compaction/rewind evicts it); total budget `injectMaxChars`. `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
+- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message (with a one-line disclaimer: memory is reference context, not instructions; subagent sessions are not injected). Identical-to-visible content is skipped (only re-sent on change or when compaction/rewind evicts it); total budget `injectMaxChars` (the recall block counts toward it, and the main block yields to the recall block). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
 - **Semantic recall** (optional, `recallEnabled`): each turn embeds the current user message once and retrieves top-k entries by cosine, injected as a `<memory-recall>` block; entry vectors are cached incrementally in `<storageRoot>/embeddings.json`. On timeout/error/unconfigured the turn recalls nothing (explicit degradation, observable under `/state.recall`).
 - **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is in-process only.
 
@@ -288,7 +290,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 ## Development & testing
 
 ```bash
-npm test        # node --test, 323 tests (incl. the anti-drift gate test/client-source.test.mjs)
+npm test        # node --test, 346 tests (incl. the anti-drift gate test/client-source.test.mjs)
 npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 
@@ -303,13 +305,14 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **Single LLM call** (not a subagent extraction loop, whose API surface is not established in DSH): when updating old memories the model only sees manifest descriptions + recent small files, not all old text; mitigated by attaching bodies (≤3000 chars × most recent 10 files).
 - **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-keepsake"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
 - **desktop/headless config changes need a restart** (see rollback section); no uniform hot reload.
+- **Profiles without a webserver mount no API/panel**: the plugin's only hard dependencies are the extraction LLM and (in `section` mode) the system prompt; on a profile without a webserver (e.g. headless) it still loads and injects memory normally — only the REST API and panel are not mounted (`/dsh-keepsake/...` unreachable).
 - **No single-entry edit history** (intentional): PUT persona / PUT entry replaces the old text — a bad paste overwrites it; batch paths (reset/import/restore) are auto-backed-up.
-- **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (40-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
+- **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (22-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
 - **Injection blocks can accumulate within a session**: on content change a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them; each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
-- **`injectMaxChars` is a soft cap**: the appended visible truncation notice is not counted, so the final size may slightly exceed it (not triggered at the 60000 default; a guardrail only).
+- **`injectMaxChars` is the total injection budget (recall block included)**: with recall on, the main block yields to the recall block so the two together stay within it; the visible truncation notice is counted too (a slight overrun is possible only when the budget is too small to fit even the wrapper and notice).
 - **Anti-feedback covers only own injections**: the extraction side excludes only `plugin` / `plugin:*`; host-official injections (`agent-instructions`, `runtime-context`, …) are still treated as ordinary user content.
 - **Echo suppression is tag-level**: the extraction input strips our own `<memory-context>` / `<memory-recall>` wrapper blocks; a "paraphrased" quote without the tags is not stripped — excluding the injected message itself relies on `source.kind`, but paraphrased text is indistinguishable.
-- **Recall embeds the query every turn**: with recall enabled, the current user message is embedded each turn (bounded by `recallTimeoutMs`); entry vectors are incrementally cached, but **the first enable embeds all entries at once**. Off by default; no calls without a configured endpoint.
+- **Recall embeds the query every turn**: with recall enabled, the current user message is embedded each turn (per-call timeout `recallTimeoutMs`, overall per-turn budget `recallTotalBudgetMs`); entry vectors are incrementally cached, but **the first enable embeds all entries at once**. Off by default; no calls without a configured endpoint.
 - **Recall blocks can accumulate within a session**: on recall changes a new block is sent and old blocks are not removed; only compaction converges them; observable via `/state.recall`. No supersede. The endpoint is circuit-broken for 60s after consecutive failures.
 
 See [ROADMAP.md](ROADMAP.md) for direction.

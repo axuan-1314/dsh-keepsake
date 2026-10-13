@@ -1,6 +1,6 @@
 // extract：输出解析、frontmatter 渲染、ops 落盘（边界②：写入边界在插件侧强制）
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,6 +16,11 @@ test("isValidModelIndexLine：格式/长度/文件名一致性", () => {
   assert.equal(isValidModelIndexLine("随手一行", "a.md"), false);
   assert.equal(isValidModelIndexLine("- [T](other.md) — hook", "a.md"), false);
   assert.equal(isValidModelIndexLine("- [T](../escape.md) — hook", "a.md"), false);
+  // 逐字节一致：大小写不一致不放行（旧版双侧 sanitize 后比会误判为一致）
+  assert.equal(isValidModelIndexLine("- [T](X.md) — hook", "x.md"), false);
+  assert.equal(isValidModelIndexLine("- [T](x.md) — hook", "x.md"), true);
+  // 逐字节一致：链接目标缺 .md（原文）不放行
+  assert.equal(isValidModelIndexLine("- [T](x.md) — hook", "x"), false);
 });
 
 test("applyOps: 非法 indexLine 回退规范行（防索引重复累积）", () => {
@@ -39,6 +44,89 @@ test("applyOps: 非法 indexLine 回退规范行（防索引重复累积）", ()
     assert.match(second, /^- \[A2\]\(a\.md\) — 描述2$/m);
     assert.equal(second.split("\n").filter((l) => l.includes("(a.md)")).length, 1); // 恰一行
     assert.doesNotMatch(second, /非法/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOps: 索引链接目标与磁盘文件名逐字节一致（混合大小写/无 .md 归一）", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {} };
+    const result = applyOps(
+      root,
+      [
+        { action: "write", name: "MyFact", type: "project", title: "My Fact", description: "混合大小写", content: "b" },
+        { action: "write", name: "TeamTools", type: "project", title: "Team Tools", description: "无扩展名", content: "c" },
+        // 模型 indexLine 引用归一化后的名字 → 应被接受（不再因原始名不符而回退）
+        { action: "write", name: "Kebab-Case", type: "project", title: "Kebab", description: "hook", indexLine: "- [Kebab](kebab-case.md) — hook", content: "d" },
+      ],
+      { originSessionId: "s1", log },
+    );
+    assert.equal(result.writes, 3);
+    // 磁盘实际文件名：一律小写 + .md（原始名不落盘；用 readdir 取真实字节名，
+    // 规避 win32 大小写不敏感文件系统 existsSync 的假阳）
+    assert.deepEqual(readdirSync(root).filter((f) => f !== "MEMORY.md").sort(), ["kebab-case.md", "myfact.md", "teamtools.md"]);
+    assert.equal(existsSync(join(root, "myfact.md")), true);
+    assert.equal(existsSync(join(root, "teamtools.md")), true);
+    // 索引行括号内目标与磁盘文件名逐字节一致（大小写敏感文件系统不断链）
+    const index = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.match(index, /^- \[My Fact\]\(myfact\.md\) — 混合大小写$/m);
+    assert.match(index, /^- \[Team Tools\]\(teamtools\.md\) — 无扩展名$/m);
+    assert.match(index, /^- \[Kebab\]\(kebab-case\.md\) — hook$/m); // 模型行原样保留
+    assert.doesNotMatch(index, /\(MyFact\)|\(TeamTools\)|\(Kebab-Case\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOps: 同批 write+delete 同名按终态对账，索引不留悬挂行", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {} };
+    // 原始名大小写混合：write 归一为 foo.md，delete 也必须归一为 foo.md 才能对上
+    const result = applyOps(
+      root,
+      [
+        { action: "write", name: "Foo", type: "project", title: "Foo", description: "临时", content: "x" },
+        { action: "delete", name: "Foo" },
+      ],
+      { originSessionId: "s1", log },
+    );
+    assert.equal(result.writes, 1);
+    assert.equal(result.deletes, 1);
+    // 磁盘无 foo.md
+    assert.deepEqual(readdirSync(root).filter((f) => f !== "MEMORY.md"), []);
+    // 索引不含指向已删文件的悬挂行
+    const indexPath = join(root, "MEMORY.md");
+    const index = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
+    assert.doesNotMatch(index, /foo\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOps: 模型 indexLine 链接目标须与归一化名逐字节一致（大小写不符即回退）", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {} };
+    const result = applyOps(
+      root,
+      [
+        // 链接目标 (MyFact.md) 与归一化名 myfact.md 不符 → 拒绝原样，回退规范行（小写）
+        { action: "write", name: "MyFact", type: "project", title: "My Fact", description: "混合大小写", indexLine: "- [My Fact](MyFact.md) — hook", content: "b" },
+        // 链接目标恰好等于归一化名 → 原样采纳
+        { action: "write", name: "Legit", type: "project", title: "Legit", description: "hook", indexLine: "- [Legit](legit.md) — 原样采纳", content: "c" },
+      ],
+      { originSessionId: "s1", log },
+    );
+    assert.equal(result.writes, 2);
+    const index = readFileSync(join(root, "MEMORY.md"), "utf8");
+    // 回退行链接目标为小写归一化名（与磁盘一致）
+    assert.match(index, /^- \[My Fact\]\(myfact\.md\) — 混合大小写$/m);
+    assert.doesNotMatch(index, /\(MyFact\.md\)/);
+    // 合法行原样采纳
+    assert.match(index, /^- \[Legit\]\(legit\.md\) — 原样采纳$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

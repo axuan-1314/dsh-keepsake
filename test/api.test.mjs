@@ -319,6 +319,22 @@ test("import：dryRun 预览不落盘；confirm 写入 + 覆盖计数 + 自动�
 
 // ---- planImport 解析（dryRun 纯函数面） ----
 
+test("planImport：纯中文标题跨批次不撞名（确定性哈希兜底，替代按位置 entry-1/-2）", () => {
+  const root = freshRoot();
+  try {
+    const p1 = planImport(root, { category: "long-term", format: "markdown-whole", payload: { markdown: "内容甲", title: "标题甲" } });
+    const p2 = planImport(root, { category: "long-term", format: "markdown-whole", payload: { markdown: "内容乙", title: "标题乙" } });
+    assert.equal(p1.plans.length, 1);
+    assert.equal(p2.plans.length, 1);
+    assert.match(p1.plans[0].name, /^entry-[0-9a-f]{10}\.md$/);
+    assert.notEqual(p1.plans[0].name, p2.plans[0].name, "不同中文标题必须得到不同文件名");
+    const p3 = planImport(root, { category: "long-term", format: "markdown-whole", payload: { markdown: "内容丙", title: "标题甲" } });
+    assert.equal(p3.plans[0].name, p1.plans[0].name, "同标题同名（重导幂等）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("planImport：JSON 数组与 {entries} 两种形态", () => {
   const root = freshRoot();
   try {

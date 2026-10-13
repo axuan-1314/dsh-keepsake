@@ -2,9 +2,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
-import { INDEX_FILENAME, isInsideRoot, isReservedDeviceSegment, resolveSafeMemoryTarget, sanitizeMemoryName, stripControlAndBidi } from "../lib/filename.js";
+import { INDEX_FILENAME, fallbackEntryName, isInsideRoot, isReservedDeviceSegment, resolveSafeMemoryTarget, sanitizeMemoryName, stripControlAndBidi } from "../lib/filename.js";
 
 const ROOT = "C:\\mem\\projects\\x\\memory";
+
+test("fallbackEntryName：纯中文/纯符号标题的确定性哈希兜底", () => {
+  const a = fallbackEntryName("用户喜欢简洁");
+  const b = fallbackEntryName("用户喜欢简洁");
+  const c = fallbackEntryName("完全不同的标题");
+  assert.equal(a, b, "同种子同名（幂等重导＝覆盖同条）");
+  assert.notEqual(a, c, "异种子异名（防跨批按位置覆盖）");
+  assert.match(a, /^entry-[0-9a-f]{10}\.md$/);
+  assert.match(fallbackEntryName("!!!纯符号!!!"), /^entry-[0-9a-f]{10}\.md$/);
+});
 
 test("isInsideRoot: 包含性判定", () => {
   assert.equal(isInsideRoot(ROOT, join(ROOT, "a.md")), true);

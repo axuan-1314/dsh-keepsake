@@ -1048,6 +1048,23 @@ async function renderSettingsPage() {
     </div>
     <div data-pipeHealth></div>
     <div data-pipeModel></div>
+    <div class="card" id="card-embedding"><h3>嵌入服务（语义召回）</h3>
+      <div class="field"><label>嵌入端点（任意 OpenAI 兼容服务，本地/远程均可 · POST /v1/embeddings）</label>
+        <input class="inp" id="embBaseUrl" placeholder="http://127.0.0.1:11434/v1/embeddings"></div>
+      <div class="field"><label>模型名</label>
+        <input class="inp" id="embModel" placeholder="nomic-embed-text / bge-m3 / text-embedding-3-small"></div>
+      <div class="field"><label>API Key（可选，留空则不带 Authorization）</label>
+        <input class="inp" id="embApiKey" type="password" autocomplete="off" placeholder=""></div>
+      <div class="field"><label>提供商标签（可选，仅面板显示用）</label>
+        <input class="inp" id="embProvider" placeholder="ollama / lmstudio …"></div>
+      <div class="kv"><b>开启语义召回</b>
+        <span class="switchWrap"><label class="switch"><input type="checkbox" id="embEnabled"><span class="slider"></span></label></span>
+        <span class="meta">开启后每轮按当前问题做嵌入检索，命中条目以 &lt;memory-recall&gt; 块注入</span></div>
+      <div class="meta" id="embStatus"></div>
+      <div class="kv"><b>操作</b><span class="spacer"></span>
+        <button class="btn" id="embTest">测试连接</button>
+        <button class="btn primary" id="embSave">保存</button></div>
+    </div>
     ${corruptBits.length > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">解析失败（已按缺省运行）：${corruptBits.map(esc).join("、")}——点任意开关 / 重新保存对应内容即可重写修复。</div>` : ""}
     <div class="card"><h3>数据</h3>
       <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
@@ -1081,6 +1098,48 @@ async function renderSettingsPage() {
         input.checked = !input.checked;
         toast("开关保存失败：" + err.message, "err");
       }
+    });
+  }
+  // 嵌入服务卡：面板配置写入 settings.json（host 每轮读取 → 免重启生效）；entry config 作缺省来源。
+  {
+    const emb = (data.settings && data.settings.embedding) || null;
+    const eff = data.embeddingEffective || null;
+    const q = (id) => page.querySelector("#" + id);
+    const prefill = emb ?? { enabled: eff ? eff.enabled === true : false, baseUrl: eff ? eff.baseUrl : "", model: eff ? eff.model : "", provider: eff ? eff.provider : "" };
+    q("embBaseUrl").value = prefill.baseUrl || "";
+    q("embModel").value = prefill.model || "";
+    q("embProvider").value = prefill.provider || "";
+    q("embEnabled").checked = prefill.enabled === true;
+    const status = q("embStatus");
+    const srcText = !eff ? "未配置" : eff.source === "config" ? "cordis.patch.yml（entry config）" : "面板设置（settings.json）";
+    status.textContent = `当前生效来源：${srcText}${eff && eff.apiKeySet ? "；已设 API Key" : ""}`;
+    if (data.injectChannel && data.injectChannel !== "message") status.textContent += "；⚠ 注入通道为 section，语义召回不生效（需 injectChannel: message）";
+    const collect = () => {
+      const out = { enabled: q("embEnabled").checked, baseUrl: q("embBaseUrl").value.trim(), model: q("embModel").value.trim(), provider: q("embProvider").value.trim() };
+      if (q("embApiKey").value.length > 0) out.apiKey = q("embApiKey").value; // 仅在输入新 key 时提交，避免覆盖已存 key
+      return out;
+    };
+    q("embSave").addEventListener("click", async () => {
+      const patch = collect();
+      const v = L.validateEmbeddingDraft(patch);
+      if (!v.ok) { toast(v.error, "err"); return; }
+      try {
+        await apiPut("settings", { embedding: patch });
+        q("embApiKey").value = "";
+        toast("嵌入配置已保存，下一轮对话生效。");
+        renderSettingsPage();
+      } catch (err) { toast("保存失败：" + err.message, "err"); }
+    });
+    q("embTest").addEventListener("click", async () => {
+      const btn = q("embTest");
+      btn.disabled = true;
+      btn.textContent = "测试中…";
+      try {
+        const out = await apiPost("embedding/test", collect());
+        if (out && out.ok) toast(`连接成功（向量维度 ${out.dim}）`);
+        else toast("连接失败：" + ((out && out.error) || "未知错误"), "err");
+      } catch (err) { toast("测试失败：" + err.message, "err"); }
+      finally { btn.disabled = false; btn.textContent = "测试连接"; }
     });
   }
   page.querySelector("[data-export]").addEventListener("click", async () => {

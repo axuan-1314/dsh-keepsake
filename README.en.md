@@ -70,6 +70,7 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 Off by default. Enable `recallEnabled` and configure an embedding endpoint (`embeddingBaseUrl` / `embeddingModel`) and each turn retrieves the most relevant entries for **your current question** (embedding cosine top-k), injected as a `<memory-recall>` block — without waiting for the model to Read the index. Embeddings are cached incrementally; only new/changed entries are re-embedded.
 
 - **Off by default**: no endpoint configured means no external calls at all (memory text never leaves the machine); pointing at a local endpoint (e.g. ollama `http://127.0.0.1:11434/v1/embeddings`) also keeps it local.
+- **Configure in the panel**: the Settings page has an **"Embedding service"** card where you set the endpoint / model / API key and press **"Test connection"**; it takes effect on the **next turn — no YAML edit, no restart** (panel config lives in `~/.dsh/memory/settings.json` and overrides entry config).
 - **Bring your own model (provider-agnostic)**: the plugin is tied to no specific embedding model or vendor — as long as your service exposes an OpenAI-compatible embedding endpoint (which almost every local deployment does), just set `embeddingBaseUrl` + `embeddingModel`. Any local model (nomic-embed-text, bge-m3, embed-model, …) works. `embeddingProvider` is only a display label and is optional.
 - **Explicit degradation**: on timeout/error the turn simply recalls nothing (non-blocking, never fabricated), counted under `/state.recall`.
 

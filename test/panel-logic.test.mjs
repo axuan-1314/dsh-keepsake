@@ -29,6 +29,7 @@ import {
   relativeTimeOf,
   serializeEntries,
   utf8Length,
+  validateEmbeddingDraft,
   validateEntryDraft,
 } from "../lib/panel-logic.js";
 
@@ -417,4 +418,17 @@ test("injectionSummary：正常值「已注入 N 次 · 最近 X 字符」；丢
   assert.equal(injectionSummary({ count: 0 }), null);
   assert.equal(injectionSummary({ count: 0, lastChars: 5 }), null);
   assert.equal(injectionSummary({ count: "x" }), null, "非法 count 不渲染");
+});
+
+test("validateEmbeddingDraft：开启需端点+模型、URL 限 http(s)", () => {
+  assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "", model: "m" }).ok, false);
+  assert.match(validateEmbeddingDraft({ enabled: true, baseUrl: "", model: "m" }).error, /端点/);
+  assert.match(validateEmbeddingDraft({ enabled: true, baseUrl: "http://x", model: "" }).error, /模型/);
+  assert.match(validateEmbeddingDraft({ enabled: false, baseUrl: "file:///etc/passwd" }).error, /http/);
+  assert.equal(validateEmbeddingDraft({ enabled: false, baseUrl: "not a url" }).ok, false);
+  // 关闭且不填 → 放行（仅当覆盖用于清除/关闭）
+  assert.equal(validateEmbeddingDraft({ enabled: false, baseUrl: "", model: "" }).ok, true);
+  // 合法 http(s)（本地/远程均放行）
+  assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "nomic-embed-text" }).ok, true);
+  assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-small" }).ok, true);
 });

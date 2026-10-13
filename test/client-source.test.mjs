@@ -244,6 +244,16 @@ test("结构钉：提取模型卡两个诚实字段 + 嵌入召回配置", () =>
   assert.match(panelSrc, /语义召回未启用/, "未配置端点时的说明文案在场");
 });
 
+test("结构钉：设置页嵌入服务卡（面板配置嵌入端点的入口）", () => {
+  assert.match(panelSrc, /id="card-embedding"/, "嵌入服务卡在场");
+  assert.match(panelSrc, /id="embBaseUrl"/, "端点输入在场");
+  assert.match(panelSrc, /id="embModel"/, "模型输入在场");
+  assert.match(panelSrc, /id="embApiKey"/, "API Key 输入在场");
+  assert.match(panelSrc, /id="embSave"/, "保存按钮在场");
+  assert.match(panelSrc, /id="embTest"/, "测试连接按钮在场");
+  assert.match(panelSrc, /validateEmbeddingDraft/, "面板侧校验接入");
+});
+
 test("结构钉：V-8 细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {
   assert.match(panelSrc, /\.tableScroll \{ overflow: auto/, "tableScroll 样式在位");
   const wrapped = panelSrc.match(/<div class="tableScroll"><table class="preview">/g) ?? [];

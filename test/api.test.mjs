@@ -95,7 +95,7 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
-    assert.deepEqual(json.settings, { conversationMemory: true, projectMemory: true, globalExtraction: true });
+    assert.deepEqual(json.settings, { conversationMemory: true, projectMemory: true, globalExtraction: true, corrupt: false });
     assert.equal(json.corrupt, false);
     assert.equal(json.counts.byCategory["work-profile"], 1);
     assert.equal(json.counts.global, 1);
@@ -138,6 +138,32 @@ test("PUT settings：合并写入 + 下轮 GET 可见", async () => {
     const get = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(get.json.settings.conversationMemory, false);
     assert.equal(get.json.settings.projectMemory, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("settings：嵌入服务配置写入 + /state 回显（apiKey 脱敏）+ 校验 400", async () => {
+  const root = freshRoot();
+  try {
+    const put = await callApi(root, {
+      method: "PUT",
+      path: `${API_PREFIX}settings`,
+      body: { embedding: { enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "nomic-embed-text", provider: "ollama", apiKey: "secret" } },
+    });
+    assert.equal(put.status, 200);
+    assert.equal(put.json.settings.embedding.enabled, true);
+    assert.equal(put.json.settings.embedding.apiKeySet, true, "apiKey 脱敏为 apiKeySet");
+    assert.equal(put.json.settings.embedding.apiKey, void 0, "不回显明文 key");
+    const get = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(get.json.settings.embedding.model, "nomic-embed-text");
+    assert.equal(get.json.settings.embedding.apiKeySet, true);
+    assert.equal(get.json.settings.embedding.apiKey, void 0);
+    // 非法：开启但缺端点 / 非 http(s) scheme → 400（不落 500）
+    const bad = await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { embedding: { enabled: true, model: "m" } } });
+    assert.equal(bad.status, 400);
+    const bad2 = await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { embedding: { enabled: false, baseUrl: "file:///x" } } });
+    assert.equal(bad2.status, 400);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

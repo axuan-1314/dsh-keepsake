@@ -78,6 +78,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 默认关闭。开启 `recallEnabled` 并配好嵌入端点（`embeddingBaseUrl` / `embeddingModel`）后，每轮对话会按你**当前的问题**语义检索最相关的记忆条目（嵌入余弦 top-k），以 `<memory-recall>` 块注入——不必等模型按索引主动 Read。条目向量按内容增量缓存，只有新写/改动过的条目才重新嵌入。
 
 - **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 ollama `http://127.0.0.1:11434/v1/embeddings`）则记忆文本也不出本机。
+- **面板里配置**：设置页「嵌入服务」卡直接填端点 / 模型 / API Key，带「测试连接」按钮；保存后**下一轮对话即生效，不必改 `cordis.patch.yml`、不必重启**（面板配置存于 `~/.dsh/memory/settings.json`，优先于 entry config）。
 - **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（nomic-embed-text、bge-m3、embed-model…）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 

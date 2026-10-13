@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { defaultSettings, readSettings, resetSettingsCache, settingsPath, writeSettings } from "../lib/settings.js";
+import { defaultSettings, effectiveEmbedding, readSettings, resetSettingsCache, settingsPath, writeSettings } from "../lib/settings.js";
 
 function freshRoot() {
   resetSettingsCache();
@@ -161,4 +161,39 @@ test("defaultSettings：每次返回新对象（防外部篡改共享态）", ()
 
 test("settingsPath：落在 storageRoot 下（不越界）", () => {
   assert.equal(settingsPath("/x/y"), join("/x/y", "settings.json"));
+});
+
+test("embedding：面板写入 round-trip + 校验（开启需端点/模型、URL 限 http(s)、null 清除）", () => {
+  const root = freshRoot();
+  try {
+    assert.throws(() => writeSettings(root, { embedding: { enabled: true, model: "m" } }), /端点/);
+    assert.throws(() => writeSettings(root, { embedding: { enabled: true, baseUrl: "http://x" } }), /模型/);
+    assert.throws(() => writeSettings(root, { embedding: { enabled: false, baseUrl: "file:///etc/passwd" } }), /http/);
+    assert.throws(() => writeSettings(root, { embedding: { enabled: false, baseUrl: "not a url" } }), /URL/);
+    const w = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "nomic-embed-text", provider: "ollama", apiKey: "k" } });
+    assert.equal(w.embedding.enabled, true);
+    assert.equal(readSettings(root).embedding.baseUrl, "http://127.0.0.1:11434/v1/embeddings");
+    assert.equal(readSettings(root).embedding.apiKey, "k");
+    // 未提及 embedding → 保留现值
+    assert.equal(writeSettings(root, { conversationMemory: false }).embedding.model, "nomic-embed-text");
+    // 显式清除（null）→ 回到 entry config
+    assert.equal(writeSettings(root, { embedding: null }).embedding, void 0);
+    assert.equal(readSettings(root).embedding, void 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("effectiveEmbedding：面板设置优先于 entry config（含显式关闭覆盖开启）", () => {
+  const cfg = { recallEnabled: false, embeddingBaseUrl: "", embeddingModel: "", embeddingProvider: "", embeddingApiKey: "", recallTopK: 5, recallMinScore: 0.35, recallTimeoutMs: 8000 };
+  const fromCfg = effectiveEmbedding(cfg, {});
+  assert.equal(fromCfg.source, "config");
+  assert.equal(fromCfg.enabled, false);
+  const fromSettings = effectiveEmbedding(cfg, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", provider: "", apiKey: "" } });
+  assert.equal(fromSettings.source, "settings");
+  assert.equal(fromSettings.enabled, true);
+  assert.equal(fromSettings.baseUrl, "http://h/v1/embeddings");
+  assert.equal(fromSettings.topK, 5);
+  const off = effectiveEmbedding({ ...cfg, recallEnabled: true }, { embedding: { enabled: false, baseUrl: "http://h", model: "m" } });
+  assert.equal(off.enabled, false, "面板显式关闭覆盖 entry 的开启");
 });

@@ -17,7 +17,7 @@
     "FORMAT.md"
   ],
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --test",
     "check": "node -e \"const{readdirSync}=require('node:fs');const{execFileSync}=require('node:child_process');for(const f of readdirSync('lib'))if(f.endsWith('.js'))execFileSync(process.execPath,['--check','lib/'+f],{stdio:'inherit'})\""
   },
   "keywords": [

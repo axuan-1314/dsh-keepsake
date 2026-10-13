@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clipTail, hasEnoughUserProse, renderTranscript, skipReason } from "../lib/transcript.js";
 
-const ROOT = "C:\\mem\\x\\memory";
+// 路径按平台取（直写判定对 file_path 相对 memoryRoot 解析：Windows 绝对路径在 posix 不是绝对）
+const IS_WIN = process.platform === "win32";
+const ROOT = IS_WIN ? "C:\\mem\\x\\memory" : "/mem/x/memory";
+const INSIDE = IS_WIN ? "C:\\mem\\x\\memory\\uses-pnpm.md" : "/mem/x/memory/uses-pnpm.md";
+const OUTSIDE = IS_WIN ? "D:\\proj\\notes.md" : "/proj/notes.md";
 
 test("skipReason: no-user-prose（<3 词）", () => {
   const events = [
@@ -37,7 +41,7 @@ test("skipReason: direct-memory-write 优先（write 落 memoryRoot）", () => {
     {
       type: "tool/call",
       seq: 2,
-      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: "C:\\mem\\x\\memory\\uses-pnpm.md", content: "---\n---\n" }) },
+      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: INSIDE, content: "---\n---\n" }) },
     },
     { type: "tool/result", seq: 3, data: { message: { role: "tool", source: { callId: "c1" }, isError: false, content: [{ type: "text", text: "ok" }] } } },
   ];
@@ -50,7 +54,7 @@ test("skipReason: 直写被拒（isError）不算直写，正常提取", () => {
     {
       type: "tool/call",
       seq: 2,
-      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: "C:\\mem\\x\\memory\\uses-pnpm.md", content: "x" }) },
+      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: INSIDE, content: "x" }) },
     },
     { type: "tool/result", seq: 3, data: { message: { role: "tool", source: { callId: "c1" }, isError: true, content: [{ type: "text", text: "denied" }] } } },
   ];
@@ -63,7 +67,7 @@ test("skipReason: write 落根外不算直写", () => {
     {
       type: "tool/call",
       seq: 2,
-      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: "D:\\proj\\notes.md", content: "x" }) },
+      data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: OUTSIDE, content: "x" }) },
     },
   ];
   assert.equal(skipReason(events, ROOT), null);

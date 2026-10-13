@@ -1,6 +1,7 @@
 // paths：slug/hash16 算法（规格：basename 净化截 48 / 绝对路径小写 sha256 前 16）
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { resolve, sep } from "node:path";
 import { test } from "node:test";
 import { hashProjectPath, projectMemoryPaths, slugifyBasename } from "../lib/paths.js";
 
@@ -30,14 +31,18 @@ test("hashProjectPath: sha256 前 16 hex，win32 小写化", () => {
 });
 
 test("projectMemoryPaths: 布局 <root>/projects/<slug>-<hash>/memory", () => {
-  const paths = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\项目目录");
-  const hash = hashProjectPath("D:\\项目目录");
+  // 按平台取真实绝对路径：Windows 风格串在 posix 不算绝对，会被 resolve 拼上 cwd
+  const storageRoot = process.platform === "win32" ? "C:\\Users\\user\\.dsh\\memory" : "/home/user/.dsh/memory";
+  const workspace = process.platform === "win32" ? "D:\\项目目录" : "/home/user/项目目录";
+  const paths = projectMemoryPaths(storageRoot, workspace);
+  const hash = hashProjectPath(resolve(workspace)); // 与实现同源：对 resolve 后的绝对路径取哈希
   assert.equal(paths.slug, "project");
-  assert.ok(paths.projectDir.includes(`projects\\project-${hash}`) || paths.projectDir.includes(`projects/project-${hash}`));
+  assert.equal(paths.hash, hash);
+  assert.ok(paths.projectDir.includes(`projects${sep}project-${hash}`));
   assert.ok(paths.memoryDir.endsWith("memory"));
   // 同一 cwd 不同大小写（win32）→ 同一目录
-  const paths2 = projectMemoryPaths("C:\\Users\\user\\.dsh\\memory", "D:\\MYPROJ...");
   if (process.platform === "win32") {
+    const paths2 = projectMemoryPaths(storageRoot, "D:\\MYPROJ...");
     assert.equal(paths2.slug, "myproj");
   }
 });

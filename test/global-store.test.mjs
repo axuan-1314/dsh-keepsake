@@ -433,7 +433,7 @@ test("exportAll：五分类 + persona + addressing 结构化导出", () => {
 test("createBackup/listBackups：全量留档 + meta 可读 + 新在前", async () => {
   const root = freshRoot();
   try {
-    createEntry(root, "work-profile", { title: "B4 backup", content: "备份前" });
+    createEntry(root, "work-profile", { title: "backup target", content: "备份前" });
     const id1 = createBackup(root, "reset:work-profile");
     await new Promise((r) => setTimeout(r, 1100)); // 保证 id 不同（秒级时间戳）
     const id2 = createBackup(root, "import");

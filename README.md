@@ -286,7 +286,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，320 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，323 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 

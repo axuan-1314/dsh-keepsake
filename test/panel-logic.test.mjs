@@ -272,7 +272,7 @@ test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed，顺序稳�
   ]);
 });
 
-test("modelShortName：取路径末段（门牌车型）；无斜杠原样；空/null 防御", () => {
+test("modelShortName：取路径末段（门牌模型）；无斜杠原样；空/null 防御", () => {
   assert.equal(modelShortName("group/chat-model"), "chat-model");
   assert.equal(modelShortName("a/b/c"), "c");
   assert.equal(modelShortName("auto-glm"), "auto-glm");
@@ -325,12 +325,12 @@ test("pipeHealthLevel 三态矩阵：红 streak≥1 / 灰 busy / 黄 恢复<24h 
   assert.equal(pipeHealthLevel(null), "green", "旧服务端无失败字段：绿灯");
 });
 
-test("extractionNoticeText：新版带病因+车型短名；streak 0 → 空；旧形态沿用旧单行文案（零回归）", () => {
+test("extractionNoticeText：新版带病因+模型短名；streak 0 → 空；旧形态沿用旧单行文案（零回归）", () => {
   const OLD = (n) => `记忆自动提取最近连续失败 ${n} 次，期间对话内容可能未被记录——请检查服务端日志。`;
   assert.equal(extractionNoticeText(null), "");
   assert.equal(extractionNoticeText(0), "");
   assert.equal(extractionNoticeText({ streak: 0, recent: [] }), "");
-  // 新版主形态（计数 · 病因（车型末段））
+  // 新版主形态（计数 · 病因（模型末段））
   assert.equal(
     extractionNoticeText({ streak: 3, recent: [{ reason: "llm-error", at: 1, provider: "acme", model: "group/chat-model", message: "429 …" }] }),
     "自动提取失败 3 次 · 最近：llm-error（chat-model）",

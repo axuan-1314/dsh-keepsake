@@ -261,7 +261,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 ## Development & testing
 
 ```bash
-npm test        # node --test, 320 tests (incl. the anti-drift gate test/client-source.test.mjs)
+npm test        # node --test, 323 tests (incl. the anti-drift gate test/client-source.test.mjs)
 npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 

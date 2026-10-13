@@ -204,7 +204,7 @@ test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示",
 test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（消费锚）", () => {
   assert.match(panelSrc, /L\.extractionNoticeText\(/, "健康卡红态 headline 必须走共享文案纯函数");
   assert.match(panelSrc, /L\.pipeHealthLevel\(/, "三态判定必须走纯函数");
-  assert.match(panelSrc, /L\.modelShortName\(/, "车型短名必须走纯函数");
+  assert.match(panelSrc, /L\.modelShortName\(/, "模型短名必须走纯函数");
   assert.match(panelSrc, /L\.relativeTimeOf\(/, "相对时间必须走纯函数");
   assert.match(panelSrc, /L\.extractionStreakOf\(/, "streak 归一必须走纯函数");
   assert.match(panelSrc, /L\.diagnosticTextOf\(/, "复制诊断必须走纯函数组装");

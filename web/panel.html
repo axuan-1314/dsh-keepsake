@@ -879,6 +879,9 @@ function buildPipeHealthCard(data) {
   // 注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
   const injectionLine = L.injectionSummary(data.injection);
   if (injectionLine) parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}</div>`);
+  // 存储格式只读告警——数据由更新版插件写入时显示（正常/旧版宿主不渲染；显式可见不静默）
+  const formatLine = L.formatNoticeText(data.format);
+  if (formatLine) parts.push(`<div class="notice show err" style="margin:6px 0 0">⚠️ ${esc(formatLine)}</div>`);
   const card = document.createElement("div");
   card.className = "card";
   card.id = "data-pipe-health"; // 门牌「详情」深链滚动锚点

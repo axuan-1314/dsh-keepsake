@@ -13,6 +13,7 @@ import {
   extractionRangeText,
   extractionStreakOf,
   injectionSummary,
+  formatNoticeText,
   ladderNoteOf,
 } from "../lib/panel-logic.js";
 
@@ -285,4 +286,23 @@ test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱
   }
   assert.match(clientSrc, /LOGIC \? LOGIC\.injectionSummary/, "注入摘要必须经 panel-logic 优先分发");
   assert.match(panelSrc, /L\.injectionSummary\(/, "健康卡注入摘要必须走共享纯函数（消费锚）");
+});
+
+// ---- 存储格式只读告警防漂移 ----
+
+test("防漂移：存储格式只读兜底 formatNoticeFallback 与实现表驱动一致（仅 writable=false 出文案）", () => {
+  const fn = extractFactoryFn(clientSrc, "formatNoticeFallback", "format");
+  const cases = [
+    null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
+    { formatVersion: 1, supported: true, writable: true }, // 正常：null
+    { formatVersion: 1 }, // 无 writable 字段（语义=可写）：null
+    { formatVersion: 2, supported: false, writable: false }, // 只读：出文案（含版本号）
+    { writable: false }, // 版本缺失：回退"更高版本"
+    { formatVersion: "3", writable: false }, // 字符串数字归一
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), formatNoticeText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  assert.match(clientSrc, /LOGIC \? LOGIC\.formatNoticeText/, "只读告警必须经 panel-logic 优先分发");
+  assert.match(panelSrc, /L\.formatNoticeText\(/, "健康卡只读告警必须走共享纯函数（消费锚）");
 });

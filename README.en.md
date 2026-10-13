@@ -4,8 +4,9 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.2.0 (see `package.json` for the source of truth)
-- **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles)
+- **Version**: 0.3.0 (see `package.json` for the source of truth)
+- **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
+- **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
 - **Requirements**: DSH installed (any profile); Node ≥ 18; **zero runtime dependencies** (no `npm install`).
 - **License**: MIT (see [LICENSE](LICENSE))
@@ -17,6 +18,8 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 - [What is this](#what-is-this)
 - [Features](#features)
 - [Quick start](#quick-start)
+  - [Install](#install)
+  - [Upgrade](#upgrade)
 - [Configuration](#configuration)
 - [Data & privacy](#data--privacy)
 - [Rollback & uninstall](#rollback--uninstall)
@@ -127,16 +130,40 @@ Every bulk destructive action has an undo: a full backup of `global/` + `setting
 
 ### Install
 
-This plugin is installed via **git** (`dsh plugin add <local clone path or git URL>`). It has zero runtime dependencies, so no `npm install` is needed.
+Pick one of two channels (**zero runtime dependencies**, no `npm install` at any point):
+
+**① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add <path to your clone>   # or a git URL; profile: web / headless / desktop
-dsh --profile web --dump-config                    # verify the entry is in the tree
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.0.tar.gz
+# profile: web / headless / desktop
 ```
 
-All three profiles install as a **symlink** (`link:<clone path>`), so source edits need no copying; a running desktop instance still needs an HMR reload or restart to pick up new code (headless always loads the latest on start).
+**② Local clone (development / self-use)** — source edits take effect live:
+
+```bash
+dsh plugin --profile web add <path to your clone>   # or a git URL
+```
+
+Verify the entry is in the tree: `dsh --profile web --dump-config`.
 
 Installed = enabled: `cordis.patch.yml` sets `enabled: true` explicitly (the code default is off, fail-closed).
+
+> To run new code after edits / a version change: **the web profile reloads via HMR; desktop / headless need the instance restarted** (restart the desktop app; headless loads the latest on every start). The local-clone channel is a `link:` symlink, so source edits need no reinstall.
+
+### Upgrade
+
+DSH's plugin manager **does not support automatic updates** (the official UI states: upgrading means uninstall then install the new version). So an upgrade is just re-running the install with the new version:
+
+```bash
+# tag tarball channel: replace v0.3.0 in the URL with the new version (see Releases / CHANGELOG)
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+# local-clone channel: git pull; no reinstall needed (symlink takes effect)
+```
+
+- **Your data is unaffected by upgrades**: memory, switches, persona and backups all live under `~/.dsh/memory/` — **outside the plugin package directory** — so uninstall / reinstall never touches them (unless you delete that directory yourself). Keeping data separate from code is deliberate.
+- **Restart after upgrading**: replacing the installed package requires a process restart to load the new JS modules (web profile can reload via HMR; restart the desktop app; headless picks it up on next start).
+- **Read-only guard (protects against downgrades)**: a `keepsake-format.json` marker in the data directory records the storage-format version (see [FORMAT.md](FORMAT.md)). If your data was written by a **newer** plugin version (e.g. you installed 0.4 then went back to 0.2), the older version **turns read-only** — it stops recording new memories and rejects panel writes (write endpoints return 503), and raises a visible warning on the plaque and the Settings "pipeline health card". It recovers automatically once you upgrade. This keeps old code from rewriting newer-format data under old rules.
 
 ### Verify it works
 

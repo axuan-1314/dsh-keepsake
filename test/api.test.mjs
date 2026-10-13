@@ -565,3 +565,45 @@ test("真实 http：超长请求体返回显式 413（不再 ECONNRESET；mock �
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 存储格式只读保护（降级安全） ----
+
+test("格式过新：写端点 503，GET /state 照常并报 writable=false", async () => {
+  const root = freshRoot();
+  try {
+    const { writeFileSync } = await import("node:fs");
+    const { formatPath, FORMAT_VERSION, resetFormatCache } = await import("../lib/format.js");
+    resetFormatCache();
+    writeFileSync(formatPath(root), JSON.stringify({ formatVersion: FORMAT_VERSION + 1 }), "utf8");
+
+    const write = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: { content: "不应写入" } });
+    assert.equal(write.status, 503);
+    assert.equal(write.json.code, "FORMAT_TOO_NEW");
+
+    const read = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(read.status, 200);
+    assert.equal(read.json.format.writable, false);
+    assert.equal(read.json.format.supported, false);
+    assert.equal(read.json.format.formatVersion, FORMAT_VERSION + 1);
+    assert.equal(readPersona(root).isDefault, true); // 只读保护下确未写入
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("格式同级/缺失：写端点放行，/state 报 writable=true", async () => {
+  const root = freshRoot();
+  try {
+    const { resetFormatCache } = await import("../lib/format.js");
+    resetFormatCache();
+    const write = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: { content: "正常写入" } });
+    assert.equal(write.status, 200);
+    assert.equal(readPersona(root).content, "正常写入");
+
+    const read = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(read.json.format.writable, true);
+    assert.equal(read.json.format.supported, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

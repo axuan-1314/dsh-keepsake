@@ -4,8 +4,9 @@
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.2.0（以 `package.json` 为准）
-- **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）
+- **插件版本**：0.3.0（以 `package.json` 为准）
+- **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）；`package.json` 声明了 DSH peer 范围，安装/启动时宿主会做版本兼容检查，不匹配会让用户显式确认后才装
+- **分发**：GitHub 仓库 tag tarball 渠道（+ 本地 clone 作开发）；升级方式见[「升级」](#升级)（DSH 插件不支持自动更新）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
 - **前置条件**：已安装 DSH（web / headless / desktop 任一 profile）；Node ≥ 18；**零运行时依赖**（无需 `npm install`）
 - **许可**：MIT License（见 [LICENSE](LICENSE)）
@@ -23,6 +24,8 @@
   - [失败韧性：重试、分类、落盘留痕](#失败韧性重试分类落盘留痕)
   - [自动备份](#自动备份)
 - [快速开始](#快速开始)
+  - [安装](#安装)
+  - [升级](#升级)
 - [配置](#配置)
 - [数据与隐私](#数据与隐私)
 - [回滚与卸载](#回滚与卸载)
@@ -143,16 +146,40 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 
 ### 安装
 
-本插件经 **git 安装**（`dsh plugin add <本仓库的本地克隆路径或 git URL>`）；零运行时依赖，无需 `npm install`。
+两种渠道任选（**零运行时依赖**，全程无需 `npm install`）：
+
+**① GitHub tag tarball（推荐）** —— 从仓库 tag 直接安装，钉死版本：
 
 ```bash
-dsh plugin --profile web add <克隆到本地的仓库路径>   # 或 git URL；profile 可选 web / headless / desktop
-dsh --profile web --dump-config                    # 验证 entry 入树
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.0.tar.gz
+# profile 可选 web / headless / desktop
 ```
 
-三个 profile 的安装均为 **symlink（`link:<克隆路径>`）**，源码改动无需同步拷贝；但运行中的 desktop 实例吃到新代码需 HMR 重载或重启应用（headless 每次启动天然取最新）。
+**② 本地克隆（开发 / 自用）** —— 源码改动即时生效，适合改代码：
+
+```bash
+dsh plugin --profile web add <克隆到本地的仓库路径>   # 或 git URL
+```
+
+装完验证 entry 入树：`dsh --profile web --dump-config`。
 
 安装即启用：`cordis.patch.yml` 显式 `enabled: true`（代码缺省关，fail-closed），开关状态在 YAML 里可见。
+
+> 改代码 / 换版本后要跑新代码：**web profile 由 HMR 自动重载；desktop / headless 需重启对应实例**（桌面端重启应用；headless 每次启动天然取最新）。本地克隆渠道是 `link:` 软链，源码改动无需重新安装。
+
+### 升级
+
+DSH 的插件管理器**不支持自动更新**（官方文案：升级 = 先卸载再装新版）。所以升级 = 用新版本重跑一次安装命令：
+
+```bash
+# tag tarball 渠道：把 URL 里的 v0.3.0 换成新版本号（版本号见 Releases / CHANGELOG）
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+# 本地克隆渠道：git pull 后无需重装（软链生效）
+```
+
+- **数据不受升级影响**：记忆、开关、人设、备份全部落在 `~/.dsh/memory/`——**在插件包目录之外**，卸载 / 重装都不碰它（除非你手动删除该目录）。数据与代码分离是刻意设计。
+- **升级后需重启**：替换已安装的包后，进程要重启才会加载新 JS 模块（web profile HMR 可自动重载；desktop 重启应用；headless 下次启动）。
+- **只读保护（防降级弄坏数据）**：数据目录里的 `keepsake-format.json` 记录存储格式版本（见 [FORMAT.md](FORMAT.md)）。若数据由**更新版本**的插件写入（例如先装 0.4 又退回 0.2），旧版本会**自动转为只读**——不再记录新记忆、面板写入被拒（写端点返回 503），并在门牌与设置页「管道健康卡」显式报警；升级插件后自动恢复。这是为了不让旧代码按旧规则误改新格式数据。
 
 ### 验证生效
 

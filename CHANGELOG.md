@@ -4,6 +4,16 @@
 
 ## [未发布]
 
+## [0.3.0] - 2026-10-13
+
+### 新增
+- **分发与升级**：README 补齐 GitHub tag tarball 渠道的安装与升级步骤（DSH 插件不支持自动更新，升级 = 重装新版；数据在插件包目录之外，卸载重装不受影响）。
+- **DSH peer 兼容声明**：`package.json` 声明 `@deepseek-ai/dsh-client-ui-slots@^0.2.0-rc.2`，宿主在安装/启动时据此做版本兼容检查（不匹配需用户显式豁免）。
+- **存储格式版本闸**（防降级误改数据）：存储根新增 `keepsake-format.json` 记录格式版本；数据被更新版插件写入时（标记高于当前）本版本自动转只读——拒绝写端点（503）、跳过滚动清理与提取落盘，读取仍放行；标记缺失/损坏自动补写当前版本。`/state.format` 暴露状态，门牌与设置页「管道健康卡」显示只读告警。
+
+### 变更
+- README 中英双版新增「升级」一节与「分发」摘要；`FORMAT.md` 新增第七节「存储格式版本」；`ROADMAP.md` 新增「分发与升级」。
+
 ## [0.2.0] - 2026-10-13
 
 ### 新增
@@ -39,6 +49,7 @@
 ### 修复
 - `enabled` 缺省关（fail-closed）；索引缓存键加项目维度；Windows 保留设备名段防穿越；截断保最新；直写判定按结果成败校验；CJK 词数折算；关停 drain 纪律；debug 日志口。
 
-[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.2.0...HEAD
+[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.3.0
 [0.2.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.2.0
 [0.1.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.1.0

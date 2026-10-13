@@ -276,7 +276,7 @@ test("modelShortName：取路径末段（门牌模型）；无斜杠原样；空
   assert.equal(modelShortName("group/chat-model"), "chat-model");
   assert.equal(modelShortName("a/b/c"), "c");
   assert.equal(modelShortName("auto-glm"), "auto-glm");
-  assert.equal(modelShortName("embed-model 2"), "embed-model 2"); // 无路径的嵌入模型名原样展示
+  assert.equal(modelShortName("EmbeddingGemma 2"), "EmbeddingGemma 2"); // 无路径的嵌入模型名原样展示
   assert.equal(modelShortName(""), "");
   assert.equal(modelShortName(null), "");
   assert.equal(modelShortName(void 0), "");

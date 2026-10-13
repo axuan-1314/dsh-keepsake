@@ -234,7 +234,7 @@ test("api：POST extract/retry 202/409（在途+节流）/无 extraction 依赖 
       extraction: {
         triggerRetry: () => { triggerCalls += 1; return 2; },
         inFlight: () => false,
-        configSummary: () => ({ provider: "p", model: "m", fallback: [], embeddingProvider: "gemini-local", embeddingModel: "embed-model 2" }),
+        configSummary: () => ({ provider: "p", model: "m", fallback: [], embeddingProvider: "gemini-local", embeddingModel: "EmbeddingGemma 2" }),
       },
     }), "POST", "extract/retry");
     {

@@ -106,8 +106,112 @@ test("写入：合并式 patch（未提及键保持现值）", () => {
     assert.equal(next.globalExtraction, false);
     // 落盘内容三键齐全 + version
     const onDisk = JSON.parse(readFileSync(settingsPath(root), "utf8"));
-    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "projectMemory", "version"]);
+    // v0.4.0：安全面三项并入 settings（缺键走默认，旧 settings.json 无需迁移）
+    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "hardfactPolicy", "projectMemory", "surgicalKeep", "trashKeepDays", "version"]);
     assert.equal(onDisk.version, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("写入：安全面三项单键 patch 不重置（拨开关/存嵌入配置后 surgicalKeep/trashKeepDays/hardfactPolicy 保持现值）", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { surgicalKeep: 5, trashKeepDays: 7, hardfactPolicy: "block" });
+    const next = writeSettings(root, { conversationMemory: false });
+    assert.equal(next.conversationMemory, false); // 本键已改
+    assert.equal(next.surgicalKeep, 5);
+    assert.equal(next.trashKeepDays, 7);
+    assert.equal(next.hardfactPolicy, "block");
+    // 读回与落盘都是现值（不是默认 30/30/warn）
+    const s = readSettings(root);
+    assert.equal(s.surgicalKeep, 5);
+    assert.equal(s.trashKeepDays, 7);
+    assert.equal(s.hardfactPolicy, "block");
+    const onDisk = JSON.parse(readFileSync(settingsPath(root), "utf8"));
+    assert.equal(onDisk.surgicalKeep, 5);
+    assert.equal(onDisk.trashKeepDays, 7);
+    assert.equal(onDisk.hardfactPolicy, "block");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("写入：安全面数值显式非法 → 落默认（读侧同口径，绝不 throw）", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { surgicalKeep: 5, trashKeepDays: 7 });
+    assert.equal(writeSettings(root, { surgicalKeep: -1 }).surgicalKeep, 30); // 越界（负）
+    assert.equal(writeSettings(root, { surgicalKeep: "abc" }).surgicalKeep, 30); // 非有限数
+    assert.equal(writeSettings(root, { surgicalKeep: 0 }).surgicalKeep, 30); // 正整数，0 非法
+    assert.equal(writeSettings(root, { surgicalKeep: 2.5 }).surgicalKeep, 30); // 非整数
+    assert.equal(readSettings(root).trashKeepDays, 7); // 非法 surgicalKeep 不波及 trashKeepDays
+    assert.equal(writeSettings(root, { trashKeepDays: -1 }).trashKeepDays, 30); // 越界（负）
+    assert.equal(writeSettings(root, { trashKeepDays: "abc" }).trashKeepDays, 30); // 非有限数
+    assert.equal(writeSettings(root, { trashKeepDays: 0 }).trashKeepDays, 0); // ≥0 合法（0 天 = 当天清）
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("写入：安全面数值显式非数值（null/false/空串/空白串/数字字符串）→ 落默认，不与合法 0 混淆", () => {
+  const root = freshRoot();
+  try {
+    // trashKeepDays：过去 Number(null)/Number(false)/Number("")/Number("  ") 都=0，
+    // 会被当成合法「0 天=立即清空」，方向危险；收紧后一律落默认 30。
+    assert.equal(writeSettings(root, { trashKeepDays: null }).trashKeepDays, 30);
+    assert.equal(writeSettings(root, { trashKeepDays: false }).trashKeepDays, 30);
+    assert.equal(writeSettings(root, { trashKeepDays: "" }).trashKeepDays, 30);
+    assert.equal(writeSettings(root, { trashKeepDays: "  " }).trashKeepDays, 30);
+    assert.equal(writeSettings(root, { trashKeepDays: "30" }).trashKeepDays, 30); // 数字字符串不是数字
+    assert.equal(writeSettings(root, { trashKeepDays: true }).trashKeepDays, 30); // 布尔 true 也非数字
+    // 合法数字 0 仍有效（0 天 = 立即清空是合法配置）
+    assert.equal(writeSettings(root, { trashKeepDays: 0 }).trashKeepDays, 0);
+    // surgicalKeep 同口径：非数值走默认 30，合法正整数保持
+    assert.equal(writeSettings(root, { surgicalKeep: null }).surgicalKeep, 30);
+    assert.equal(writeSettings(root, { surgicalKeep: false }).surgicalKeep, 30);
+    assert.equal(writeSettings(root, { surgicalKeep: "" }).surgicalKeep, 30);
+    assert.equal(writeSettings(root, { surgicalKeep: "5" }).surgicalKeep, 30); // 数字字符串不是数字
+    assert.equal(writeSettings(root, { surgicalKeep: 5 }).surgicalKeep, 5);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("读取：盘上历史非数值/数字字符串 → 落默认 30（与默认一致，无感）", () => {
+  const root = freshRoot();
+  try {
+    // 历史值若是数字字符串（JSON 里写成 "30"）→ 回到默认 30（值相同，无感）
+    writeFileSync(settingsPath(root), JSON.stringify({ surgicalKeep: "30", trashKeepDays: null }), "utf8");
+    const s = readSettings(root);
+    assert.equal(s.surgicalKeep, 30);
+    assert.equal(s.trashKeepDays, 30);
+    // 显式数字 0 读回仍是 0（合法配置不被抬回默认）
+    writeFileSync(settingsPath(root), JSON.stringify({ trashKeepDays: 0 }), "utf8");
+    assert.equal(readSettings(root).trashKeepDays, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("写入：安全面显式合法 patch 只改一键（另一键与 hardfactPolicy 不重置）", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { surgicalKeep: 5, trashKeepDays: 7, hardfactPolicy: "block" });
+    let next = writeSettings(root, { surgicalKeep: 9 });
+    assert.equal(next.surgicalKeep, 9);
+    assert.equal(next.trashKeepDays, 7); // 未提及 → 保持现值
+    assert.equal(next.hardfactPolicy, "block"); // 未提及 → 保持现值
+    next = writeSettings(root, { trashKeepDays: 3 });
+    assert.equal(next.trashKeepDays, 3);
+    assert.equal(next.surgicalKeep, 9); // 未提及 → 保持现值
+    assert.equal(next.hardfactPolicy, "block");
+    next = writeSettings(root, { surgicalKeep: 11, trashKeepDays: 1, hardfactPolicy: "warn" });
+    assert.deepEqual([next.surgicalKeep, next.trashKeepDays, next.hardfactPolicy], [11, 1, "warn"]);
+    // 显式 undefined 视为未提供
+    next = writeSettings(root, { surgicalKeep: undefined });
+    assert.equal(next.surgicalKeep, 11);
+    assert.equal(next.trashKeepDays, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

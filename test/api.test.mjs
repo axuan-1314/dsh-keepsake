@@ -95,7 +95,16 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
-    assert.deepEqual(json.settings, { conversationMemory: true, projectMemory: true, globalExtraction: true, corrupt: false });
+    // v0.4.0：settings 增写入安全面三项（surgicalKeep/trashKeepDays/hardfactPolicy）
+    assert.deepEqual(json.settings, {
+      conversationMemory: true,
+      projectMemory: true,
+      globalExtraction: true,
+      surgicalKeep: 30,
+      trashKeepDays: 30,
+      hardfactPolicy: "warn",
+      corrupt: false,
+    });
     assert.equal(json.corrupt, false);
     assert.equal(json.counts.byCategory["work-profile"], 1);
     assert.equal(json.counts.global, 1);

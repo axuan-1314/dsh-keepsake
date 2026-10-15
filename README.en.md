@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.3.1 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.4.0 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -23,7 +23,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 > Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
 ```
 
 ## Contents
@@ -36,6 +36,7 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
   - [Pipeline health card and "retry extraction now"](#pipeline-health-card-and-retry-extraction-now)
   - [Failure resilience: retry, classification, on-disk trail](#failure-resilience-retry-classification-on-disk-trail)
   - [Automatic backups](#automatic-backups)
+  - [Write reversibility: snapshots and trash](#write-reversibility-snapshots-and-trash)
 - [Quick start](#quick-start)
   - [Install](#install)
   - [Upgrade](#upgrade)
@@ -121,6 +122,7 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 - **Persona page**: split markdown editor + live preview, five presets (concise / professional / humorous / buddy / custom); "reset to default" restores the factory template (auto-backup first); 100KB cap. The persona supplements the official system prompt rather than replacing it.
 - **Addressing page**: two inputs ("DSH's name" / "what to call me", 40 chars each), debounced auto-save, same data as the settings block.
 - **Project memory page** (read-only): per-project entry count and last update; per-project JSON export.
+- **Trash page / Snapshots page** (see [Write reversibility](#write-reversibility-snapshots-and-trash)): deleted entries and pre-batch archives, restorable per entry or per file.
 - **Settings page**: the three switches; pipeline health card and extraction-model card; data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
 - **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt persona/addressing files are preserved as `*.corrupt-<ts>` before being overwritten.
 
@@ -147,10 +149,34 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 
 Every bulk destructive action has an undo:
 
-- **Automatic full backup**: before a category reset / confirmed import / restore / persona reset / clear-all, the current `global/` + `settings.json` are backed up in full to `<storageRoot>/backups/<timestamp>/`;
+- **Automatic full backup**: before a category reset / confirmed import / restore / persona reset / clear-all, the current global memory (`global/`, incl. persona & addressing) + `settings.json` + project memory (`projects/`) are backed up in full to `<storageRoot>/backups/<timestamp>/`;
 - **Latest 20 kept**, so backups cannot grow unbounded;
 - **Half-written backups are visible and refuse restore**: backups land in two stages (first `complete: false`, flipped to `true` when done), and an interrupted one is marked "incomplete" and refuses restore;
 - **Restoring has its own undo**: the current state is backed up once more (`pre-restore`) before a restore, and if the restore fails midway the response carries that backup id so you can recover.
+
+### Write reversibility: snapshots and trash
+
+Writes from automatic extraction are not irreversible — the project side and the global side each leave a way back, visible and rollback-able in the panel:
+
+- **Pre-batch snapshots (project side)**: before a batch overwrites or deletes existing entries, the old text is archived to `backups/surgical/<batchId>/` (latest `surgicalKeep`, default 30 batches). The panel's **Snapshots** page can restore **a whole batch** or **a single file**; the index (`MEMORY.md`) is reconciled afterwards.
+- **Trash (deferred delete)**: deletions produced by **automatic extraction** are no longer hard-deleted — a copy lands in `trash/<entryId>/` first and the original is removed only after the copy is confirmed in place, kept for `trashKeepDays` (default 30 days). The panel's **Trash** page restores a whole entry or a single file, and can purge one entry, purge everything older than the retention window, or empty the trash (emptying = real deletion). This path covers automatic extraction only: the panel's manual **"delete entry"** (`DELETE /entry`), **category reset** (`clearCategory`) and **recent-activity rolling prune** (`pruneRecentActivity`) still delete outright and do not go through the trash (the panel's delete confirmation already says "cannot be undone"; a category reset takes a full auto-backup first).
+- **Write-then-verify (project side)**: after landing, the file is read back and its four frontmatter fields and body are validated; on failure the **old text is rolled back** and the new file is kept as a specimen under the snapshot's `failed/` directory (a pure addition with nothing to roll back goes to trash instead).
+- **Hard-fact guard (project side)**: if an overwrite drops an existing hard fact (numbers, version numbers, hex identifiers, byte sizes) it is logged and counted (`hardfactDrops`); set `hardfactPolicy` to `block` and that op is rolled back as a verification failure (default `warn`: alert only, no blocking). Honest about the detection limits: a drop is flagged only when a whole type disappears from the new text or is displaced by a near-identical value (a suspected transcription slip, like 269 → 267) — frontmatter, index lines and dynamic notes (dates / countdowns) are excluded from the comparison, and **a whole-line delete may go undetected when the body contains many numbers of the same type**; the warn / block semantics are unchanged.
+- **Three write-path gates (project side)**: an overwrite (full replacement) only happens with a matching expected sha1 — if the op's `sha1` field does not match the current file the op is rejected (counted as `expectedSha1Mismatches`), so no overwrite is based on stale content; a "blind" write without the sha1 never replaces the old body — it **downgrades to an append** (old body kept, new content after a separator) instead of replacing the whole file; extraction takes a batch lock (`<storageRoot>/extract.lock`), and a lock conflict blocks destructive operations.
+- **Snapshot before global overwrites**: before automatic extraction rewrites an existing global-memory entry, the old text is archived to `backups/surgical/`; if the snapshot fails the overwrite is skipped and the original text is left untouched (better to miss one update than to lose the old text). Manual saves from the panel do not go through this path.
+- **Restores keep a copy too**: before restoring from a snapshot / trash / full backup, existing conflicting files at the restore target are archived first. A **full-backup restore** (`restoreBackup`) renames the old data to `retired-*` then swaps the new copy in; if the swap fails it renames the old data back (**automatic rollback** — and if even that rename fails, the `retired-*` directory is kept for manual recovery). A **snapshot / trash restore** (`restoreSurgicalSnapshot` / `restoreTrash`), however, does **not** auto-rollback — it writes files in a loop and stops in place on failure without restoring the previous state; the pre-restore archive it left behind is still on disk, and the API's failure response carries a `preRestoreSnapshotId` plus a hint pointing to it, so you can recover the overwritten old versions **by hand**. Restore endpoints share the same batch lock as extraction write-back, so a restore never interleaves with writes.
+- **Visible on the health card**: the "automatic extraction pipeline" card on the settings page gains a write-safety line (trash pending / verify failures / hard-fact alerts / blind-write downgrades / sha1 mismatches / lock conflicts / snapshot failures — shown only when non-zero); the sidebar also shows pending trash and snapshot counts. The data source `/state.safety` has nine fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) and six in-process counters (`verifyFailed` / `hardfactDrops` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**).
+
+> The only source of truth is `*.md` and `MEMORY.md`: `backups/` and `trash/` are **copy directories that are safe to delete** (deleting them loses no current memory, only the ability to roll back). See [FORMAT.md](FORMAT.md) section 7.
+
+The three write-safety settings live in `~/.dsh/memory/settings.json` (the same file as the three switches — **not** entry config; putting them in `cordis.patch.yml` is rejected; the current panel build has no inputs for them, so edit the file by hand and they take effect next turn):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `surgicalKeep` | 30 | How many pre-batch snapshots to keep; older ones are pruned by the write path |
+| `trashKeepDays` | 30 | How long trash entries are kept; expired ones are purged by the write path and the panel's "purge expired" |
+| `hardfactPolicy` | `warn` | Hard-fact drop policy: `warn` = alert into the log only; `block` = roll back as a verification failure |
+
 
 ## Quick start
 
@@ -161,7 +187,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.3.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
 # profile: web / headless / desktop
 ```
 
@@ -189,7 +215,7 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
 
 - **Your data is unaffected by upgrades**: memory, switches, persona and backups all live under `~/.dsh/memory/` — **outside the plugin package directory** — so uninstall / reinstall never touches them (unless you delete that directory yourself). Keeping data separate from code is deliberate.
 - **Restart after upgrading**: replacing the installed package requires a process restart to load the new JS modules (web profile can reload via HMR; restart the desktop app; headless picks it up on next start).
-- **Read-only guard (protects against downgrades)**: a `keepsake-format.json` marker in the data directory records the storage-format version (see [FORMAT.md](FORMAT.md)). If your data was written by a **newer** plugin version (e.g. you installed 0.4 then went back to 0.2), the older version **turns read-only** — it stops recording new memories and rejects panel writes (write endpoints return 503), and raises a visible warning on the plaque and the Settings "pipeline health card". It recovers automatically once you upgrade. This keeps old code from rewriting newer-format data under old rules.
+- **Back up before downgrading**: a `keepsake-format.json` marker in the data directory records the storage-format version (see [FORMAT.md](FORMAT.md)). The format version has not changed since v0.3.0 (`FORMAT_VERSION=1`), so going back from v0.4.0 to v0.2.x does **not** trip the gate — the older build can read and write the same data normally; what it lacks is the v0.4.0 write-safety surface (pre-batch snapshots / trash / `sha1` overwrite guard / write-then-verify), so its extraction overwrites replace files outright. Take a full backup before downgrading (the data card's "export all", or simply copy `~/.dsh/memory/`). The read-only gate itself remains: only when data was written by a plugin of a **newer format version** does the older version turn read-only (write endpoints return 503) with a visible warning, recovering once you upgrade.
 
 ### Verify it works
 
@@ -258,7 +284,9 @@ Data layout:
 ├── projects/<slug>-<hash16>/memory/       # project memory (isolated per workspace)
 │   ├── MEMORY.md                          # index: - [Title](file.md) — one-line hook (≤150 chars)
 │   └── <kebab-name>.md                    # entry: frontmatter name/description/metadata.type
-└── backups/<ts>/                          # automatic backups (latest 20 kept)
+├── backups/<ts>/                          # automatic backups (latest 20 kept)
+│   └── surgical/<batchId>/                # pre-batch snapshots: old text before overwrite/delete (latest 30 kept)
+└── trash/<entryId>/                       # trash: originals of deleted entries (kept 30 days by default)
 ```
 
 - `slug`: a sanitized workspace basename (lowercased, `[^a-z0-9._-]+` → `-`, truncated to 48, falling back to `project` when empty);
@@ -282,7 +310,7 @@ Two layers. Entry config in `cordis.patch.yml` (provider/model, budgets…) is H
 The pipeline reporting trouble (typically a rate-limited free pool, HTTP 429). The plugin auto-retries (3 attempts with exponential backoff) and backfills each turn; if it stays down, click "Retry extraction now", or read `<storageRoot>/extraction-errors.log`, or pin a more stable `provider`/`model` for dsh-keepsake in `cordis.patch.yml`.
 
 **Q3: I made a mistake editing an entry/persona and saved. Can I get it back?**
-No — single-entry overwrite (save entry / save persona / rename) replaces the old text with no edit history (intentional). Batch destructive paths (reset / import / restore) are auto-backed-up; export first if you want an undo for single edits.
+Not automatically. **Saving a global entry, the persona, or the addressing** are all direct replacements with no archive (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten) — export first if you want an undo; only overwrites/deletes produced by **automatic extraction** go through the [write-reversibility](#write-reversibility-snapshots-and-trash) snapshots and trash. Project memory is not hand-editable in the panel.
 
 **Q4: Why wasn't what I just said recorded?**
 Check in order: ① the turn had no ≥3-word user prose (e.g. a single-word command) — a noise-reduction design; ② you (or the model) wrote directly into the memory dir that turn; ③ extraction failed (red bar / health card); ④ a switch is off. In any case you can add an entry manually in the panel.
@@ -313,6 +341,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Observation surface**: `/state` also carries `lastFailedRange`, `extractionInFlight`, `lastAttemptAt`, `lastUsedRoute`, `extractionConfig`, `embeddingConfig`; the settings page's "pipeline health card" renders all of it.
 - **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); render failures are counted, never silently dropped.
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
+- **Write-safety surface (v0.4.0)**: `/state.safety` carries nine fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) plus six in-process counters (`verifyFailed` / `hardfactDrops` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**); the pipeline health card gains a summary line, and the **Snapshots** / **Trash** pages let you inspect and restore.
 - **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_KEEPSAKE_DEBUG`.
 - **Manual backfill**: `POST /dsh-keepsake/api/extract/retry` (the "Retry extraction now" button) → 202 + observe via `/state`; 409 in flight; 10s minimum interval.
 - **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, the plugin runs with defaults plus a `corrupt` marker and a red bar in the UI; a corrupt file is auto-backed-up as `*.corrupt-<ts>` before being overwritten.
@@ -330,7 +359,7 @@ Both plugins only read and write their own local data directories; installing on
 ## Development & testing
 
 ```bash
-npm test        # node --test, 346 tests (incl. the anti-drift gate test/client-source.test.mjs)
+npm test        # node --test, 480 tests (incl. the anti-drift gate test/client-source.test.mjs)
 npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 
@@ -349,7 +378,7 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-keepsake"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
 - **desktop/headless config changes need a restart** (see rollback section); no uniform hot reload.
 - **Profiles without a webserver mount no API/panel**: the plugin's only hard dependencies are the extraction LLM and (in `section` mode) the system prompt; on a profile without a webserver (e.g. headless) it still loads and injects memory normally — only the REST API and panel are not mounted (`/dsh-keepsake/...` unreachable).
-- **No single-entry edit history** (intentional): PUT persona / PUT entry replaces the old text — a bad paste overwrites it; batch paths (reset/import/restore) are auto-backed-up.
+- **No per-edit history for single overwrites** (intentional): PUT persona / PUT addressing / PUT entry still replace the old text outright — a bad paste overwrites it (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo; batch destructive paths (reset/import/restore) also take a full auto-backup.
 - **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (22-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
 - **Injection blocks can accumulate within a session**: on content change a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them; each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
 - **`injectMaxChars` is the total injection budget (recall block included)**: with recall on, the main block yields to the recall block so the two together stay within it; the visible truncation notice is counted too (a slight overrun is possible only when the budget is too small to fit even the wrapper and notice).

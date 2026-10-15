@@ -27,6 +27,7 @@ import {
   recentAgeOf,
   recentExpireDays,
   relativeTimeOf,
+  safetyLocationText,
   serializeEntries,
   utf8Length,
   validateEmbeddingDraft,
@@ -431,4 +432,30 @@ test("validateEmbeddingDraft：开启需端点+模型、URL 限 http(s)", () => 
   // 合法 http(s)（本地/远程均放行）
   assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "nomic-embed-text" }).ok, true);
   assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-small" }).ok, true);
+});
+
+// ---- 写入安全面展示（回收站/快照页位置列 + 恢复确认弹窗共用） ----
+
+test("safetyLocationText：rootKey 三种真实形态如实显示 + 畸形输入容错", () => {
+  // 真实形态 1：全局分类删除（<storageRoot>/global/<category>）——原样，用户按目录找得到
+  assert.equal(safetyLocationText({ rootKey: "global/work-profile" }), "global/work-profile");
+  // 真实形态 2：项目记忆删除（<storageRoot>/projects/<slug>-<hash16>/memory）——slug 可读，hash 无意义
+  assert.equal(safetyLocationText({ rootKey: "projects/demo-a1b2c3d4e5f6a7b/memory" }), "项目 demo");
+  // 真实形态 3：rootKeyOf 同根返回 ""（写入目标就是项目记忆根本身）
+  assert.equal(safetyLocationText({ rootKey: "" }), "项目记忆");
+  assert.equal(safetyLocationText({}), "项目记忆", "缺 rootKey 字段 = 空串形态");
+  // 未知真实形态：原样显示，不猜前缀
+  assert.equal(safetyLocationText({ rootKey: "other/whatever" }), "other/whatever");
+  // 宽容归一：首尾斜杠 / 多余斜杠 / Windows 反斜杠 / 空白
+  assert.equal(safetyLocationText({ rootKey: "/global/work-profile/" }), "global/work-profile");
+  assert.equal(safetyLocationText({ rootKey: " global\\work-profile " }), "global/work-profile");
+  // 畸形输入：绝不出现 undefined/NaN/异常
+  assert.equal(safetyLocationText(null), "—");
+  assert.equal(safetyLocationText(void 0), "—");
+  assert.equal(safetyLocationText("x"), "—");
+  assert.equal(safetyLocationText({ rootKey: null }), "项目记忆", "null rootKey = 缺失同口径");
+  assert.equal(safetyLocationText({ rootKey: 42 }), "—", "非字符串 rootKey 不 String 化成怪串");
+  assert.equal(safetyLocationText({ rootKey: {} }), "—");
+  assert.equal(safetyLocationText({ rootKey: [] }), "—");
+  assert.equal(safetyLocationText({ rootKey: true }), "—");
 });

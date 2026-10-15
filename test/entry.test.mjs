@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { apply, resolveConfig, name, inject } from "../lib/index.js";
+import { buildExtractionPayload } from "../lib/extract.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 
@@ -311,7 +312,7 @@ test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即�
   assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
 });
 
-// ---- 假绿补钉（变异坐实零覆盖的新行为，本批必须有牙） ----
+// ---- 补钉（此前零覆盖的新行为，必须有回归测试） ----
 
 test("DSH_KEEPSAKE_DEBUG 文件日志口：debug.log 落盘含标记行", async () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-dbg-"));
@@ -432,4 +433,16 @@ test("recallTotalBudgetMs 配置键：默认 20000 / 显式生效 / 超 MAX_TIME
   assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 2147483648 }), /recallTotalBudgetMs too large/);
   assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 0 }), /recallTotalBudgetMs/);
   assert.throws(() => resolveConfig({ enabled: true, recallTotalBudgetMs: 1.5 }), /recallTotalBudgetMs/);
+});
+
+// ---- 提取 prompt 的项目记忆目录键：memoryRoot 与 memoryDir 都接受（此前 index.js 传 memoryDir、函数取 memoryRoot → 渲染 undefined）----
+
+test("buildExtractionPayload：项目记忆目录键两种传法都渲染真实路径，绝不出现 undefined", () => {
+  const viaRoot = buildExtractionPayload({ transcript: "t", manifest: "", bodies: "", memoryRoot: "/m/root" }).system;
+  assert.match(viaRoot, /The project memory directory is: \/m\/root/);
+  assert.doesNotMatch(viaRoot, /undefined/);
+  // 调用方 lib/index.js 传的是 memoryDir（历史键名）——必须同样渲染真实路径
+  const viaDir = buildExtractionPayload({ transcript: "t", manifest: "", bodies: "", memoryDir: "/m/dir" }).system;
+  assert.match(viaDir, /The project memory directory is: \/m\/dir/);
+  assert.doesNotMatch(viaDir, /undefined/);
 });

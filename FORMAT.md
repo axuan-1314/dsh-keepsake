@@ -6,7 +6,9 @@
 
 ```
 <storageRoot>/                     # 默认 ~/.dsh/memory
-├── keepsake-format.json           # 存储格式版本标记（本插件内部用；见第七节）
+├── keepsake-format.json           # 存储格式版本标记（本插件内部用；见第八节）
+├── extract.lock                   # 提取/恢复批互斥锁（插件自管，可安全删除；见第七节）
+├── backups/  trash/               # 副本目录（非真源，可安全删除；见第七节）
 ├── global/                        # 全局记忆（跨所有会话）
 │   ├── persona.md                 # 人设（出厂默认模板起步）
 │   ├── addressing.json            # 称呼 {dshName, userAlias}
@@ -103,7 +105,31 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 
 > 约定变更（字段增删、语义调整）视为**对外契约变化**，按 ROADMAP 的版本纪律记入并同步本页。
 
-## 七、存储格式版本（`keepsake-format.json`）
+## 七、`backups/` 与 `trash/` 是包外非真源目录
+
+存储根下有两类**插件自留的副本目录**，它们**不是记忆真源**：
+
+```text
+<storageRoot>/
+├── backups/<ts>/               # 批量破坏性操作前的全量备份（滚动保留最新 20 份）
+│   └── surgical/<batchId>/     # 批前「手术式」快照：本批覆写/删除触及的原文留档
+│       ├── manifest.json       # 批次清单（files[]：name / rootKey / sha1 / action / indexLine）
+│       ├── files/              # 原文副本（按 rootKey 分目录）
+│       └── failed/             # 写后校验失败的新档标本（不删，留待排查）
+└── trash/<entryId>/            # 回收站：被删除的记忆文件（默认保留 30 天）
+    ├── meta.json               # 条目清单（files[]：name / rootKey / sha1 / action / indexLine）
+    └── files/                  # 原文副本
+```
+
+- **真源只有 `*.md` 与 `MEMORY.md`**：`global/<category>/*.md` 与 `projects/<slug>-<hash16>/memory/*.md` 才是记忆本身；每目录的 `MEMORY.md` 是导航索引。`settings.json`（开关）、`persona.md`（人设）、`addressing.json`（称呼）也是真源（各自唯一）。
+- **`backups/` 与 `trash/` 可安全删除**：删掉它们**不损失任何当前记忆**——它们是历史副本，用于回滚。插件会在下次批量操作/删除时按需重建目录；`keepsake-format.json` 缺失同理会被补写（见第八节）。
+- **删除的代价是失去后悔药**：清掉 `backups/` 就没有「恢复此备份 / 回滚快照」的入口；清掉 `trash/` 就等于把被删的条目**真正**删除（回收站的语义是"延迟删除"，不是归档）。注意回收站只收**自动提取**产生的删除；面板手动「删除条目」（`DELETE /entry`）与分类重置（`clearCategory`）、近期动态滚动清理（`pruneRecentActivity`）是直接删除、不进回收站。
+- **`backups/surgical/` 与 `trash/` 都有自动清理**：快照按 `settings.surgicalKeep`（默认 30 份）滚动保留最新；回收站按 `settings.trashKeepDays`（默认 30 天）清过期。两者都由写入路径顺带收口，无需手工维护。
+- **不要手工改 `manifest.json` / `meta.json`**：它们是盘上数据，恢复时按三道闸逐条校验（`name` / `rootKey` 都要过 `sanitizeMemoryName` 与 `rootDirOf`），改坏了最多是该条被跳过并告警——但没必要冒险。
+- **跨 agent 互认不涉及这两类目录**：外部 agent 只读真源（`*.md` + `MEMORY.md`）即可；副本目录是本插件内部的可逆性设施，格式不对外承诺稳定。
+- **`extract.lock` 是运行时锁文件（同样可安全删除）**：提取落盘与三类恢复端点（快照 / 回收站 / 整份备份）共用存储根下的 `extract.lock` 互斥——原子创建、stale 超时接管、用完即删。它不是记忆数据、也不进任何备份，**删掉不损失记忆**，只是放弃一次在途批次的互斥保护，下一批会自动重建。
+
+## 八、存储格式版本（`keepsake-format.json`）
 
 存储根下有一个 `keepsake-format.json`，记录**写这份数据的格式版本**：
 
@@ -118,10 +144,11 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
   - **低于当前** → 未来的格式迁移入口（当前 `FORMAT_VERSION=1`，无更早版本），补写当前版本；
   - **高于当前** → 数据由**更新版**插件写入，本版本**自动转只读**：拒绝写入与滚动清理（写端点 503，门牌与面板健康卡显式报警），读取仍放行（非破坏性）。升级插件后自动恢复。
   - **标记损坏**（文件在但无法解析，如截断 / 非法 JSON）→ 无法判断版本，**先备份再补写**：把损坏文件改名为 `keepsake-format.json.corrupt-<时间戳>`，再补写当前版本——绝不静默覆盖（原标记可能记录着更高版本，是唯一的降级信号）。
+- **格式版本没变，不代表能力没变**：`FORMAT_VERSION` 自 v0.3.0 起未再变化，所以从 v0.4.0 降级回旧版（如 v0.2.x）时格式闸**不会**触发——旧版可以正常读写同一份数据；但旧版没有 v0.4.0 的写入安全面（批前快照 / 回收站 / `sha1` 覆盖闸 / 写后读校验），其覆写是直接替换旧文。降级前建议先做一次全量备份（设置页「导出全部」或直接拷走 `<storageRoot>/`）。
 - 该文件可安全删除（会被视为"缺失"并补写当前版本）；但删除它等于放弃降级保护，请仅在确认数据格式与当前插件一致时这么做。
 - **破坏性格式变更（字段增删、语义调整）必须把 `FORMAT_VERSION` +1 并在迁移位登记**——这是对外契约变化，同步更新本页与 [ROADMAP.md](ROADMAP.md) 的版本纪律。
 
-## 八、不做 / 预留
+## 九、不做 / 预留
 
 - **墓碑删除**（`deleted:` 元数据）**预留不实现**：本插件纯本地单机，暂无多端合并需求；为将来 git 同步/跨 agent 合并预留一个可选 `deleted` 字段位置即可（见 ROADMAP，不单独排批）。
 - **不引入 JSON 真源**：本插件 markdown 即真源（区别于以 JSON 为真源、markdown 为渲染产物的方案），保证"用户能直接打开编辑"。

@@ -34,3 +34,7 @@
         maxOps: 20
         recentKeepCount: 30
         recentKeepDays: 30
+        # v0.4.0 写入安全面（写入 ~/.dsh/memory/settings.json，当前版本面板暂无入口，改完下一轮生效）：
+        # surgicalKeep: 30        # 手术式快照滚动保留份数
+        # trashKeepDays: 30      # 回收站条目保留天数（超期写路径顺带清）
+        # hardfactPolicy: "warn" # 硬事实丢失处置：warn=只告警留痕 / block=该 op 回滚

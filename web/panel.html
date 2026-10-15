@@ -103,6 +103,9 @@
     <a data-route="persona">人设</a>
     <a data-route="addressing">称呼</a>
     <a data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
+    <div class="group">可逆性</div>
+    <a data-route="trash">回收站 <span class="cnt" data-cnt="trash"></span></a>
+    <a data-route="snapshots">快照 <span class="cnt" data-cnt="snapshots"></span></a>
     <a data-route="settings">设置 <span class="cnt alert" data-cnt="extraction-streak" title="自动提取连续失败次数（设置页管道健康卡可看详情）"></span></a>
   </aside>
   <main>
@@ -877,6 +880,10 @@ function buildPipeHealthCard(data) {
     }
   }
   // 注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
+  // 写入安全面一行（六字段全景：快照/回收站待清/校验失败/硬事实丢弃/盲写降级/锁冲突）
+  //   /state.safety 缺失（旧版宿主）→ safetySummaryText 返回 null，不渲染（tolerant 消费）。
+  const safetyLine = L.safetySummaryText(data.safety);
+  if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
   const injectionLine = L.injectionSummary(data.injection);
   if (injectionLine) parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}</div>`);
   // 存储格式只读告警——数据由更新版插件写入时显示（正常/旧版宿主不渲染；显式可见不静默）
@@ -1013,6 +1020,207 @@ function schedulePipePoll(data) {
   }, 5000);
 }
 
+// ============ 页面：回收站（可逆性：列表 + 单条恢复 + 清空/按天清理） ============
+// 端点：GET trash/list / POST trash/restore {id,name?} / POST trash/purge {id?,olderThanDays?}
+// 风格沿用既有页：加载中占位 → 拉取 → 错误页内可见 → 卡片流；破坏操作一律确认弹窗。
+async function renderTrashPage() {
+  const seq = ++pageRenderSeq;
+  pageTitle.textContent = "回收站";
+  pageSub.textContent = "删除的记忆先进这里（默认保留 30 天），可单条恢复或清空";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let listData;
+  try {
+    listData = await api("trash/list");
+  } catch (err) {
+    if (seq !== pageRenderSeq) return;
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  if (seq !== pageRenderSeq) return;
+  const reload = () => { renderTrashPage(); refreshCounts(); };
+  const entries = listData.entries ?? [];
+  if (entries.length === 0) {
+    page.innerHTML = '<div class="empty">回收站是空的——删除的记忆会先移到这里，过期或手动清空才真正消失。</div>';
+    return;
+  }
+  page.innerHTML = entries.map((e, i) => `
+    <div class="card"><h3><span class="badge">${e.files.length} 个文件</span> <code class="k">${esc(e.id)}</code>
+      <span class="ops">
+        <button class="btn sm" data-restore="${i}">恢复全部</button>
+        <button class="btn sm danger" data-purge="${i}">清除此条</button>
+      </span></h3>
+      <div class="meta">删除于 ${esc(L.safetyEntryTimeOf(e))} · 来源会话 ${esc(L.safetyOriginText(e))}</div>
+      <div class="tableScroll"><table class="preview">
+        <tr><th style="width:32%">文件</th><th style="width:22%">位置</th><th style="width:88px">动作</th><th style="width:96px">sha1</th><th style="width:96px"></th></tr>
+        ${e.files.map((f, j) => `<tr><td>${esc(f.name)}</td><td class="meta">${esc(L.safetyLocationText(f))}</td><td class="meta">${esc(L.safetyActionText(f.action))}</td><td class="meta">${esc(f.sha1 || "—")}</td><td><button class="btn sm" data-one="${i}:${j}">恢复此文件</button></td></tr>`).join("")}
+      </table></div></div>`).join("")
+    + `<div class="card"><h3>批量清理<span class="ops">
+        <button class="btn sm danger" data-purgeOld>清理过期（按保留天数）</button>
+        <button class="btn sm danger" data-purgeAll>清空回收站</button>
+      </span></h3>
+      <div class="meta">按天清理用「设置」里的保留天数（服务端 settings.trashKeepDays，默认 30 天）；清空 = 全清，不可恢复。</div></div>`;
+  for (const btn of Array.from(page.querySelectorAll("[data-restore]"))) {
+    btn.addEventListener("click", () => {
+      const e = entries[Number(btn.getAttribute("data-restore"))];
+      confirmDialog({
+        title: "恢复回收站条目",
+        body: `将把 ${e.files.length} 个文件恢复到原位（同名文件会被覆盖），并同步对账 MEMORY.md 索引。\n确定继续吗？`,
+        dangerText: "恢复",
+        onConfirm: async () => {
+          try {
+            const out = await apiPost("trash/restore", { id: e.id });
+            toast(`已恢复 ${out.restored.length} 个文件${out.indexReconciled ? "（索引已对账）" : ""}`);
+            reload();
+          } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        },
+      });
+    });
+  }
+  for (const btn of Array.from(page.querySelectorAll("[data-one]"))) {
+    btn.addEventListener("click", () => {
+      const [i, j] = btn.getAttribute("data-one").split(":").map(Number);
+      const e = entries[i];
+      const f = e.files[j];
+      confirmDialog({
+        title: "恢复单个文件",
+        body: `将把「${esc(f.name)}」恢复到 ${esc(L.safetyLocationText(f))}（同名文件会被覆盖；被覆盖的当前版本会自动留一份快照可找回）。\n确定继续吗？`,
+        dangerText: "恢复",
+        onConfirm: async () => {
+          try {
+            const out = await apiPost("trash/restore", { id: e.id, name: f.name });
+            if (out.restored.length === 0) { toast("没有文件被恢复（副本可能已缺失）", "err"); return; }
+            toast(`已恢复 ${out.restored[0]}${out.indexReconciled ? "（索引已对账）" : ""}`);
+            reload();
+          } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        },
+      });
+    });
+  }
+  for (const btn of Array.from(page.querySelectorAll("[data-purge]"))) {
+    btn.addEventListener("click", () => {
+      const e = entries[Number(btn.getAttribute("data-purge"))];
+      confirmDialog({
+        title: "清除回收站条目",
+        body: `将永久删除这条里的 ${e.files.length} 个文件副本，无法再恢复。\n确定继续吗？`,
+        dangerText: "永久清除",
+        onConfirm: async () => {
+          try {
+            const out = await apiPost("trash/purge", { id: e.id });
+            toast(`已清除 ${out.purged} 条`);
+            reload();
+          } catch (err) { toast("清除失败：" + err.message, "err"); }
+        },
+      });
+    });
+  }
+  page.querySelector("[data-purgeOld]").addEventListener("click", () => {
+    confirmDialog({
+      title: "清理过期条目",
+      body: "将永久删除超过保留天数（服务端 settings.trashKeepDays，默认 30 天）的回收站条目。\n确定继续吗？",
+      dangerText: "清理过期",
+      onConfirm: async () => {
+        let days = 30;
+        try {
+          const st = await api("state");
+          const d = Number(st.settings && st.settings.trashKeepDays);
+          if (Number.isFinite(d) && d >= 0) days = d;
+        } catch { /* 取不到就用默认 30 天，不阻断 */ }
+        try {
+          const out = await apiPost("trash/purge", { olderThanDays: days });
+          toast(out.purged > 0 ? `已清理 ${out.purged} 条过期条目（>${days} 天）` : `没有超过 ${days} 天的条目`);
+          reload();
+        } catch (err) { toast("清理失败：" + err.message, "err"); }
+      },
+    });
+  });
+  page.querySelector("[data-purgeAll]").addEventListener("click", () => {
+    confirmDialog({
+      title: "清空回收站",
+      body: `将永久删除全部 ${entries.length} 个条目里的所有文件副本，无法再恢复。\n确定继续吗？`,
+      dangerText: "全部清空",
+      onConfirm: async () => {
+        try {
+          const out = await apiPost("trash/purge", {});
+          toast(`已清空 ${out.purged} 条`);
+          reload();
+        } catch (err) { toast("清空失败：" + err.message, "err"); }
+      },
+    });
+  });
+}
+
+// ============ 页面：快照（批前快照：列表 + 整快照恢复 / 单文件恢复） ============
+// 端点：GET snapshots/list / POST snapshots/restore {id,name?}
+// 与回收站页同风格同约定；恢复 = 回拷快照副本并对账索引（不是删除当前文件）。
+async function renderSnapshotsPage() {
+  const seq = ++pageRenderSeq;
+  pageTitle.textContent = "快照";
+  pageSub.textContent = "覆写/删除前自动留档的旧文（默认保留最新 30 份），可整份或单文件恢复";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let listData;
+  try {
+    listData = await api("snapshots/list");
+  } catch (err) {
+    if (seq !== pageRenderSeq) return;
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  if (seq !== pageRenderSeq) return;
+  const reload = () => { renderSnapshotsPage(); refreshCounts(); };
+  const snapshots = listData.snapshots ?? [];
+  if (snapshots.length === 0) {
+    page.innerHTML = '<div class="empty">还没有快照——写入路径覆写或删除已有条目时会自动留一份旧文。</div>';
+    return;
+  }
+  page.innerHTML = snapshots.map((s, i) => `
+    <div class="card"><h3><span class="badge">${s.files.length} 个文件</span> <code class="k">${esc(s.id)}</code>
+      <span class="ops">
+        <button class="btn sm" data-restore="${i}">恢复整份快照</button>
+      </span></h3>
+      <div class="meta">留档于 ${esc(L.safetyEntryTimeOf(s))} · 来源会话 ${esc(L.safetyOriginText(s))}</div>
+      <div class="tableScroll"><table class="preview">
+        <tr><th style="width:32%">文件</th><th style="width:22%">位置</th><th style="width:88px">当时动作</th><th style="width:96px">sha1</th><th style="width:96px"></th></tr>
+        ${s.files.map((f, j) => `<tr><td>${esc(f.name)}</td><td class="meta">${esc(L.safetyLocationText(f))}</td><td class="meta">${esc(L.safetyActionText(f.action))}</td><td class="meta">${esc(f.sha1 || "—")}</td><td><button class="btn sm" data-one="${i}:${j}">恢复此文件</button></td></tr>`).join("")}
+      </table></div></div>`).join("")
+    + '<div class="meta">快照只增不减：超过保留份数（服务端 settings.surgicalKeep，默认 30 份）的最旧快照由写入路径自动清理；本页不提供手动删除入口。</div>';
+  for (const btn of Array.from(page.querySelectorAll("[data-restore]"))) {
+    btn.addEventListener("click", () => {
+      const s = snapshots[Number(btn.getAttribute("data-restore"))];
+      confirmDialog({
+        title: "恢复整份快照",
+        body: `将把快照里的 ${s.files.length} 个文件回拷到原位（同名文件会被覆盖），并同步对账 MEMORY.md 索引。\n当前更新的内容会被旧文覆盖，确定继续吗？`,
+        dangerText: "恢复整份",
+        onConfirm: async () => {
+          try {
+            const out = await apiPost("snapshots/restore", { id: s.id });
+            toast(`已恢复 ${out.restored.length} 个文件${out.indexReconciled ? "（索引已对账）" : ""}`);
+            reload();
+          } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        },
+      });
+    });
+  }
+  for (const btn of Array.from(page.querySelectorAll("[data-one]"))) {
+    btn.addEventListener("click", () => {
+      const [i, j] = btn.getAttribute("data-one").split(":").map(Number);
+      const s = snapshots[i];
+      const f = s.files[j];
+      confirmDialog({
+        title: "恢复单个文件",
+        body: `将把「${esc(f.name)}」回拷到 ${esc(L.safetyLocationText(f))}（同名文件会被覆盖；被覆盖的当前版本会自动留一份快照可找回）。\n确定继续吗？`,
+        dangerText: "恢复",
+        onConfirm: async () => {
+          try {
+            const out = await apiPost("snapshots/restore", { id: s.id, name: f.name });
+            if (out.restored.length === 0) { toast("没有文件被恢复（副本可能已缺失）", "err"); return; }
+            toast(`已恢复 ${out.restored[0]}${out.indexReconciled ? "（索引已对账）" : ""}`);
+            reload();
+          } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        },
+      });
+    });
+  }
+}
 // ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
 async function renderSettingsPage() {
   const seq = ++pageRenderSeq;
@@ -1206,6 +1414,8 @@ const ROUTES = {
   "persona": { title: "人设" },
   "addressing": { title: "称呼" },
   "projects": { title: "项目记忆" },
+  "trash": { title: "回收站" },
+  "snapshots": { title: "快照" },
   "settings": { title: "设置" },
 };
 function currentRoute() {
@@ -1222,6 +1432,8 @@ function render() {
   else if (route === "persona") renderPersonaPage();
   else if (route === "addressing") renderAddressingPage();
   else if (route === "projects") renderProjectsPage();
+  else if (route === "trash") renderTrashPage();
+  else if (route === "snapshots") renderSnapshotsPage();
   else if (route === "settings") renderSettingsPage();
 }
 document.querySelectorAll("aside a").forEach((a) => {
@@ -1235,8 +1447,11 @@ function refreshCounts() {
     const streak = L.extractionStreakOf(data.extractionFailures); // 设置项红徽标顺路更新
     document.querySelectorAll("[data-cnt]").forEach((el) => {
       const key = el.getAttribute("data-cnt");
+      // 写入安全面计数：/state.safety 缺失（旧版宿主）→ 0（面板 tolerant 消费）
       const n = key === "extraction-streak" ? streak
         : key === "projects" ? (data.counts ? data.counts.projects : 0)
+        : key === "trash" ? L.safetyCountOf(data.safety, "trashPending")
+        : key === "snapshots" ? L.safetyCountOf(data.safety, "surgicalBackups")
         : (byCat[key] || 0);
       el.textContent = n > 0 ? String(n) : "";
     });

@@ -8,7 +8,7 @@
 
 ### 新增
 - **写入可逆性：批前快照 + 回收站（项目侧）**：破坏性写入（覆写 / 删除）前自动留档旧文——覆写进 `backups/surgical/<batchId>/`，删除进 `trash/<entryId>/`（延迟删除，不再硬删）。面板新增「快照」与「回收站」两页：可按条 / 按单个文件恢复，回收站支持清除单条、按保留天数清理与全清。
-- **覆盖前自动快照（全局侧）**：改写全局记忆既有条目前，先把旧文留档到 `backups/surgical/`；快照失败则跳过这次覆盖、原文保持不动——宁可漏一次更新，不可丢旧文。
+- **覆盖前自动快照（全局侧）**：改写全局记忆既有条目前，先把旧文留档到 `backups/surgical/`；快照失败则跳过这次覆盖、原文保持不动——宁可漏一次更新，不可丢旧文。**面板手动改条目（`PUT /entry`）同样先留档**：保存全程持有提取批锁（与自动提取互斥，被占时 409），留档失败或留档为空直接拒绝保存（503、旧文一字未动），成功响应带 `preSaveSnapshotId`，可从「快照」页找回被顶掉的旧文。
 - **恢复前留档**：从快照 / 回收站 / 整份备份恢复前，先对恢复目标处已存在的冲突文件留快照。整份备份恢复（`restoreBackup`）走「旧档改名 retired-* → 换入」流程，换入失败会自动把旧档改名回原位（**自动回滚**）；而快照 / 回收站恢复（`restoreSurgicalSnapshot` / `restoreTrash`）**不自动回滚**——按条循环写文件，中途失败就地停下，但恢复前的留底快照仍在盘上，API 失败响应带 `preRestoreSnapshotId` 与提示，供**手工**找回被覆盖的旧版。
 - **恢复端点加锁**：三类恢复端点（快照 / 回收站 / 整份备份）与提取落盘共用 `<storageRoot>/extract.lock` 批锁，持锁失败即拒绝，杜绝"边恢复边写入"互相踩坏数据。
 - **写后校验**：落盘后回读校验 frontmatter 四字段（`name` / `description` / `metadata.type` / `node_type`）可解析、`name` 与文件名一致、正文非空且未超长；校验失败则**回滚旧文**，新档移入快照 `failed/` 留标本（纯新增无旧文可回滚时进回收站），并计 `verifyFailed`。
@@ -17,7 +17,7 @@
 - **盲写降级为追加**：无法安全覆写时保留旧正文，新内容以分隔线追加（不再整段覆盖），计 `blindWriteDowngrades`。
 - **提取批锁**：提取落盘抢批锁（`<storageRoot>/extract.lock`，原子创建 + stale 超时接管），锁被占时破坏性 op 全部阻断并计 `lockConflicts`（纯新增 op 不受影响）。
 - **安全面三项设置**：`surgicalKeep`（快照保留份数，默认 30）、`trashKeepDays`（回收站保留天数，默认 30）、`hardfactPolicy`（`warn` / `block`，默认 `warn`）；缺键走默认，旧 `settings.json` 无需迁移。
-- **安全面可观测**：`/state` 新增 `safety` 字段共九个——盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内六项计数（`verifyFailed` / `hardfactDrops` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行安全面摘要。
+- **安全面可观测**：`/state` 新增 `safety` 字段共十个——盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行安全面摘要。
 - **备份补 project**：批量备份纳入项目记忆（此前只备份 `global/` + `settings.json`）。
 
 ### 变更
@@ -25,11 +25,13 @@
 - **硬事实比对收窄误报**：比对前剥掉 frontmatter；索引行与日期 / 倒计时注记（含英文「N days left / ago」形态）整行剔除——只为"数字、版本号、十六进制标识、字节尺寸被静默改掉"报警，例行的时间滚动注记不再误报。
 - `FORMAT.md` 新增第七节，声明 `backups/`（含 `backups/surgical/`）与 `trash/` 是**包外非真源目录**、可安全删除；`MEMORY.md` 与 `*.md` 才是记忆真源。
 - README 中英双版补「写入可逆性」一节；`ROADMAP.md` 把已实现项从「未来方向」移出。
+- **hardfact 拦截计数与写后校验失败分离**：`hardfactPolicy: "block"` 触发的回滚改计 `hardfactBlocks`，不再混入 `verifyFailed`（两种性质不同的失败分开观测；`/state.safety` 由九字段增至十字段）。
+- **`backups/list` 响应移除常量字段 `kind`**：该列表只含全量备份，`kind` 恒为 `"full"` 且无任何消费方——按「删除优于兼容」移除（API 使用方注意：如依赖此字段请改用列表语义本身）。
 
 ### 修复
 - **恢复备份失败不再连坐旧数据**：整份备份恢复在换入失败时先把旧档从 retired 目录改名回原位；若回滚也未成，保留 retired 目录不删（旧记忆可手工拷回）——不再"恢复失败连旧数据一起清掉"。
 - **回收站清理参数校验**：`POST /trash/purge` 收到非法 `olderThanDays`（负数 / 非有限数）或非法 `id` 时显式返回 400，不再静默落入"全清"分支误删全部回收站条目。
-- **settings 分字段保真合并**：`PUT /settings` 未提供的字段保持原值（安全面三项同此）。注意：嵌入卡重存时若未重新输入密钥，会清空已存密钥（面板不回显密钥）——改其他嵌入字段前请先记下密钥。
+- **settings 分字段保真合并**：`PUT /settings` 未提供的字段保持原值（安全面三项同此）。**嵌入密钥三态语义**：保存嵌入配置时 `apiKey` 键缺省 = 保留**生效**密钥（settings 已存的优先；密钥来自 entry config 而面板尚无覆盖时，把 config 密钥接管进 settings，不落空串遮蔽 YAML 里的密钥）；`null` / 空串 = 显式清空；非空串 = 新值。面板嵌入卡新增「清除已存 Key」按钮（只清面板保存的那份、只在其存在时出现；载荷仅 `apiKey:null`，不被其余字段的校验连带拒绝）。
 
 ## [0.3.1] - 2026-10-13
 

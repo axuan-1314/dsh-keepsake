@@ -880,7 +880,7 @@ function buildPipeHealthCard(data) {
     }
   }
   // 注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
-  // 写入安全面一行（六字段全景：快照/回收站待清/校验失败/硬事实丢弃/盲写降级/锁冲突）
+  // 写入安全面一行（八段摘要：回收站待清/校验失败/硬事实拦截/硬事实丢失/盲写降级/sha1 不符拒写/批锁冲突/快照失败）
   //   /state.safety 缺失（旧版宿主）→ safetySummaryText 返回 null，不渲染（tolerant 消费）。
   const safetyLine = L.safetySummaryText(data.safety);
   if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
@@ -1273,6 +1273,7 @@ async function renderSettingsPage() {
         <span class="meta">开启后每轮按当前问题做嵌入检索，命中条目以 &lt;memory-recall&gt; 块注入</span></div>
       <div class="meta" id="embStatus"></div>
       <div class="kv"><b>操作</b><span class="spacer"></span>
+        ${L.embeddingClearActionVisible(data) ? '<button class="btn" id="embClearKey">清除已存 Key</button>' : ""}
         <button class="btn" id="embTest">测试连接</button>
         <button class="btn primary" id="embSave">保存</button></div>
     </div>
@@ -1351,6 +1352,25 @@ async function renderSettingsPage() {
         else toast("连接失败：" + ((out && out.error) || "未知错误"), "err");
       } catch (err) { toast("测试失败：" + err.message, "err"); }
       finally { btn.disabled = false; btn.textContent = "测试连接"; }
+    });
+    // 清除已存 Key：仅当面板自己保存的那份密钥在场（settings.embedding.apiKeySet）时按钮出现。
+    // 载荷只提交显式 apiKey:null —— 不复用表单现值：嵌入配置残缺（如开关开而端点空）时
+    // 清除动作也必须总能成功，不被其余字段的保存校验连带拒绝。
+    const clearBtn = q("embClearKey");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      confirmDialog({
+        title: "清除已存 API Key",
+        body: "将删除面板保存的嵌入 API Key（其余端点/模型配置保留）。\n若端点需要密钥，清除后嵌入检索会失败。确定继续吗？",
+        dangerText: "清除 Key",
+        onConfirm: async () => {
+          try {
+            await apiPut("settings", { embedding: { apiKey: null } });
+            q("embApiKey").value = "";
+            toast("已清除已存 API Key。");
+            renderSettingsPage(); // 刷新状态行：apiKeySet 变 false 后按钮随之消失
+          } catch (err) { toast("清除失败：" + err.message, "err"); }
+        },
+      });
     });
   }
   page.querySelector("[data-export]").addEventListener("click", async () => {

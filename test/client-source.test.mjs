@@ -255,6 +255,19 @@ test("结构钉：设置页嵌入服务卡（面板配置嵌入端点的入口�
   assert.match(panelSrc, /validateEmbeddingDraft/, "面板侧校验接入");
 });
 
+test("结构钉：嵌入卡「清除已存 Key」入口（可见性走纯函数 + 载荷 apiKey:null + 保留语义）", () => {
+  // 可见性：按钮渲染条件必须走共享纯函数（与 /state.embeddingEffective.apiKeySet 绑定，未设不渲染）
+  assert.match(panelSrc, /L\.embeddingClearActionVisible\(data\)/, "清除按钮可见性必须走 panel-logic 纯函数");
+  assert.match(panelSrc, /id="embClearKey"/, "清除按钮锚点在场");
+  assert.match(panelSrc, /清除已存 Key/, "清除按钮文案在位");
+  // 载荷契约：显式 apiKey:null = 服务端清空语义（区别于缺省键 = 保留）；确认后提交
+  assert.match(panelSrc, /apiKey: null/, "清除载荷必须显式 apiKey:null（服务端清空语义）");
+  // 保留语义：新 key 仅在输入非空时提交（apiKey 键缺省 = 服务端保留已存密钥）
+  assert.match(panelSrc, /if \(q\("embApiKey"\)\.value\.length > 0\) out\.apiKey/, "非空才提交新 key（缺省=保留）");
+  // 清除后刷新状态行（apiKeySet 变 false → 按钮随之消失）
+  assert.match(panelSrc, /已清除已存 API Key/, "清除成功反馈文案在位");
+});
+
 test("结构钉：细节——tableScroll 滚动容器双处在场 + 长期记忆空态两态 + 三态灯点色", () => {
   assert.match(panelSrc, /\.tableScroll \{ overflow: auto/, "tableScroll 样式在位");
   const wrapped = panelSrc.match(/<div class="tableScroll"><table class="preview">/g) ?? [];

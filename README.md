@@ -99,6 +99,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **默认关**：不配置端点就不产生任何外部调用（记忆文本不出本机）；指向本地端点（如 `http://127.0.0.1:1234/v1/embeddings`）则记忆文本也不出本机。
 - **面板里配置**：设置页「嵌入服务」卡直接填端点 / 模型 / API Key，带「测试连接」按钮；保存后**下一轮对话即生效，不必改 `cordis.patch.yml`、不必重启**（面板配置存于 `~/.dsh/memory/settings.json`，优先于 entry config）。
 - **测试连接不转发已存密钥**：已保存的 API Key 只发往它自己配置的那个端点；若「测试连接」的请求指向别的地址，不会把已存密钥带过去（只有请求体里当场填的 Key 才随该地址发送）。
+- **密钥不会被重存顶掉**：保存嵌入配置时，Key 输入框留空 = **保留已存密钥**（只改端点/模型等其余字段时无需重输）；「清除已存 Key」按钮（仅已设 Key 时出现）= 显式清空；输入新 Key = 覆盖。
 - **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（EmbeddingGemma、bge-m3 等）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
 
@@ -165,11 +166,11 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **批前快照（项目侧）**：一批里要覆写或删除的旧文，落盘前先留档到 `backups/surgical/<batchId>/`（按 `surgicalKeep` 保留最新 30 份）。面板「快照」页可**整份恢复**或**只恢复某个文件**，恢复后自动对账 `MEMORY.md` 索引。
 - **回收站（延迟删除）**：**自动提取**产生的删除不再硬删，而是先进 `trash/<entryId>/` 落副本、确认副本落稳后再删原件，按 `trashKeepDays` 默认保留 30 天。面板「回收站」页可单条恢复、单文件恢复，也可清除单条 / 按保留天数清理 / 全清（清空＝真正删除）。此路只覆盖自动提取：**面板手动「删除条目」（`DELETE /entry`）**、**分类重置（`clearCategory`）** 与 **近期动态滚动清理（`pruneRecentActivity`）** 仍是直接删除、不进回收站（面板删除确认框已标注「不可撤销」；分类重置前另有整类自动备份）。
 - **写后读校验（项目侧 + 全局侧）**：落盘后回读校验 frontmatter 四字段与正文；校验失败**回滚旧文**（纯新增无旧文可回滚时移除脏档、进回收站），项目侧并留标本于快照 `failed/`。全局侧写路径同样回读校验。
-- **硬事实守护（项目侧）**：覆写把既有硬事实（数字、版本号、十六进制标识、字节尺寸）弄丢时留痕告警并计 `hardfactDrops`；`hardfactPolicy` 设为 `block` 则该 op 按校验失败回滚（默认 `warn`：只告警不阻断）。判据局限如实说明：检出口径是「同类型硬事实在新文里一个都不剩」或「被极近的值顶掉（疑似誊写错误，如 269 记成 267）」——frontmatter、索引行与日期 / 倒计时等动态注记不参与比对，而**正文里同类数字很多时，整行删除也可能检不出**；warn / block 的策略语义不变。
+- **硬事实守护（项目侧）**：覆写把既有硬事实（数字、版本号、十六进制标识、字节尺寸）弄丢时留痕告警并计 `hardfactDrops`；`hardfactPolicy` 设为 `block` 则回滚该 op 并计 `hardfactBlocks`（与写后校验失败 `verifyFailed` 分列，不混计；默认 `warn`：只告警不阻断）。判据局限如实说明：检出口径是「同类型硬事实在新文里一个都不剩」或「被极近的值顶掉（疑似誊写错误，如 269 记成 267）」——frontmatter、索引行与日期 / 倒计时等动态注记不参与比对，而**正文里同类数字很多时，整行删除也可能检不出**；warn / block 的策略语义不变。
 - **写路径三道闸（项目侧）**：覆写（整段替换）只在带对期望 sha1 时才发生——覆盖 op 的 `sha1` 字段与当前文件不符即拒绝该 op（并计计数器 `expectedSha1Mismatches`），防基于过期内容误覆写；不带 sha1 的「盲写」不会覆盖旧正文，而是**降级为追加**（保留旧正文，新内容接在分隔线后）而不是整段覆盖；提取落盘抢批锁（`<storageRoot>/extract.lock`），锁冲突时阻断破坏性操作。
-- **覆盖前自动快照（全局侧）**：自动提取改写全局记忆既有条目前，先把旧文留档到 `backups/surgical/`；快照失败则跳过这次覆盖、原文保持不动（宁可漏一次更新，不可丢旧文）。面板手动保存不走此路。
+- **覆盖前自动快照（全局侧）**：自动提取改写全局记忆既有条目前，先把旧文留档到 `backups/surgical/`；快照失败则跳过这次覆盖、原文保持不动（宁可漏一次更新，不可丢旧文）。**面板手动保存（改条目）同样先留档**：留档失败直接拒绝保存（503，旧文一字未动），成功响应带 `preSaveSnapshotId`，可在「快照」页找回被顶掉的旧文。
 - **恢复前也留档**：从快照 / 回收站 / 整份备份恢复前，先对恢复目标处已存在的冲突文件留快照。**整份备份恢复**（`restoreBackup`）走「旧档改名 `retired-*` → 换入」流程，换入失败会把旧档改名回原位（**自动回滚**；回滚也失败则保留 `retired-*` 目录供手工恢复）。而**快照 / 回收站恢复**（`restoreSurgicalSnapshot` / `restoreTrash`）**不自动回滚**——它们按条循环写文件，中途失败就地停下、不改回原状；但恢复前的留底快照仍在盘上，API 的失败响应会带上 `preRestoreSnapshotId` 与提示，指向它供你**手工**找回被覆盖的旧版。恢复端点与提取落盘共用同一把批锁，不会边恢复边写入。
-- **健康卡可见**：设置页「自动提取管道」健康卡多一行安全面摘要（回收站待清 / 写后校验失败 / 硬事实告警 / 盲写降级追加 / sha1 不符覆写 / 批锁冲突 / 快照失败——非零才显示）；侧栏也会显示待处理的回收站与快照条数。其数据源 `/state.safety` 共九个字段：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`）每次请求实时现算，进程内六项计数（`verifyFailed` / `hardfactDrops` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`）重启清零。
+- **健康卡可见**：设置页「自动提取管道」健康卡多一行安全面摘要（回收站待清 / 写后校验失败 / 硬事实拦截 / 硬事实丢失告警 / 盲写降级追加 / sha1 不符拒写 / 批锁冲突 / 快照失败——非零才显示）；侧栏也会显示待处理的回收站与快照条数。其数据源 `/state.safety` 共十个字段：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`）每次请求实时现算，进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`）重启清零。
 
 > 真源只有 `*.md` 与 `MEMORY.md`：`backups/` 与 `trash/` 是**可安全删除的副本目录**（删掉不损失当前记忆，只失去回滚能力）。见 [FORMAT.md](FORMAT.md) 第七节。
 
@@ -179,7 +180,9 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 |---|---|---|
 | `surgicalKeep` | 30 | 批前快照保留份数；超过的最旧快照由写入路径自动清理 |
 | `trashKeepDays` | 30 | 回收站条目保留天数；过期的由写入路径与面板「清理过期」清掉 |
-| `hardfactPolicy` | `warn` | 硬事实丢失策略：`warn`=只告警落日志；`block`=按校验失败回滚 |
+| `hardfactPolicy` | `warn` | 硬事实丢失策略：`warn`=只告警落日志；`block`=回滚并计 `hardfactBlocks` |
+
+手改取值规则（面板走 `PUT /settings` 同语义）：未提及的键保留现值；`surgicalKeep` / `trashKeepDays` 显式给了非法值（非正整数 / 负数 / 非数值）时按默认值生效；`hardfactPolicy` 给白名单外的值时保留现值（手工写坏文件被读到时回 `warn`）。
 
 
 ## 快速开始
@@ -346,7 +349,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
 - **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（嵌入召回配置）；面板设置页有「管道健康卡」承载以上全部。
 - **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
-- **写入安全面（v0.4.0）**：`/state` 的 `safety` 字段共九个：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内六项计数（`verifyFailed` / `hardfactDrops` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行摘要，「快照」「回收站」两页可查可恢复。
+- **写入安全面（v0.4.0）**：`/state` 的 `safety` 字段共十个：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行摘要，「快照」「回收站」两页可查可恢复。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-keepsake/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
@@ -365,7 +368,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 开发与测试
 
 ```bash
-npm test    # node --test，482 个测试（含防漂移检查 test/client-source.test.mjs）
+npm test    # node --test，494 个测试（含防漂移检查 test/client-source.test.mjs）
 npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均可跑）
 ```
 

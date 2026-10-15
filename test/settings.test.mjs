@@ -288,6 +288,83 @@ test("embedding：面板写入 round-trip + 校验（开启需端点/模型、UR
   }
 });
 
+test("embedding.apiKey 三态：键缺省=保留已存密钥（面板重存不顶掉）", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "secret" } });
+    // 面板重存嵌入配置（不带 apiKey 键）——已存密钥必须保留（此前会顶成 ""）
+    const again = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h2/v1/embeddings", model: "m2" } });
+    assert.equal(again.embedding.apiKey, "secret");
+    assert.equal(again.embedding.baseUrl, "http://h2/v1/embeddings"); // 其余字段照常覆盖
+    assert.equal(readSettings(root).embedding.apiKey, "secret"); // 盘上也在
+    // 显式 undefined（键存在但值 undefined）= 键缺省语义 → 保留
+    const undef = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h2/v1/embeddings", model: "m2", apiKey: undefined } });
+    assert.equal(undef.embedding.apiKey, "secret");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("embedding.apiKey 键缺省 + 密钥来自 entry config（fallbackApiKey 兜底）→ 接管而非遮蔽", () => {
+  const root = freshRoot();
+  try {
+    // settings 尚无 embedding 覆盖；api 层把生效的 config 密钥作兜底传入。
+    // 不接管的话，新写入的 settings.embedding.apiKey:"" 会遮蔽 YAML 里配置的密钥。
+    const took = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m" } }, void 0, { fallbackApiKey: "cfg-key" });
+    assert.equal(took.embedding.apiKey, "cfg-key", "config 密钥被接管进 settings");
+    // 已显式清空（""）后，兜底不得复活它（?? 不跳过空串，显式清除语义优先）
+    writeSettings(root, { embedding: { apiKey: null } });
+    const keptClear = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m" } }, void 0, { fallbackApiKey: "cfg-key" });
+    assert.equal(keptClear.embedding.apiKey, "", "显式清空过的密钥不被 fallback 复活");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("embedding.apiKey 三态：null / \"\" 显式清空 → 落空串", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "secret" } });
+    const clearedNull = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: null } });
+    assert.equal(clearedNull.embedding.apiKey, "");
+    assert.equal(readSettings(root).embedding.apiKey, "");
+    // 再存一轮非空值，然后用空串清空
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "k2" } });
+    assert.equal(readSettings(root).embedding.apiKey, "k2");
+    const clearedEmpty = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "" } });
+    assert.equal(clearedEmpty.embedding.apiKey, "");
+    assert.equal(readSettings(root).embedding.apiKey, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("embedding.apiKey 三态：非空字符串=新值覆盖", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "old" } });
+    const next = writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "new" } });
+    assert.equal(next.embedding.apiKey, "new");
+    assert.equal(readSettings(root).embedding.apiKey, "new");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("embedding：enabled 校验不因 apiKey 三态回归（开启仍需端点/模型；URL 限 http(s)）", () => {
+  const root = freshRoot();
+  try {
+    // 已存一份完整配置
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings", model: "m", apiKey: "k" } });
+    // 重存时缺端点/模型仍必须显式抛（不被 apiKey 保留逻辑吞掉）
+    assert.throws(() => writeSettings(root, { embedding: { enabled: true, model: "m" } }), /端点/);
+    assert.throws(() => writeSettings(root, { embedding: { enabled: true, baseUrl: "http://h/v1/embeddings" } }), /模型/);
+    assert.throws(() => writeSettings(root, { embedding: { enabled: false, baseUrl: "ftp://h/x", apiKey: "k" } }), /http/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("effectiveEmbedding：面板设置优先于 entry config（含显式关闭覆盖开启）", () => {
   const cfg = { recallEnabled: false, embeddingBaseUrl: "", embeddingModel: "", embeddingProvider: "", embeddingApiKey: "", recallTopK: 5, recallMinScore: 0.35, recallTimeoutMs: 8000 };
   const fromCfg = effectiveEmbedding(cfg, {});

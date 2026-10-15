@@ -1,12 +1,13 @@
 // api：REST 路由匹配与校验、loopback 守卫负路径、导入 dryRun 解析。
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import { API_PREFIX, isLoopbackRequest, makeApiRoutes, planImport } from "../lib/api.js";
-import { createEntry, listEntries, readPersona, listBackups } from "../lib/global-store.js";
+import { categoryDir, createEntry, listEntries, readPersona, listBackups } from "../lib/global-store.js";
+import { listSurgicalSnapshots, surgicalRoot, acquireExtractLock } from "../lib/safety.js";
 
 const silentLog = { info() {}, warn() {}, error() {} };
 
@@ -261,6 +262,93 @@ test("entry：PUT 改条目（含跨分类移动）/ DELETE 删条目", async ()
     assert.equal(del.json.existed, true);
     const ghost = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md", content: "x" } });
     assert.equal(ghost.status, 404);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- PUT entry 手动保存前留档（v0.4.0 安全面）----
+
+test("PUT entry 覆盖既有：留手术快照（内容=旧文）+ 响应带 preSaveSnapshotId + 可恢复旧文", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "E", name: "e.md", content: "旧正文" });
+    const dir = categoryDir(root, "long-term");
+    const before = readFileSync(join(dir, "e.md"), "utf8"); // 含 frontmatter 的完整原文
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "e.md", content: "新正文" } });
+    assert.equal(put.status, 200);
+    assert.equal(typeof put.json.preSaveSnapshotId, "string");
+    // 快照在盘上，且文件内容=旧文（逐字节）
+    const snaps = listSurgicalSnapshots(root);
+    assert.equal(snaps.length, 1);
+    assert.equal(snaps[0].id, put.json.preSaveSnapshotId);
+    assert.equal(snaps[0].originSessionId, "panel");
+    const copy = join(surgicalRoot(root), put.json.preSaveSnapshotId, "files", "global", "long-term", "e.md");
+    assert.equal(readFileSync(copy, "utf8"), before);
+    // 条目已是新文
+    assert.match(readFileSync(join(dir, "e.md"), "utf8"), /新正文/);
+    // 从该快照恢复 → 拿回旧文
+    const restored = await callApi(root, { method: "POST", path: `${API_PREFIX}snapshots/restore`, body: { id: put.json.preSaveSnapshotId } });
+    assert.equal(restored.status, 200);
+    assert.deepEqual(restored.json.restored, ["e.md"]);
+    assert.equal(readFileSync(join(dir, "e.md"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT entry 留档失败 fail-closed：503 E_SNAPSHOT_PRESAVE 且旧文逐字节不变", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "E", name: "e.md", content: "旧正文" });
+    const dir = categoryDir(root, "long-term");
+    const before = readFileSync(join(dir, "e.md"), "utf8");
+    // 破坏快照根：把 backups/surgical 占成一个文件 → createSurgicalSnapshot 的 mkdir 必炸
+    mkdirSync(join(root, "backups"), { recursive: true });
+    writeFileSync(join(root, "backups", "surgical"), "占位", "utf8");
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "e.md", content: "新正文" } });
+    assert.equal(put.status, 503);
+    assert.equal(put.json.code, "E_SNAPSHOT_PRESAVE");
+    // 旧文一字未动（逐字节）
+    assert.equal(readFileSync(join(dir, "e.md"), "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT entry 纯新增（条目不存在）→ 404 且不建任何快照", async () => {
+  const root = freshRoot();
+  try {
+    const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md", content: "x" } });
+    assert.equal(put.status, 404);
+    assert.equal(put.json.preSaveSnapshotId, void 0);
+    assert.equal(listSurgicalSnapshots(root).length, 0);
+    assert.equal(existsSync(join(root, "backups", "surgical")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT entry 与提取批互斥：锁被占 → 409 LOCKED 不建快照旧文不动；释放后保存成功", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "E", name: "e.md", content: "旧正文" });
+    const dir = categoryDir(root, "long-term");
+    const before = readFileSync(join(dir, "e.md"), "utf8");
+    const lock = acquireExtractLock(root);
+    assert.equal(lock.acquired, true, "前置：测试先占住批锁");
+    try {
+      const put = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "e.md", content: "新正文" } });
+      assert.equal(put.status, 409);
+      assert.equal(put.json.code, "LOCKED");
+      assert.equal(listSurgicalSnapshots(root).length, 0, "被拒的保存不得建快照（不白耗保留配额）");
+      assert.equal(readFileSync(join(dir, "e.md"), "utf8"), before, "旧文一字未动");
+    } finally {
+      lock.release();
+    }
+    const retry = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "e.md", content: "新正文" } });
+    assert.equal(retry.status, 200);
+    assert.match(readFileSync(join(dir, "e.md"), "utf8"), /新正文/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

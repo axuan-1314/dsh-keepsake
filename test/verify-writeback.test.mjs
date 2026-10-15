@@ -120,7 +120,7 @@ test("带正确 sha1 的合法覆盖 → 落盘 + 快照留旧文（可回滚）
   }
 });
 
-test("hardfactPolicy=block 时硬事实丢失按校验失败回滚", () => {
+test("hardfactPolicy=block 时硬事实丢失按校验失败回滚（计 hardfactBlocks，不混入 verifyFailed）", () => {
   const root = freshRoot();
   try {
     const memRoot = join(root, "memory");
@@ -131,7 +131,9 @@ test("hardfactPolicy=block 时硬事实丢失按校验失败回滚", () => {
     // block：检出近似替换（269→267）→ 回滚，不落盘
     assert.equal(result.writes, 0);
     assert.equal(result.hardfactDrops, 1);
-    assert.equal(result.verifyFailed, 1);
+    // 计数分离：block 计 hardfactBlocks，verifyFailed 保持 0（性质不同的失败不混计）
+    assert.equal(result.hardfactBlocks, 1);
+    assert.equal(result.verifyFailed, 0);
     assert.equal(readFileSync(join(memRoot, "count.md"), "utf8"), original);
     // 标本留档
     assert.equal(existsSync(join(surgicalRoot(root), result.snapshotId, "failed", "memory", "count.md")), true);
@@ -150,6 +152,7 @@ test("hardfactPolicy=warn（默认）时硬事实丢失只告警不回滚", () =
     ], { storageRoot: root, originSessionId: "s-1", log: silent });
     assert.equal(result.writes, 1);
     assert.equal(result.hardfactDrops, 1); // 有记录
+    assert.equal(result.hardfactBlocks, 0); // warn 不拦截
     assert.equal(result.verifyFailed, 0); // 但不回滚
     assert.match(readFileSync(join(memRoot, "count2.md"), "utf8"), /267/);
   } finally {

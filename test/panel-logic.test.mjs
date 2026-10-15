@@ -11,6 +11,7 @@ import {
   decideLadderTier,
   detectImportFormat,
   diagnosticTextOf,
+  embeddingClearActionVisible,
   extractionNoticeText,
   extractionRangeText,
   extractionStreakOf,
@@ -28,6 +29,7 @@ import {
   recentExpireDays,
   relativeTimeOf,
   safetyLocationText,
+  safetySummaryText,
   serializeEntries,
   utf8Length,
   validateEmbeddingDraft,
@@ -432,6 +434,22 @@ test("validateEmbeddingDraft：开启需端点+模型、URL 限 http(s)", () => 
   // 合法 http(s)（本地/远程均放行）
   assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "nomic-embed-text" }).ok, true);
   assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-small" }).ok, true);
+  // apiKey 保留/清空两形态均放行：缺省（保留已存）与 null（显式清空）都不参与端点/模型校验
+  assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "http://x", model: "m", apiKey: null }).ok, true, "apiKey:null 放行（显式清空）");
+  assert.equal(validateEmbeddingDraft({ enabled: false, baseUrl: "", model: "", apiKey: null }).ok, true, "仅清空 key 的关闭态也放行");
+  assert.equal(validateEmbeddingDraft({ enabled: true, baseUrl: "http://x", model: "m" }).ok, true, "apiKey 键缺省放行（服务端保留）");
+});
+
+test("embeddingClearActionVisible：只认 settings 那份密钥；entry config 来源不出现清除入口", () => {
+  assert.equal(embeddingClearActionVisible({ settings: { embedding: { apiKeySet: true } } }), true);
+  assert.equal(embeddingClearActionVisible({ settings: { embedding: { apiKeySet: false } } }), false, "未设 key 不渲染");
+  assert.equal(embeddingClearActionVisible({ settings: {} }), false, "settings 无 embedding = 密钥不在面板手里");
+  // 密钥来自 entry config（settings.json 无 embedding）时清不掉也不该清——改 YAML 才是正主
+  assert.equal(embeddingClearActionVisible({ embeddingEffective: { apiKeySet: true } }), false, "config 来源的密钥不出现清除入口");
+  assert.equal(embeddingClearActionVisible({}), false, "旧宿主无 settings");
+  assert.equal(embeddingClearActionVisible(null), false);
+  assert.equal(embeddingClearActionVisible(void 0), false, "容错：非对象输入不抛");
+  assert.equal(embeddingClearActionVisible({ settings: { embedding: { apiKeySet: "true" } } }), false, "严格 === true，字符串不算");
 });
 
 // ---- 写入安全面展示（回收站/快照页位置列 + 恢复确认弹窗共用） ----
@@ -458,4 +476,22 @@ test("safetyLocationText：rootKey 三种真实形态如实显示 + 畸形输入
   assert.equal(safetyLocationText({ rootKey: {} }), "—");
   assert.equal(safetyLocationText({ rootKey: [] }), "—");
   assert.equal(safetyLocationText({ rootKey: true }), "—");
+});
+
+test("safetySummaryText：hardfactBlocks>0 显示「硬事实拦截 N」（与 verifyFailed 分列）；=0 不显示；全零仍 null", () => {
+  // hardfactBlocks>0：与相邻段同格式（段名 + 空格 + 计数），且与 verifyFailed 各自成段
+  const s = safetySummaryText({ hardfactBlocks: 2, verifyFailed: 1 });
+  assert.match(s, /硬事实拦截 2/);
+  assert.match(s, /写后校验失败 1/);
+  assert.equal(s, "写入安全面：写后校验失败 1 · 硬事实拦截 2");
+  // hardfactBlocks=0：不渲染段
+  assert.doesNotMatch(safetySummaryText({ hardfactBlocks: 0, trashPending: 1 }) ?? "", /硬事实拦截/);
+  // 仅 hardfactBlocks>0 也出文案（不为零即显式可见）
+  assert.equal(safetySummaryText({ hardfactBlocks: 3 }), "写入安全面：硬事实拦截 3");
+  // 全零 / 空对象 / 缺失 / 畸形 → null（与既有纪律一致）
+  assert.equal(safetySummaryText({}), null);
+  assert.equal(safetySummaryText({ hardfactBlocks: 0 }), null);
+  assert.equal(safetySummaryText(null), null);
+  assert.equal(safetySummaryText(void 0), null);
+  assert.equal(safetySummaryText("x"), null);
 });

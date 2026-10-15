@@ -52,7 +52,7 @@ ${body}
 
 // ---- GET /state.safety（八字段）----
 
-test("GET state：safety 字段集合严格相等（盘上三项 + 进程内六项）", async () => {
+test("GET state：safety 字段集合严格相等（盘上三项 + 进程内七项）", async () => {
   const root = freshRoot();
   try {
     const { json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
@@ -61,7 +61,7 @@ test("GET state：safety 字段集合严格相等（盘上三项 + 进程内六�
     assert.notEqual(s, void 0);
     // 集合严格相等：将来多/少一个字段都必须红（原断言只做 key in，加字段永远不红）
     assert.deepEqual(Object.keys(s).sort(), [
-      "blindWriteDowngrades", "expectedSha1Mismatches", "hardfactDrops", "lastSnapshotAt",
+      "blindWriteDowngrades", "expectedSha1Mismatches", "hardfactBlocks", "hardfactDrops", "lastSnapshotAt",
       "lockConflicts", "snapshotFailures", "surgicalBackups", "trashPending", "verifyFailed",
     ].sort());
     assert.equal(s.surgicalBackups, 0);
@@ -421,15 +421,15 @@ test("createBackup 备份目录首次出现 project 记忆；listBackups 区分 
     // meta 版本号
     const meta = JSON.parse(readFileSync(join(dir, "backup-meta.json"), "utf8"));
     assert.equal(meta.version, 2);
-    // listBackups：surgical 不混入全量备份
+    // listBackups：surgical 不混入全量备份；列表条目不再带 kind 字段（只含全量备份，无消费方）
     const listed = listBackups(root);
-    assert.equal(listed.every((b) => b.kind === "full"), true);
+    assert.equal(listed.every((b) => !Object.prototype.hasOwnProperty.call(b, "kind")), true);
     assert.equal(listed.some((b) => b.id === "surgical"), false);
     assert.equal(listed.find((b) => b.id === id).version, 2);
     // 端点可见
     const apiList = await callApi(root, { method: "GET", path: `${API_PREFIX}backup/list` });
     assert.equal(apiList.status, 200);
-    assert.equal(apiList.json.backups.every((b) => b.kind === "full"), true);
+    assert.equal(apiList.json.backups.every((b) => !Object.prototype.hasOwnProperty.call(b, "kind")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -241,6 +241,28 @@ test("trash/restore 覆盖同名现存文件：响应带 preRestoreSnapshotId，
   }
 });
 
+test("纯回填恢复（现网无同名冲突）→ 不建空留底快照（不留 manifest-only 幽灵，不耗保留配额）", async () => {
+  const root = freshRoot();
+  try {
+    const memRoot = join(root, "projects", "p1", "memory");
+    const original = seed(memRoot, "a.md", "回收站里的原文。", "旧钩子");
+    applyOps(memRoot, [{ action: "delete", name: "a.md" }], { storageRoot: root, originSessionId: "s-1", log: silentLog });
+    const trashId = (await callApi(root, { method: "GET", path: `${API_PREFIX}trash/list` })).json.entries[0].id;
+    // 现网【无】同名冲突目标（删除后未重建）＝纯回填：留底无对象可留 → 不建快照
+    const snapsBefore = (await callApi(root, { method: "GET", path: `${API_PREFIX}snapshots/list` })).json.snapshots.length;
+    const out = await callApi(root, { method: "POST", path: `${API_PREFIX}trash/restore`, body: { id: trashId } });
+    assert.equal(out.status, 200);
+    assert.equal(out.json.preRestoreSnapshotId, void 0, "纯回填不得留底（无可覆盖对象，不留空快照）");
+    assert.equal(readFileSync(join(memRoot, "a.md"), "utf8"), original, "回填内容应逐字节回到原文");
+    const snapsAfter = (await callApi(root, { method: "GET", path: `${API_PREFIX}snapshots/list` })).json.snapshots.length;
+    assert.equal(snapsAfter, snapsBefore, "纯回填不得新增快照（此前 ops.length===0 分支无测试）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 恢复前留底读取失败：fail-closed，数据原地不动 ----
+
 test("恢复前留底读取失败 → 500 E_SNAPSHOT 且数据原地不动（fail-closed：留不了底就不许覆盖）", async () => {
   const root = freshRoot();
   try {

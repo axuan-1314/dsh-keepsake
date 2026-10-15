@@ -401,6 +401,31 @@ test("purgeTrash 参数校验前置：非法 olderThanDays/id 一律 TRASH_INVAL
   }
 });
 
+test("purgeTrash 显式 null 与非数值一律 TRASH_INVALID（库层同口径，不依赖 API 把关）", () => {
+  const root = freshRoot();
+  try {
+    // 造 2 条真回收站条目：显式 null 若被当缺省就会全清（不可逆）——库层必须抛
+    const memRoot = join(root, "memory");
+    mkdirSync(memRoot, { recursive: true });
+    for (const n of ["p.md", "q.md"]) {
+      writeFileSync(join(memRoot, n), `---\nname: "${n.replace(/\.md$/, "")}"\ndescription: "d"\nmetadata:\n  type: project\nnode_type: "memory"\n---\n\n正文`);
+      trashMemoryFile(root, { rootKey: "memory", name: n });
+    }
+    assert.equal(listTrash(root).length, 2, "前置：两条回收站条目");
+    assert.throws(
+      () => purgeTrash(root, { olderThanDays: null }),
+      (err) => err.code === "TRASH_INVALID",
+      "显式 null 必须在库层就抛（否则任何调用方误传即静默全清）",
+    );
+    assert.throws(() => purgeTrash(root, { olderThanDays: "3" }), /olderThanDays/);
+    assert.equal(listTrash(root).length, 2, "非法入参下一条都不许被清");
+    // 反证：键缺省仍=全清；合法有限数按天数过滤
+    assert.deepEqual(purgeTrash(root), { purged: 2 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- 拷贝中途失败：不留零文件幽灵条目（半成品目录被拆掉）----
 
 test("trash 拷贝中途失败 → 半成品条目目录被拆掉，不留零文件幽灵（listTrash 看不到）", () => {

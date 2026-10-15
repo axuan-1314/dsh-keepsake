@@ -28,6 +28,7 @@ import {
 } from "../lib/errorlog.js";
 import { makeApiRoutes } from "../lib/api.js";
 import { createScheduler } from "../lib/state.js";
+import { createJournal } from "../lib/journal.js";
 
 // ---- errorlog 纯函数 ----
 
@@ -299,6 +300,41 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
     // 未配 overrides → 如实 null（跟随会话路由）
     assert.deepEqual(body.extractionConfig, { provider: null, model: null, fallback: [] });
     assert.deepEqual(body.embeddingConfig, { provider: null, model: null });
+    // 提取结算层（面板最近提取记录数据源）：字段恒在，无 journal 依赖时为标准空形
+    assert.ok(Array.isArray(body.extractionLog.runs));
+    assert.ok(Array.isArray(body.extractionLog.unrecovered));
+    assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("api：GET state 的 extractionLog 反映 journal 记账（runs 新在前 + unrecovered）", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-journal-"));
+  const log = { info() {}, warn() {}, error() {} };
+  try {
+    const journal = createJournal({ storageRoot: root, log });
+    journal.recordRun({ sessionId: "s1", from: 0, to: 5, cursorAfter: 5, outcome: "written", writes: 1, deletes: 0 });
+    // 失败且 cursor 未动 → 进未恢复清单
+    journal.recordRun({ sessionId: "s1", from: 5, to: 9, cursorAfter: 5, outcome: "failed", reason: "llm-error" });
+    const handler = findRoute(makeApiRoutes({
+      storageRoot: root,
+      log,
+      journal,
+      extraction: { triggerRetry: () => 0, inFlight: () => false, configSummary: () => ({}) },
+    }), "GET", "state");
+    const res = mockRes();
+    await handler(makeReq("GET", "state"), res);
+    const body = JSON.parse(res.body);
+    assert.equal(body.extractionLog.runs.length, 2);
+    assert.equal(body.extractionLog.runs[0].outcome, "failed", "runs 新在前");
+    assert.equal(body.extractionLog.runs[0].cursorAfter, 5);
+    assert.equal(body.extractionLog.runs[1].outcome, "written");
+    assert.equal(body.extractionLog.unrecovered.length, 1);
+    assert.deepEqual(
+      { from: body.extractionLog.unrecovered[0].from, to: body.extractionLog.unrecovered[0].to },
+      { from: 5, to: 9 },
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -330,6 +366,7 @@ test("api：只配 embeddingModel（不配 provider 标签）时 embeddingConfig
 // ---- scheduler.retryPending 单飞复用 ----
 
 test("scheduler.retryPending：落后会话补提 + 在途合并 pending 不双跑", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-obs-retry-"));
   const calls = [];
   const extractCallsPerSession = new Map();
   const scheduler = createScheduler({
@@ -337,9 +374,11 @@ test("scheduler.retryPending：落后会话补提 + 在途合并 pending 不双�
       const key = session.id;
       extractCallsPerSession.set(key, (extractCallsPerSession.get(key) ?? 0) + 1);
       calls.push({ id: key, from, to });
-      return "error"; // 失败不推进 cursor，制造「落后」状态
+      return { status: "error", detail: { outcome: "failed", reason: "llm-error" } }; // 失败不推进 cursor，制造「落后」状态
     },
     log: { warn() {}, error() {} },
+    // 真 journal（临时根）：本例只验补提触发次数，落盘不参与断言
+    journal: createJournal({ storageRoot: root, log: { info() {}, warn() {}, error() {} } }),
   });
   const s1 = { id: "s1", seq: 10, snapshotEvents() { return []; } };
   scheduler.see(s1, { seq: 1 });
@@ -357,11 +396,12 @@ test("scheduler.retryPending：落后会话补提 + 在途合并 pending 不双�
   scheduler.see(s2, { seq: 1 });
   scheduler.onTurnCompleted(s2, 20); // 从 2 提到 20
   await scheduler.quiesce();
-  // s1 仍落后、s2 视 extract 结果而定——extract 恒 error 所以两个都落后
+  // s1 仍落后、s2 视 extract 结果而定——extract 恒失败（status=error）所以两个都落后
   assert.equal(scheduler.retryPending(), 2);
   await scheduler.quiesce();
   // dropped 会话不补提
   scheduler.drop(s1);
   assert.ok(scheduler.retryPending() >= 1);
   await scheduler.dispose();
+  rmSync(root, { recursive: true, force: true });
 });

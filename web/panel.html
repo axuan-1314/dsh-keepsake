@@ -831,6 +831,26 @@ function updateStreakBadge(streak) {
   if (el) el.textContent = streak > 0 ? String(streak) : "";
 }
 
+/** 最近提取记录折叠区（/state.extractionLog.runs；缺失/空 = 旧版宿主或无记录，不渲染）。
+ *  为什么单独一块：三态灯只答"最近健康不健康"，答不了"上次到底写了没有"；runs 是把提取
+ *  管线一日的行为摊开给人看的唯一面。上限 12 行——再多信息密度反而压过病灶，余量如实报数。
+ *  行模型/文案全走 L.extractionRunLines + L.extractionRunLabel，双端不漂移。 */
+function pipeExtractionLogHtml(data, limit = 12) {
+  const lines = L.extractionRunLines(data.extractionLog);
+  if (lines.length === 0) return "";
+  const rows = lines.slice(0, limit).map((r) => `
+      <tr><td class="meta">${esc(L.relativeTimeOf(r.at))}</td><td class="meta">${esc(r.range || "—")}</td><td>${esc(r.label)}${r.sessionId ? `<span class="meta"> · ${esc(r.sessionId)}</span>` : ""}</td></tr>`).join("");
+  const rest = lines.length - Math.min(lines.length, limit);
+  return `
+      <details style="margin:8px 0 0"><summary class="meta" style="cursor:pointer">最近提取记录（${lines.length} 条）</summary>
+        <div class="tableScroll"><table class="preview">
+          <tr><th style="width:92px">时间</th><th style="width:110px">范围</th><th>结果</th></tr>
+          ${rows}
+          ${rest > 0 ? `<tr><td colspan="3" class="meta">还有 ${rest} 条未显示（仅保留最近 ${limit} 条）。</td></tr>` : ""}
+        </table></div>
+      </details>`;
+}
+
 /** 管道健康卡：三态灯 + 分桶 + 最近 5 条详情 + 错过区间 + 失败日志 + 重试/诊断按钮。
  *  绿态折叠一行摘要；红/黄/在途展开病灶。 */
 function buildPipeHealthCard(data) {
@@ -841,11 +861,18 @@ function buildPipeHealthCard(data) {
   const level = L.pipeHealthLevel(efRaw, { inFlight });
   const dotCls = level === "green" ? "green" : level === "yellow" ? "yellow" : level === "red" ? "red" : "grey";
   const hasDetail = ef !== null && Array.isArray(ef.recent); // recent 缺失=旧服务端
+  // 未恢复区间双源（提前算，绿态摘要文案要用）：内存态 lastFailedRange 在场照旧
+  // （extractionRangeText 自带 streak≥1 门），否则回落盘侧 extractionLog.unrecovered——
+  // lastFailedRange 是进程内存态，DSH 一重启就归零，没有第二源的话失败区间会跨重启彻底隐身。
+  const memRangeText = L.extractionRangeText(efRaw, data.lastFailedRange);
+  const diskRangeText = memRangeText ? "" : L.unrecoveredTextFromLog(data.extractionLog && data.extractionLog.unrecovered);
   const parts = [];
   if (level === "green") {
-    // 绿态折叠：健康时只占一行；notice ok 复用三态色板
+    // 绿态折叠：健康时只占一行；notice ok 复用三态色板。
+    // 有盘侧未恢复区间时改口"重启以来"——那是重启前的存量缺口，
+    // 这时还说"最近无失败"会和下方红条自相矛盾（两条都真，但并置读不通）。
     const at = data.lastAttemptAt ? ` · 上次尝试 ${L.relativeTimeOf(data.lastAttemptAt)}` : "";
-    parts.push(`<div class="notice show ok" style="margin:6px 0 0">最近无失败${at}</div>`);
+    parts.push(`<div class="notice show ok" style="margin:6px 0 0">${diskRangeText ? "重启以来无失败" : "最近无失败"}${at}</div>`);
   } else {
     if (level === "red") {
       const notice = L.extractionNoticeText(efRaw); // 与门牌红条同文案（双端一致）
@@ -870,14 +897,22 @@ function buildPipeHealthCard(data) {
           <tr><th style="width:92px">时间</th><th style="width:96px">原因</th><th style="width:150px">模型</th><th>摘要</th></tr>
           ${rows.length > 0 ? rows : '<tr><td colspan="4" class="meta">暂无最近失败详情。</td></tr>'}
         </table></div>`);
-      if (data.lastFailedRange && streak > 0) {
-        // 收紧措辞：不承诺具体区间一定补回（会话 disposed/多会话场景）
-        parts.push(`<div class="meta">seq ${Number(data.lastFailedRange.from)} 之后的轮次尚未记录，恢复后自动补提。</div>`);
-      }
       // 失败日志入口（storageRoot 顶层字段缺失时只显示文件名）
       const logPath = data.storageRoot ? String(data.storageRoot).replace(/[\\/]+$/, "") + "/extraction-errors.log" : "extraction-errors.log";
       parts.push(`<div class="meta" style="margin-top:4px">失败日志：<code class="k">${esc(logPath)}</code></div>`);
     }
+  }
+  // 未恢复区间红条放在三态分支**之外**：重启后内存态失败计数也是空的（卡片会是绿态），
+  // 恰恰这时最需要盘侧来源顶上。补提口径分源，不许空承诺：
+  //   内存态 = 会话还活着（cursor 没推进），下一轮自动重提/立即重试都够得着；
+  //   盘侧 = 重启前遗留，会话可能已释放——retryPending 只遍历在场会话（state.js），
+  //          必须说清"要先重开该会话"，否则红条说可补提、按钮说没得补。
+  const rangeText = memRangeText || diskRangeText;
+  if (rangeText) {
+    const tail = memRangeText
+      ? "，下一轮自动重提。"
+      : "（重启前遗留；在该会话里继续对话，或重开该会话后点「立即重试提取」，即可补提）";
+    parts.push(`<div class="notice show err" style="margin:6px 0 0">${esc(rangeText)}${tail}</div>`);
   }
   // 注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
   // 写入安全面一行（八段摘要：回收站待清/校验失败/硬事实拦截/硬事实丢失/盲写降级/sha1 不符拒写/批锁冲突/快照失败）
@@ -886,6 +921,9 @@ function buildPipeHealthCard(data) {
   if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
   const injectionLine = L.injectionSummary(data.injection);
   if (injectionLine) parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}</div>`);
+  // 最近提取记录（runs 空/缺 extractionLog = 旧版宿主或尚无提取，整块不渲染）
+  const logBlock = pipeExtractionLogHtml(data);
+  if (logBlock) parts.push(logBlock);
   // 存储格式只读告警——数据由更新版插件写入时显示（正常/旧版宿主不渲染；显式可见不静默）
   const formatLine = L.formatNoticeText(data.format);
   if (formatLine) parts.push(`<div class="notice show err" style="margin:6px 0 0">⚠️ ${esc(formatLine)}</div>`);

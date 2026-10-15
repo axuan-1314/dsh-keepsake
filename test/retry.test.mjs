@@ -3,7 +3,7 @@
 // 假 ctx 配方照 test/entry.test.mjs；DATA_DIR 隔离照各测试的 mkdtempSync(tmpdir())，
 // 不写 ~/.dsh 真实数据、不真实调用任何 LLM（stream 全假队列）。
 import assert from "node:assert/strict";
-import { mkdtempSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -17,7 +17,10 @@ import {
   retryDelayMs,
 } from "../lib/metrics.js";
 import { projectMemoryPaths } from "../lib/paths.js";
-import { resetSettingsCache } from "../lib/settings.js";
+import { INDEX_FILENAME } from "../lib/filename.js";
+import { resetSettingsCache, writeSettings } from "../lib/settings.js";
+import { FORMAT_FILENAME, resetFormatCache } from "../lib/format.js";
+import { JOURNAL_FILE_NAME } from "../lib/journal.js";
 
 const USER_EVENT = {
   type: "user/message",
@@ -30,12 +33,14 @@ function fakeCtx(streamImpl) {
   const handlers = new Map();
   const sections = [];
   const streamCalls = [];
+  const effects = [];
   const ctx = {
     logger: { info() {}, warn() {}, error() {} },
     on(type, fn) {
       handlers.set(type, fn);
     },
-    effect(fn) {
+    effect(fn, label) {
+      effects.push({ fn, label });
       fn();
     },
     inject(_deps, setup) {
@@ -66,7 +71,7 @@ function fakeCtx(streamImpl) {
       },
     },
   };
-  return { ctx, handlers, sections, streamCalls };
+  return { ctx, handlers, sections, streamCalls, effects };
 }
 
 function fakeSession(cwd, events) {
@@ -99,6 +104,53 @@ async function runExtraction({ root, workspace, streamImpl, config = {}, waitFor
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   return { ctx, handlers, streamCalls, session };
+}
+
+/**
+ * 多轮触发（同一 ctx/同一 session）：streak 类分叉（no-cwd/no-route 的
+ * "连续 5 次放弃"）需要同一进程内连续多次结算才能走到，单轮 harness 表达不了。
+ * @param rounds 每轮 { seq, events?, cwd? } —— seq 是宿主侧 seq 快照，
+ *   events 是该轮 snapshotEvents 返回的增量（逐轮给，别让后轮拿到空增量——
+ *   空增量会先被 skipReason 拦成 no-user-prose，测不到目标分支）。
+ */
+async function runRounds({ root, workspace, streamImpl, config = {}, rounds, sessionId = "s-test", settleMs = 60, noRoute = false }) {
+  const { ctx, handlers, streamCalls, effects } = fakeCtx(streamImpl);
+  apply(ctx, { enabled: true, storageRoot: root, provider: noRoute ? void 0 : "prov", model: noRoute ? void 0 : "model-x", timeoutMs: 5000, ...config });
+  const session = {
+    id: sessionId,
+    seq: 0,
+    header: { cwd: workspace },
+    snapshotEvents(from, to) {
+      // 逐轮取该轮声明的 events；宿主真实语义是 [from, to) 切片，这里按轮次整体给
+      return roundEvents(rounds, from, to);
+    },
+  };
+  // 种子事件（seq 0）：让 see() 以"小 seq 新会话"建立 cursor=0，后续 turn/end 边界才能
+  // 覆盖到全部 events（否则首见即 seq>1 会被判成恢复会话、cursor=seq+1 直接跳过本轮区间）。
+  handlers.get("session/event")(session, { type: "session/mounted", seq: 0, data: {} });
+  for (const round of rounds) {
+    session.seq = round.seq;
+    if (round.cwd !== void 0) session.header.cwd = round.cwd;
+    handlers.get("session/event")(session, { type: "turn/end", seq: round.seq - 1, data: { turn: 1, reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+  }
+  return { ctx, handlers, streamCalls, session, effects };
+}
+
+/** 按轮次声明的 events 拼出 [from,to) 切片（真实宿主是全量事件流切片，此处逐轮等价）。 */
+function roundEvents(rounds, from, to) {
+  const all = rounds.flatMap((r) => r.events ?? [USER_EVENT]);
+  return all.slice(from, to);
+}
+
+/** 读 journal 全部结算行（不存在则 []）。 */
+function journalRuns(root) {
+  try {
+    return readFileSync(join(root, JOURNAL_FILE_NAME), "utf8").trim().split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
 }
 
 const OK_TEXT = '{"ops":[{"action":"write","name":"retry-works.md","type":"project","title":"Retry","description":"重试成功","content":"团队统一用 pnpm"}]}';
@@ -593,4 +645,500 @@ test("metrics：retried / lastRecoveredAt / fallbackUsed 契约", () => {
   assert.ok(after >= before && after <= Date.now(), "lastRecoveredAt 是打点时刻");
   __resetMetricsForTest();
   assert.equal(extractionFailureSnapshot().retried, 0, "__resetMetricsForTest 复位新字段");
+});
+
+// ---- 提取结算明细端到端（extractSession 返回对象 → journal 落盘）----
+//
+// 取舍说明：extractSession 不导出（只经 scheduler 闭包调用），故不在单元层直接断言它的
+// 返回值，而是断言它的**可观测落点**——<storageRoot>/extraction-journal.jsonl。
+// 这样"返回了什么对象"与"盘上留下了什么"一起被钉住，比断言返回值更能防回归
+// （返回对象写错 → 盘上明细必错）；契约形状本身另由 state 层记账用例钉住。
+
+test("结算明细落盘：成功提取记 written（writes/deletes 如实）；模型无产出记 zero-ops", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-detail-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-detail-"));
+  try {
+    const target = join(projectMemoryPaths(root, workspace).memoryDir, "retry-works.md");
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream(),
+      waitFor: () => existsSync(target),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150)); // 等 journal 追加（promise 链队列）
+    const lines = readFileSync(join(root, JOURNAL_FILE_NAME), "utf8").trim().split("\n");
+    const runs = lines.map((l) => JSON.parse(l));
+    assert.equal(runs.length, 1, "一次提取落一行结算");
+    assert.equal(runs[0].outcome, "written", "有 op 落盘 = written");
+    assert.equal(runs[0].writes, 1);
+    assert.equal(runs[0].deletes, 0);
+    assert.equal(runs[0].sessionId, "s-test");
+    assert.ok(runs[0].cursorAfter > 0, "ok 结算 cursorAfter 已推进");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("结算明细落盘：模型判「无需保存」→ zero-ops（不是 failed，也不当成功写盘）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-zero-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-zero-"));
+  try {
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream("nothing to save."),
+      waitFor: settleAfter(10),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200)); // 等 journal 追加
+    const runs = readFileSync(join(root, JOURNAL_FILE_NAME), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "zero-ops", "模型无产出 = zero-ops（成功但零 ops）");
+    assert.equal(runs[0].reason, "model-无产出");
+    assert.ok(runs[0].cursorAfter > 0, "skip/zero-ops 也推进 cursor（边界①）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("结算明细落盘：LLM 失败 → failed/reason=llm-error 且 cursorAfter==from（进未恢复清单）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-fail-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-fail-"));
+  try {
+    await runExtraction({
+      root,
+      workspace,
+      config: { retryAttempts: 3, retryBackoffMs: 5, retryMaxDelayMs: 20 }, // 退避压到毫秒级：整链 <100ms 收口
+      streamImpl: failingStream({ code: "SERVER", status: 503, message: "upstream down" }),
+      waitFor: settleAfter(20),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300)); // 等重试链收口 + journal 追加
+    const runs = readFileSync(join(root, JOURNAL_FILE_NAME), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(runs.length, 1, "重试链整体只结算一次（extractSession 粒度）");
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "llm-error");
+    assert.equal(runs[0].cursorAfter, runs[0].from, "error 不推进：cursorAfter == from");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("关闭总开关 → skipped/gate-off 仍记账（成功面也要有痕）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-gate-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-gate-"));
+  try {
+    writeSettings(root, { conversationMemory: false }, { info() {}, warn() {}, error() {} });
+    resetSettingsCache();
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: () => {
+        throw new Error("总开关关：不得发起任何 LLM 调用");
+      },
+      waitFor: settleAfter(10),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const runs = readFileSync(join(root, JOURNAL_FILE_NAME), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(runs.length, 1, "跳过也要记账（只记失败 = 盘上全是红条，看不出提取一直在工作）");
+    assert.equal(runs[0].outcome, "skipped");
+    assert.equal(runs[0].reason, "gate-off");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---- extractSession 14 个 return 点的 {status, detail} 全量钉子 ----
+//
+// 前面只钉住 4 个点（written / zero-ops-model-无产出 / failed-llm-error /
+// skipped-gate-off），其余写错测试全部通过。以下把缺的逐个补齐，全部走同一口径：
+// 触发真实提取 → 读 extraction-journal.jsonl → 断言 outcome/reason/status/cursorAfter。
+// status 无法从盘上直读（journal 只落 detail），用 cursorAfter 反推：
+//   · status==='error' → cursor 不动 → cursorAfter === from；
+//   · status==='ok'   → cursor 推进 → cursorAfter > from。
+// 故每个用例都同时钉 outcome/reason 与 cursor 行为（status 的等价物）。
+
+test("skipReason 命中 → skipped 且 reason 原值透传（direct-memory-write / no-user-prose）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  // ① direct-memory-write：主 agent 已把记忆直写进 memoryDir → 本轮跳过（reason 原值透传）
+  {
+    const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-skip-dmw-"));
+    const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-skip-dmw-"));
+    try {
+      const inside = join(projectMemoryPaths(root, workspace).memoryDir, "direct.md");
+      const events = [
+        USER_EVENT,
+        { type: "tool/call", seq: 1, data: { name: "write", callId: "c1", arguments: JSON.stringify({ file_path: inside, content: "x" }) } },
+        { type: "tool/result", seq: 2, data: { message: { role: "tool", source: { callId: "c1" }, isError: false, content: [{ type: "text", text: "ok" }] } } },
+      ];
+      await runRounds({
+        root,
+        workspace,
+        rounds: [{ seq: 3, events }],
+        streamImpl: () => {
+          throw new Error("skip：不得发起任何 LLM 调用");
+        },
+      });
+      const runs = journalRuns(root);
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].outcome, "skipped");
+      assert.equal(runs[0].reason, "direct-memory-write", "reason 原值透传（不是写死的字符串）");
+      assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：skip 也推进");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }
+  // ② no-user-prose：增量内无 ≥3 词合格用户散文 → 跳过
+  {
+    const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-skip-prose-"));
+    const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-skip-prose-"));
+    try {
+      const events = [
+        { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "嗯" }] } },
+      ];
+      await runRounds({
+        root,
+        workspace,
+        rounds: [{ seq: 1, events }],
+        streamImpl: () => {
+          throw new Error("skip：不得发起任何 LLM 调用");
+        },
+      });
+      const runs = journalRuns(root);
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].outcome, "skipped");
+      assert.equal(runs[0].reason, "no-user-prose");
+      assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：skip 也推进");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }
+});
+
+test("format-readonly：数据目录标了更高格式版本 → skipped（cursor 推进，不发起 LLM）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-fmt-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-fmt-"));
+  try {
+    // 写比 FORMAT_VERSION（1）更高的标记 → apply 的 ensureFormat 判定只读保护
+    writeFileSync(join(root, FORMAT_FILENAME), JSON.stringify({ formatVersion: 99 }), "utf8");
+    resetFormatCache();
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: () => {
+        throw new Error("只读保护：不得发起任何 LLM 调用");
+      },
+      waitFor: settleAfter(12),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1, "只读保护也记账（盘上要看得出是保护而非消失）");
+    assert.equal(runs[0].outcome, "skipped");
+    assert.equal(runs[0].reason, "format-readonly");
+    assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：cursor 照推进（与 gate-off 同侧）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("no-cwd 两态：streak<5 → status='error' cursorAfter==from；第 5 次放弃 → status='ok' cursor 推进", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-nocwd-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-nocwd-"));
+  try {
+    // 全程无 cwd（header.cwd 清空）→ 每轮 no-cwd 失败，streak 逐轮 +1
+    await runRounds({
+      root,
+      workspace,
+      streamImpl: () => {
+        throw new Error("no-cwd：不得发起任何 LLM 调用");
+      },
+      rounds: Array.from({ length: 6 }, (_, i) => ({ seq: i + 1, cwd: "" })),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 6, "六轮各落一条结算");
+    // 前 4 轮：streak 1..4 → status='error'，cursor 不动（恒等于首见 0）
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(runs[i].outcome, "failed", `第 ${i + 1} 轮 outcome`);
+      assert.equal(runs[i].reason, "no-cwd");
+      assert.equal(runs[i].cursorAfter, runs[i].from, `第 ${i + 1} 轮 cursor 不动`);
+    }
+    // 第 5 轮：streak=5 → 放弃型，status='ok'（cursor 推进）但 outcome 仍是 failed
+    assert.equal(runs[4].outcome, "failed", "放弃也是 failed（这段没提取成）");
+    assert.equal(runs[4].reason, "no-cwd");
+    assert.ok(runs[4].cursorAfter > runs[4].from, "第 5 轮 status='ok'：cursor 推进");
+    // 第 6 轮：放弃后不 reset（no reset 调用在放弃分支），streak 续到 6 → 继续放弃型
+    assert.equal(runs[5].outcome, "failed");
+    assert.equal(runs[5].reason, "no-cwd");
+    assert.ok(runs[5].cursorAfter > runs[5].from, "第 6 轮仍是放弃型：cursor 继续推进");
+    assert.ok(runs[4].cursorAfter > 0, "推进后的 cursor 不是 0（证明真的动了）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("no-route 两态：streak<5 → status='error' cursorAfter==from；第 5 次放弃 → status='ok' cursor 推进", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-noroute-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-noroute-"));
+  try {
+    // 不配 provider/model（config 与 request/header 都不给路由）→ 每轮 no-route。
+    // 走 runRounds 的 noRoute 口径：每轮声明独立 events，后轮增量不为空，
+    // 不会先被 skipReason 拦成 no-user-prose（否则测不到目标分支）。
+    await runRounds({
+      root,
+      workspace,
+      noRoute: true,
+      streamImpl: () => {
+        throw new Error("no-route：不得发起任何 LLM 调用");
+      },
+      rounds: Array.from({ length: 6 }, (_, i) => ({ seq: i + 1 })),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 6, "六轮各落一条结算");
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(runs[i].outcome, "failed", `第 ${i + 1} 轮 outcome`);
+      assert.equal(runs[i].reason, "no-route");
+      assert.equal(runs[i].cursorAfter, runs[i].from, `第 ${i + 1} 轮 cursor 不动`);
+    }
+    assert.equal(runs[4].outcome, "failed", "放弃也是 failed");
+    assert.equal(runs[4].reason, "no-route");
+    assert.ok(runs[4].cursorAfter > runs[4].from, "第 5 轮 status='ok'：cursor 推进");
+    assert.equal(runs[5].outcome, "failed");
+    assert.equal(runs[5].reason, "no-route");
+    assert.ok(runs[5].cursorAfter > runs[5].from, "第 6 轮继续放弃型");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("aborted：重试链退避期间 dispose → failed/aborted（cursor 不动，不再发起后续 attempt）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-abort-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-abort-"));
+  try {
+    const { ctx, handlers, effects, streamCalls } = fakeCtx(() => {
+      // 首次 attempt 即触发 dispose（照真实"卸载发生在提取在途"时序）：
+      // lifetime.signal 置位 → 可取消退避提前 resolve → 下一次 attempt 前 aborted 检查命中。
+      for (const dispose of disposeFns) dispose();
+      return (async function* () {
+        yield { type: "finish", reason: { kind: "error", failure: { code: "SERVER", status: 503, message: "down" } } };
+      })();
+    });
+    let disposeFns = [];
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, retryAttempts: 3, retryBackoffMs: 50, retryMaxDelayMs: 100 });
+    disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
+    const session = { id: "s-test", seq: 1, header: { cwd: workspace }, snapshotEvents(from, to) { return [USER_EVENT].slice(from, to); } };
+    handlers.get("session/event")(session, USER_EVENT);
+    handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, 600)); // 等整链收口
+    assert.equal(streamCalls.length, 1, "abort 后不得再发起第 2 次 attempt");
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "aborted");
+    assert.equal(runs[0].cursorAfter, runs[0].from, "status='error'：abort 不推进 cursor");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("parse-error：模型返回非 JSON 输出 → failed/parse-error 且 cursor 不动", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-parse-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-parse-"));
+  try {
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream("这不是 JSON，模型跑题了"),
+      waitFor: settleAfter(12),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "parse-error");
+    assert.equal(runs[0].cursorAfter, runs[0].from, "status='error'：parse 失败不推进 cursor");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---- io-error 三态（落盘结算的三岔，cursor 全部照常推进——既有语义）----
+//
+// 全部用盘上真实故障构造，不 mock 任何模块（mock applyScopedOps 会把整批语义
+// 一起 mock 掉，钉的就不是产品行为了）：
+//   · "blocker.md" 先建成普通文件，再用 "blocker.md/bad.md" 作 op 名
+//     → mkdirSync(dirname) 因 parent 是文件而炸 → 该 op 计 failed（单条隔离）；
+//   · MEMORY.md 建成目录 → readFileSync EISDIR → 整批重建索引抛 → status='error'。
+
+test("io-error ①：部分 op 落盘 + 部分单 op 失败 → written 带 failedOps>0（cursor 照常推进）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-io-partial-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-io-partial-"));
+  try {
+    const memDir = projectMemoryPaths(root, workspace).memoryDir;
+    mkdirSync(memDir, { recursive: true });
+    writeFileSync(join(memDir, "blocker.md"), "I am a file"); // 占位成文件 → 以其为父目录的 op 必炸
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream('{"ops":['
+        + '{"action":"write","name":"good-a.md","type":"project","title":"Good","content":"内容一"},'
+        + '{"action":"write","name":"blocker.md/bad.md","type":"project","title":"Bad","content":"内容二"}]}'),
+      waitFor: settleAfter(12),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "written", "有 op 落盘 = written（不是 failed）");
+    assert.equal(runs[0].writes, 1, "好的那条落上了");
+    assert.equal(runs[0].failedOps, 1, "坏的那条计单 op 失败（单条隔离不重试）");
+    assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：部分失败 cursor 照常推进（斩断确定性重试）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("io-error ②：一条都没落上且有单 op 失败 → failed/io-error 但 status='ok'（cursor 推进）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-io-allfail-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-io-allfail-"));
+  try {
+    const memDir = projectMemoryPaths(root, workspace).memoryDir;
+    mkdirSync(memDir, { recursive: true });
+    writeFileSync(join(memDir, "blocker.md"), "I am a file");
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream('{"ops":['
+        + '{"action":"write","name":"blocker.md/bad.md","type":"project","title":"Bad","content":"内容"}]}'),
+      waitFor: settleAfter(12),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "failed", "applied=0：没写成功就不是 written");
+    assert.equal(runs[0].reason, "io-error");
+    assert.equal(runs[0].writes, 0);
+    assert.equal(runs[0].deletes, 0);
+    assert.equal(runs[0].failedOps, 1, "确有单 op 失败");
+    assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：cursor 推进（盘上留着'推进了但没写东西'）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("io-error ③：整批落盘结构性失败（索引重建炸）→ failed/io-error status='error' cursor 不动", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-io-batch-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-io-batch-"));
+  try {
+    const memDir = projectMemoryPaths(root, workspace).memoryDir;
+    mkdirSync(memDir, { recursive: true });
+    // MEMORY.md 建成目录 → 索引重建的 readFileSync 抛 EISDIR → 整批捕获 → status='error'
+    mkdirSync(join(memDir, INDEX_FILENAME), { recursive: true });
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream('{"ops":['
+        + '{"action":"write","name":"ok.md","type":"project","title":"OK","content":"内容"}]}'),
+      waitFor: settleAfter(12),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "io-error", "整批抛与单 op 失败同桶（noteFailure 分桶同名）");
+    assert.equal(runs[0].cursorAfter, runs[0].from, "status='error'：整批失败不推进 cursor（下轮重提）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("ops-未落盘：有 op 但全被跳过/过滤 → zero-ops（applied=0 且 failed=0）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  // ① 全被开关过滤：projectMemory=false → filteredProject 计 2，applied=0
+  {
+    const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-ops-filtered-"));
+    const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-ops-filtered-"));
+    try {
+      writeSettings(root, { projectMemory: false }, { info() {}, warn() {}, error() {} });
+      resetSettingsCache();
+      await runExtraction({
+        root,
+        workspace,
+        streamImpl: okStream('{"ops":['
+          + '{"action":"write","name":"filt-a.md","type":"project","title":"F","content":"内容一"},'
+          + '{"action":"write","name":"filt-b.md","type":"project","title":"G","content":"内容二"}]}'),
+        waitFor: settleAfter(12),
+      });
+      const runs = journalRuns(root);
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].outcome, "zero-ops", "全被过滤 = 零 ops（不是失败）");
+      assert.equal(runs[0].reason, "ops-未落盘");
+      assert.equal(runs[0].writes, 0);
+      assert.equal(runs[0].failedOps, 0, "过滤不是失败");
+      assert.equal(runs[0].filtered, 2, "过滤数如实记账（filteredProject 累加）");
+      assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：零 ops 也推进");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }
+  // ② 全被跳过：op 名是已存在目录 → 批前原文读失败 fail-closed 跳过 → skippedOps=2，applied=0
+  {
+    const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-ops-skipped-"));
+    const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-ops-skipped-"));
+    try {
+      const memDir = projectMemoryPaths(root, workspace).memoryDir;
+      mkdirSync(join(memDir, "blk1.md"), { recursive: true });
+      mkdirSync(join(memDir, "blk2.md"), { recursive: true });
+      await runExtraction({
+        root,
+        workspace,
+        streamImpl: okStream('{"ops":['
+          + '{"action":"write","name":"blk1.md","type":"project","title":"B1","content":"内容一"},'
+          + '{"action":"write","name":"blk2.md","type":"project","title":"B2","content":"内容二"}]}'),
+        waitFor: settleAfter(12),
+      });
+      const runs = journalRuns(root);
+      assert.equal(runs.length, 1);
+      assert.equal(runs[0].outcome, "zero-ops");
+      assert.equal(runs[0].reason, "ops-未落盘");
+      assert.equal(runs[0].skippedOps, 2, "两条都被跳过（fail-closed，不计失败）");
+      assert.equal(runs[0].failedOps, 0);
+      assert.ok(runs[0].cursorAfter > runs[0].from);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  }
 });

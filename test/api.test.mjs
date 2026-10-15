@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import { API_PREFIX, isLoopbackRequest, makeApiRoutes, planImport } from "../lib/api.js";
+import { createJournal } from "../lib/journal.js";
 import { categoryDir, createEntry, listEntries, readPersona, listBackups } from "../lib/global-store.js";
 import { listSurgicalSnapshots, surgicalRoot, acquireExtractLock } from "../lib/safety.js";
 
@@ -48,8 +49,8 @@ function mockRes() {
   };
 }
 
-async function callApi(storageRoot, { method, path, body, headers, remoteAddress }) {
-  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {} });
+async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal }) {
+  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal });
   const handler = routes[0].handler;
   assert.equal(routes[0].kind, "prefix");
   assert.equal(routes[0].path, API_PREFIX.replace(/\/$/, "")); // 内核 prefix 不带尾斜杠（实证）
@@ -112,6 +113,40 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     assert.ok(json.persona && typeof json.persona.excerpt === "string");
     assert.ok(Array.isArray(json.projects));
     assert.equal(json.addressing.dshName, "");
+    // 提取结算层：字段恒在（缺失=旧版判定依据），无 journal 依赖时为空形
+    assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [] });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("GET state：extractionLog 恒含 runs/unrecovered（含 journal 缺省的空形与记账后的真值）", async () => {
+  const root = freshRoot();
+  try {
+    // ① journal 缺省 → 空形但字段恒在
+    {
+      const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+      assert.equal(status, 200);
+      assert.ok(Array.isArray(json.extractionLog.runs), "runs 恒为数组");
+      assert.ok(Array.isArray(json.extractionLog.unrecovered), "unrecovered 恒为数组");
+      assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [] });
+    }
+    // ② 真 journal 记账后 → /state 如实反映（runs 新在前 + 未恢复失败区间）
+    const journal = createJournal({ storageRoot: root, log: silentLog });
+    journal.recordRun({ sessionId: "sess-a", from: 3, to: 7, cursorAfter: 7, outcome: "written", writes: 2, deletes: 0 });
+    journal.recordRun({ sessionId: "sess-a", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
+    {
+      const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, journal });
+      assert.equal(status, 200);
+      assert.equal(json.extractionLog.runs.length, 2);
+      assert.equal(json.extractionLog.runs[0].outcome, "failed");
+      assert.equal(json.extractionLog.runs[0].sessionId, "sess-a");
+      assert.equal(json.extractionLog.runs[1].outcome, "written");
+      assert.equal(json.extractionLog.runs[1].writes, 2);
+      assert.equal(json.extractionLog.unrecovered.length, 1);
+      assert.equal(json.extractionLog.unrecovered[0].from, 7);
+      assert.equal(json.extractionLog.unrecovered[0].to, 11);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

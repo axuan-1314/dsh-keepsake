@@ -1,7 +1,7 @@
 // transcript：触发门槛（边界⑤：≥3 词用户散文 / 直写记忆跳过）与摘录渲染
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clipTail, hasEnoughUserProse, renderTranscript, skipReason } from "../lib/transcript.js";
+import { clipTail, hasDirectMemoryWrite, hasEnoughUserProse, renderTranscript, skipReason } from "../lib/transcript.js";
 
 // 路径按平台取（直写判定对 file_path 相对 memoryRoot 解析：Windows 绝对路径在 posix 不是绝对）
 const IS_WIN = process.platform === "win32";
@@ -71,6 +71,80 @@ test("skipReason: write 落根外不算直写", () => {
     },
   ];
   assert.equal(skipReason(events, ROOT), null);
+});
+
+// ── run_code 路径：主 agent 在代码里调 tools.write/tools.edit 直写记忆目录 ──
+// 代码里的路径写正斜杠（与 agent 实际书写一致，且平台无关），JSON 实参路径仍用 INSIDE/OUTSIDE
+const INSIDE_CODE = INSIDE.replace(/\\/g, "/");
+const OUTSIDE_CODE = OUTSIDE.replace(/\\/g, "/");
+
+/** 造 run_code 的 tool/call（arguments 走 JSON 字符串，与真实事件一致）。 */
+function runCodeCall(callId, code) {
+  return { type: "tool/call", seq: 2, data: { name: "run_code", callId, arguments: JSON.stringify({ code }) } };
+}
+
+/** 造 tool/result；isError 决定该调用算不算成功。 */
+function resultEvent(callId, isError = false) {
+  return {
+    type: "tool/result",
+    seq: 3,
+    data: { message: { role: "tool", source: { callId }, isError, content: [{ type: "text", text: isError ? "denied" : "ok" }] } },
+  };
+}
+
+/** 合格用户散文（≥3 词）：保证 skipReason 的落点只由直写判定决定，不被 no-user-prose 干扰。 */
+const PROSE = { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "记住 我们 用 pnpm" }] } };
+
+test("skipReason: run_code 里 tools.write 落 memoryRoot 也算直写", () => {
+  const code = `await tools.write({ file_path: "${INSIDE_CODE}", content: "---\\n---\\n" });`;
+  const events = [PROSE, runCodeCall("c1", code), resultEvent("c1")];
+  assert.equal(hasDirectMemoryWrite(events, ROOT), true);
+  assert.equal(skipReason(events, ROOT), "direct-memory-write");
+
+  // 反引号路径同判（同一 run_code 调用，三种引号口径一致）
+  const backtick = `await tools.write({ file_path: \`${INSIDE_CODE}\`, content: "x" });`;
+  assert.equal(hasDirectMemoryWrite([PROSE, runCodeCall("c1", backtick)], ROOT), true);
+});
+
+test("skipReason: run_code 里 tools.write 落根外不算直写", () => {
+  const code = `await tools.write({ file_path: "${OUTSIDE_CODE}", content: "x" });`;
+  const events = [PROSE, runCodeCall("c1", code), resultEvent("c1")];
+  assert.equal(hasDirectMemoryWrite(events, ROOT), false);
+  assert.equal(skipReason(events, ROOT), null);
+});
+
+test("skipReason: run_code 里 tools.edit 单引号 file_path 也算直写", () => {
+  const code = `await tools.edit({ file_path: '${INSIDE_CODE}', old: "a", new: "b" });`;
+  const events = [PROSE, runCodeCall("c1", code), resultEvent("c1")];
+  assert.equal(hasDirectMemoryWrite(events, ROOT), true);
+  assert.equal(skipReason(events, ROOT), "direct-memory-write");
+});
+
+test("skipReason: run_code 直写失败（isError）不算直写，正常提取", () => {
+  const code = `await tools.write({ file_path: "${INSIDE_CODE}", content: "x" });`;
+  const events = [PROSE, runCodeCall("c1", code), resultEvent("c1", true)];
+  assert.equal(hasDirectMemoryWrite(events, ROOT), false); // 失败豁免：与原生 write/edit 同机制
+  assert.equal(skipReason(events, ROOT), null);
+});
+
+test("skipReason: run_code 只读（无 write/edit）不算直写", () => {
+  const code = `const t = await tools.read({ file_path: "${INSIDE_CODE}" });\nreturn t;`;
+  const events = [PROSE, runCodeCall("c1", code), resultEvent("c1")];
+  assert.equal(hasDirectMemoryWrite(events, ROOT), false);
+  assert.equal(skipReason(events, ROOT), null);
+});
+
+test("skipReason: 注释里的 tools.write 示例不当真（误识别会静默丢该轮记忆）", () => {
+  // 整行行注释
+  const lineComment = `// 示例：await tools.write({ file_path: "${INSIDE_CODE}", content: "x" });\nconst a = 1;`;
+  assert.equal(hasDirectMemoryWrite([PROSE, runCodeCall("c1", lineComment), resultEvent("c1")], ROOT), false);
+  assert.equal(skipReason([PROSE, runCodeCall("c1", lineComment), resultEvent("c1")], ROOT), null);
+  // 块注释
+  const blockComment = `/*\n  await tools.write({ file_path: "${INSIDE_CODE}", content: "x" });\n*/\nreturn 1;`;
+  assert.equal(hasDirectMemoryWrite([PROSE, runCodeCall("c1", blockComment), resultEvent("c1")], ROOT), false);
+  // 注释里的是示例、真代码在后面：真写的照常判直写（剥注释不误伤）
+  const mixed = `// 旧写法：tools.write({ file_path: "${INSIDE_CODE}" });\nawait tools.write({ file_path: "${INSIDE_CODE}", content: "x" });`;
+  assert.equal(hasDirectMemoryWrite([PROSE, runCodeCall("c1", mixed), resultEvent("c1")], ROOT), true);
 });
 
 test("skipReason: 替换面事件（surfaceOp≠append）不算新散文", () => {

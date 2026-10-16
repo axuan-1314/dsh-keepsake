@@ -88,36 +88,63 @@
   @keyframes dotBlink { 50% { opacity: .3; } }
   /* aside 设置项的提取连击红徽标（与 .cnt 同形，红=#d5564d 既有值） */
   aside a .cnt.alert { color: #d5564d; font-weight: 600; }
+  /* 提示条（.notice）：错误类延长至 8 秒自动消失 + 最近错误区兜底，关闭按钮贴在文字右侧 */
+  #toast .toastClose { margin-left: 10px; vertical-align: middle; }
+  /* 「最近错误」回看区（保留最近 5 条，折叠收纳） */
+  #recentErrors { margin: 12px 20px 0; }
+  #recentErrors summary { cursor: pointer; }
+  #recentErrors .errItem { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+  /* 三态灯状态词（颜色之外的第二编码，色弱/灰度屏也能读） */
+  .statusWord { font-size: 12px; font-weight: 600; }
+  .statusWord.green { color: #50a05a; }
+  .statusWord.yellow { color: #c98a3d; }
+  .statusWord.red { color: #d5564d; }
+  .statusWord.grey { color: var(--dsw-alias-label-secondary, #9aa2ab); }
+  /* 窄屏（≤800px）：侧栏转横排、分栏堆叠单列、顶栏可换行，防小窗破版 */
+  @media (max-width: 800px) {
+    body { flex-direction: column; }
+    aside { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; border-right: none; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); padding: 10px 12px; }
+    aside .brand { padding: 2px 10px; }
+    aside .group { padding: 4px 8px; }
+    aside a { padding: 4px 8px; }
+    .topbar { flex-wrap: wrap; }
+    .split { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
   <aside id="nav">
     <div class="brand">记忆管理</div>
-    <div class="group">记忆管理</div>
-    <a data-route="category/work-profile">工作背景 <span class="cnt" data-cnt="work-profile"></span></a>
-    <a data-route="category/user-profile">用户个人背景 <span class="cnt" data-cnt="user-profile"></span></a>
-    <a data-route="category/current-focus">当前关注 <span class="cnt" data-cnt="current-focus"></span></a>
-    <a data-route="category/recent-activity">近期动态 <span class="cnt" data-cnt="recent-activity"></span></a>
+    <div class="group">记忆分类</div>
+    <a href="#/category/work-profile" data-route="category/work-profile">工作背景 <span class="cnt" data-cnt="work-profile"></span></a>
+    <a href="#/category/user-profile" data-route="category/user-profile">用户个人背景 <span class="cnt" data-cnt="user-profile"></span></a>
+    <a href="#/category/current-focus" data-route="category/current-focus">当前关注 <span class="cnt" data-cnt="current-focus"></span></a>
+    <a href="#/category/recent-activity" data-route="category/recent-activity">近期动态 <span class="cnt" data-cnt="recent-activity"></span></a>
     <div class="group">通用</div>
-    <a data-route="long-term">长期记忆 <span class="cnt" data-cnt="long-term"></span></a>
-    <a data-route="persona">人设</a>
-    <a data-route="addressing">称呼</a>
-    <a data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
+    <a href="#/long-term" data-route="long-term">长期记忆 <span class="cnt" data-cnt="long-term"></span></a>
+    <a href="#/persona" data-route="persona">人设</a>
+    <a href="#/addressing" data-route="addressing">称呼</a>
+    <a href="#/projects" data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
     <div class="group">可逆性</div>
-    <a data-route="trash">回收站 <span class="cnt" data-cnt="trash"></span></a>
-    <a data-route="snapshots">快照 <span class="cnt" data-cnt="snapshots"></span></a>
-    <a data-route="settings">设置 <span class="cnt alert" data-cnt="extraction-streak" title="自动提取连续失败次数（设置页管道健康卡可看详情）"></span></a>
+    <a href="#/trash" data-route="trash">回收站 <span class="cnt" data-cnt="trash"></span></a>
+    <a href="#/snapshots" data-route="snapshots">快照 <span class="cnt" data-cnt="snapshots"></span></a>
+    <a href="#/settings" data-route="settings">设置 <span class="cnt alert" data-cnt="extraction-streak" title="自动提取连续失败次数（设置页管道健康卡可看详情）"></span></a>
   </aside>
   <main>
     <div class="topbar">
       <div><h1 id="pageTitle">记忆管理</h1><span class="sub" id="pageSub"></span></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn" id="themeToggle" title="主题桥失败时的手动降级开关">◐ 手动深浅</button>
+        <button class="btn" id="themeToggle" title="未能自动跟随应用主题时，在这里手动切换深浅色">◐ 手动切换深浅色</button>
         <button class="btn" id="backBtn">← 返回设置</button>
       </div>
     </div>
-    <div class="notice" id="bridgeNotice">未能自动跟随主题（主题桥不可用）——已切换为手动深浅档，右上角可切换。</div>
-    <div class="notice" id="toast"></div>
+    <div class="notice" id="bridgeNotice">未能跟随应用主题，请手动选择深浅色——右上角可切换。</div>
+    <div class="notice" id="toast" role="status" aria-live="polite"></div>
+    <div class="meta" id="countsStatus" hidden style="margin:6px 20px 0"></div>
+    <details id="recentErrors" hidden>
+      <summary class="meta">最近错误（保留最近 5 条）</summary>
+      <div data-errList></div>
+    </details>
     <div id="page"></div>
   </main>
   <div id="dialogHost"></div>
@@ -214,7 +241,10 @@ function esc(s) {
 async function api(path, options) {
   const res = await fetch("/dsh-keepsake/api/" + path, options);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || "HTTP " + res.status);
+  if (!res.ok) {
+    // 优先后端补的中文 message，回落到错误码 body.error（旧宿主只有 error）
+    throw new Error(body.message || body.error || "HTTP " + res.status);
+  }
   return body;
 }
 const apiPut = (path, obj) => api(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(obj) });
@@ -223,13 +253,41 @@ const apiDel = (path, obj) => api(path, { method: "DELETE", headers: { "content-
 const ENTRY_MAX_CHARS = 20000; // 与服务端 content 上限对齐——客户端拒绝而非静默截断
 const ADDRESS_SAVE_DEBOUNCE_MS = 600; // 与 lib/client.js 同名常量一致（防漂移检查钉住）
 
+const RECENT_ERRORS_MAX = 5; // 最近错误回看区保留条数
+const recentErrors = []; // 最近错误（新在前），仅内存态
 let toastTimer = null;
+function renderRecentErrors() {
+  const box = $("recentErrors");
+  if (!box) return;
+  if (recentErrors.length === 0) { box.hidden = true; return; }
+  box.hidden = false;
+  box.querySelector("[data-errList]").innerHTML = recentErrors
+    .map((it) => `<div class="errItem"><span class="meta">${esc(it.at)}</span> ${esc(it.text)}</div>`)
+    .join("");
+}
 function toast(text, kind = "ok") {
   const el = $("toast");
-  el.textContent = text;
+  const isErr = kind === "err";
   el.className = "notice show " + kind;
+  // 错误类：写进「最近错误」回看区（时间取本地时刻），并延长提示条停留时间（8 秒）
+  if (isErr) {
+    recentErrors.unshift({ text, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) });
+    if (recentErrors.length > RECENT_ERRORS_MAX) recentErrors.length = RECENT_ERRORS_MAX;
+    renderRecentErrors();
+  }
+  el.setAttribute("aria-live", isErr ? "assertive" : "polite");
+  el.textContent = text;
+  // 关闭按钮（手动收起）——错误与成功都给，用户随时能清掉
+  const close = document.createElement("button");
+  close.className = "btn sm toastClose";
+  close.type = "button";
+  close.setAttribute("aria-label", "关闭提示");
+  close.textContent = "关闭";
+  close.addEventListener("click", () => { if (toastTimer) clearTimeout(toastTimer); el.className = "notice"; });
+  el.appendChild(close);
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = "notice"; }, 3200);
+  // 成功类短时自动消失；错误类延长至 8 秒（读得完），且已进「最近错误」回看区兜底
+  toastTimer = setTimeout(() => { el.className = "notice"; }, isErr ? 8000 : 3200);
 }
 function fmtTime(ms) {
   if (!ms) return "—";
@@ -265,7 +323,7 @@ function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
   const layer = document.createElement("div"); // 独立层 append：下层对话框 DOM 原样保留
   layer.innerHTML = `
     <div class="mask">
-      <div class="dialog" style="width:min(440px,92vw)">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(440px,92vw)">
         <h2>${esc(title)}</h2>
         <div style="font-size:13px;white-space:pre-wrap">${body}</div>
         <div class="foot">
@@ -275,20 +333,30 @@ function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
       </div>
     </div>`;
   dialogHost.appendChild(layer);
-  const close = () => layer.remove(); // 只摘本层，下层（若有）恢复可见、编辑内容无损
-  layer.querySelector("[data-x]").addEventListener("click", close);
+  const close = () => { // 只摘本层，下层（若有）恢复可见、编辑内容无损
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); }; // Esc = 取消（键盘可达）
+  document.addEventListener("keydown", onKey);
+  const cancelBtn = layer.querySelector("[data-x]");
+  cancelBtn.addEventListener("click", close);
   layer.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) close(); });
   layer.querySelector("[data-ok]").addEventListener("click", async () => {
     close();
     await onConfirm();
   });
+  cancelBtn.focus(); // 打开即聚焦首个按钮（键盘/读屏可达）
 }
 
 // ============ 条目编辑卡片（分类页/长期页共用） ============
-function entryCard(cat, e, reload) {
+function entryCard(cat, e, reload, keepDays) {
   const card = document.createElement("div");
   card.className = "card";
-  const ageBadge = cat === "recent-activity" ? `<span class="badge">${esc(L.recentAgeOf(e.timestamp).text)} · ${L.recentExpireDays(e.timestamp)} 天后过期</span> ` : "";
+  const expireDays = L.recentExpireDays(e.timestamp, keepDays);
+  const ageBadge = cat === "recent-activity"
+    ? `<span class="badge">${esc(L.recentAgeOf(e.timestamp).text)}${expireDays === null ? "" : ` · ${expireDays} 天后过期`}</span> `
+    : "";
   card.innerHTML = `
     <h3>${ageBadge}<span>${esc(e.title)}</span>
       <span class="ops">
@@ -297,17 +365,18 @@ function entryCard(cat, e, reload) {
       </span>
     </h3>
     ${e.description ? `<div class="meta">${esc(e.description)}</div>` : ""}
-    <div class="meta">${esc(e.name)} · ${esc(fmtTime(e.mtimeMs))}</div>
+    <div class="meta">${esc(e.name)} · <span title="${esc(fmtTime(e.mtimeMs))}">${esc(L.relativeTimeOf(e.mtimeMs))}</span></div>
     <div class="entry-body">${esc(e.content)}</div>`;
   card.querySelector("[data-del]").addEventListener("click", () => {
     confirmDialog({
       title: "删除条目",
-      body: `确定删除「${esc(e.title)}」吗？此操作不可撤销（重置/导入才有备份）。`,
-      dangerText: "删除",
+      body: `确定删除「${esc(e.title)}」吗？将移入回收站（可在回收站找回，保留天数见设置页保留策略）。`,
+      dangerText: "移入回收站",
       onConfirm: async () => {
         try {
-          await apiDel("entry", { category: cat, name: e.name });
-          toast("已删除");
+          const out = await apiDel("entry", { category: cat, name: e.name });
+          if (out && out.existed === false) toast("条目不存在（可能已被删除）");
+          else toast("已移入回收站（可在回收站找回）");
           reload();
         } catch (err) { toast("删除失败：" + err.message, "err"); }
       },
@@ -315,8 +384,8 @@ function entryCard(cat, e, reload) {
   });
   card.querySelector("[data-edit]").addEventListener("click", () => {
     card.innerHTML = `
-      <div class="field"><label>标题（60 字内）</label><input class="inp" data-t maxlength="60" value="${esc(e.title)}"></div>
-      <div class="field"><label>描述（一行钩子，可选，60 字内）</label><input class="inp" data-d maxlength="60" value="${esc(e.description)}"></div>
+      <div class="field"><label>标题（60 字内） <span class="meta" data-tcnt></span></label><input class="inp" data-t maxlength="60" value="${esc(e.title)}"></div>
+      <div class="field"><label>描述（一行钩子，可选，60 字内） <span class="meta" data-dcnt></span></label><input class="inp" data-d maxlength="60" value="${esc(e.description)}"></div>
       <div class="field"><label>正文（${ENTRY_MAX_CHARS} 字符上限）</label><textarea class="ta" data-c maxlength="${ENTRY_MAX_CHARS}"></textarea><div class="meta" data-cnt></div></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn sm" data-x>取消</button>
@@ -325,23 +394,30 @@ function entryCard(cat, e, reload) {
     // maxlength 不拦脚本/存量数据，value 先行赋值再挂计数（存量超长立即可见）
     const $c = card.querySelector("[data-c]");
     const $cnt = card.querySelector("[data-cnt]");
+    const $t = card.querySelector("[data-t]");
+    const $d = card.querySelector("[data-d]");
     $c.value = e.content;
     const updCnt = () => {
       const over = $c.value.length > ENTRY_MAX_CHARS;
       $cnt.textContent = `${$c.value.length} / ${ENTRY_MAX_CHARS} 字符 · UTF-8 ${L.utf8Length($c.value)} 字节` + (over ? "（已超限，保存将被阻止）" : "");
     };
-    updCnt();
+    // 标题/描述 60 字实时计数（maxlength 到了就截，用户看得见还剩多少）
+    const updTitleCnt = () => { card.querySelector("[data-tcnt]").textContent = `${$t.value.length} / 60`; };
+    const updDescCnt = () => { card.querySelector("[data-dcnt]").textContent = `${$d.value.length} / 60`; };
+    updCnt(); updTitleCnt(); updDescCnt();
     $c.addEventListener("input", updCnt);
+    $t.addEventListener("input", updTitleCnt);
+    $d.addEventListener("input", updDescCnt);
     card.querySelector("[data-x]").addEventListener("click", reload);
     card.querySelector("[data-s]").addEventListener("click", async () => {
-      const v = L.validateEntryDraft(card.querySelector("[data-t]").value, $c.value); // 必填/字符/字节三道门
+      const v = L.validateEntryDraft($t.value, $c.value); // 必填/字符/字节三道门
       if (!v.ok) { toast(v.error, "err"); return; }
       try {
         await apiPut("entry", {
           category: cat,
           name: e.name,
-          title: card.querySelector("[data-t]").value,
-          description: card.querySelector("[data-d]").value,
+          title: $t.value,
+          description: $d.value,
           content: $c.value,
         });
         toast("已保存");
@@ -356,10 +432,10 @@ function entryCard(cat, e, reload) {
 function newEntryDialog(cat, reload) {
   dialogHost.innerHTML = `
     <div class="mask">
-      <div class="dialog">
+      <div class="dialog" role="dialog" aria-modal="true">
         <h2>新增条目</h2>
-        <div class="field"><label>标题（60 字内）</label><input class="inp" data-t maxlength="60" placeholder="一句话说清这条记忆"></div>
-        <div class="field"><label>描述（一行钩子，可选，60 字内）</label><input class="inp" data-d maxlength="60"></div>
+        <div class="field"><label>标题（60 字内） <span class="meta" data-tcnt></span></label><input class="inp" data-t maxlength="60" placeholder="一句话说清这条记忆"></div>
+        <div class="field"><label>描述（一行钩子，可选，60 字内） <span class="meta" data-dcnt></span></label><input class="inp" data-d maxlength="60"></div>
         <div class="field"><label>正文（${ENTRY_MAX_CHARS} 字符上限）</label><textarea class="ta tall" data-c maxlength="${ENTRY_MAX_CHARS}"></textarea><div class="meta" data-cnt></div></div>
         <div class="foot">
           <button class="btn" data-x>取消</button>
@@ -369,9 +445,26 @@ function newEntryDialog(cat, reload) {
     </div>`;
   const $c = dialogHost.querySelector("[data-c]");
   const $cnt = dialogHost.querySelector("[data-cnt]");
+  const $t = dialogHost.querySelector("[data-t]");
+  const $d = dialogHost.querySelector("[data-d]");
   const updCnt = () => { $cnt.textContent = `${$c.value.length} / ${ENTRY_MAX_CHARS} 字符 · UTF-8 ${L.utf8Length($c.value)} 字节`; };
+  const updTitleCnt = () => { dialogHost.querySelector("[data-tcnt]").textContent = `${$t.value.length} / 60`; };
+  const updDescCnt = () => { dialogHost.querySelector("[data-dcnt]").textContent = `${$d.value.length} / 60`; };
+  updCnt(); updTitleCnt(); updDescCnt();
   $c.addEventListener("input", updCnt);
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  $t.addEventListener("input", updTitleCnt);
+  $d.addEventListener("input", updDescCnt);
+  // 取消：内容非空时先确认，防止误点丢草稿
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => {
+    const dirty = $t.value.trim().length > 0 || $d.value.trim().length > 0 || $c.value.trim().length > 0;
+    if (!dirty) { dialogHost.innerHTML = ""; return; }
+    confirmDialog({
+      title: "放弃未保存内容？",
+      body: "当前新增内容尚未保存，取消将丢弃。确定要放弃吗？",
+      dangerText: "放弃",
+      onConfirm: () => { dialogHost.innerHTML = ""; },
+    });
+  });
   dialogHost.querySelector("[data-s]").addEventListener("click", async () => {
     const title = dialogHost.querySelector("[data-t]").value;
     const content = $c.value;
@@ -390,19 +483,30 @@ function newEntryDialog(cat, reload) {
 // 序列化/解析纯函数在 panel-logic.js（与检查共享同一份；desc 随注释往返不丢——修复）。
 // 已知边界：正文内含 "\n---\n"（单独一行 ---）的条目会被当分隔符切散，弹窗说明已注明。
 function sourceModeDialog(cat, entries, reload) {
+  const original = L.serializeEntries(entries);
   dialogHost.innerHTML = `
     <div class="mask">
-      <div class="dialog" style="width:min(860px,96vw)">
+      <div class="dialog" style="width:min(860px,96vw)" role="dialog" aria-modal="true">
         <h2>源码模式——直接编辑整类</h2>
         <div class="meta">每条 = <code class="k">## 标题</code> + 可选 <code class="k">&lt;!-- name: file.md desc: 一行钩子 --&gt;</code> + 正文；条目间用一行 <code class="k">---</code> 分隔（正文中请勿出现单独一行 --- ，会被当分隔符）。保存 = 整类替换（先自动备份再重建，desc 随注释往返不丢）。</div>
-        <textarea class="ta tall" data-src style="min-height:46vh">${esc(L.serializeEntries(entries))}</textarea>
+        <textarea class="ta tall" data-src style="min-height:46vh">${esc(original)}</textarea>
         <div class="foot">
           <button class="btn" data-x>取消</button>
           <button class="btn danger" data-s>保存整类（先备份）</button>
         </div>
       </div>
     </div>`;
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  // 取消：编辑过（与打开时内容不同）先确认，防止误点丢草稿
+  dialogHost.querySelector("[data-x]").addEventListener("click", () => {
+    const changed = dialogHost.querySelector("[data-src]").value !== original;
+    if (!changed) { dialogHost.innerHTML = ""; return; }
+    confirmDialog({
+      title: "放弃未保存内容？",
+      body: "源码模式已改动但尚未保存，取消将丢弃这些改动。确定要放弃吗？",
+      dangerText: "放弃",
+      onConfirm: () => { dialogHost.innerHTML = ""; },
+    });
+  });
   dialogHost.querySelector("[data-s]").addEventListener("click", () => {
     const parsed = L.parseSourceText(dialogHost.querySelector("[data-src]").value);
     confirmDialog({
@@ -464,8 +568,17 @@ function importDialog(cat, reload) {
   const $dry = dialogHost.querySelector("[data-dry]");
   const $confirm = dialogHost.querySelector("[data-confirm]");
   const $preview = dialogHost.querySelector("[data-previewHost]");
+  const $fmtHint = dialogHost.querySelector("[data-fmtHint]");
   let fmtTouched = false; // 用户手选过格式后，选文件不再覆盖手选
   const clearPreview = () => { $preview.innerHTML = ""; $confirm.style.display = "none"; };
+  // 格式说明随选择变化（死元素修复：让人看清每种格式会把内容怎么拆条）
+  const FMT_HINTS = {
+    "json": "结构：{\"entries\":[{\"title\":\"…\",\"content\":\"…\"}]}，逐条写入。",
+    "markdown-split": "按 ## 标题拆成多条，每段成为一条记忆。",
+    "markdown-whole": "整篇作为一条记忆写入（不拆分）。",
+  };
+  const updFmtHint = () => { $fmtHint.textContent = FMT_HINTS[$fmt.value] ?? ""; };
+  updFmtHint();
   dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
   dialogHost.querySelector("[data-file]").addEventListener("change", (ev) => {
     const file = ev.target.files[0];
@@ -479,14 +592,14 @@ function importDialog(cat, reload) {
     reader.onerror = () => toast("文件读取失败，请重试或直接粘贴内容", "err"); // 读取错误可见
     reader.onload = () => {
       $text.value = String(reader.result ?? "");
-      if (!fmtTouched) $fmt.value = L.detectImportFormat(file.name, $text.value);
+      if (!fmtTouched) { $fmt.value = L.detectImportFormat(file.name, $text.value); updFmtHint(); }
       clearPreview();
     };
     reader.readAsText(file);
   });
   // [已知] 预览失效修复：文本与格式任一变化都清旧预览/藏确认钮——所见即所写
   $text.addEventListener("input", clearPreview);
-  $fmt.addEventListener("change", () => { fmtTouched = true; clearPreview(); });
+  $fmt.addEventListener("change", () => { fmtTouched = true; updFmtHint(); clearPreview(); });
   $dry.addEventListener("click", async () => {
     const req = L.buildImportRequest(cat, $fmt.value, $text.value, L.importTitleOf($fmt.value, $text.value)); // markdown 标题随行
     if (!req.ok) { toast(req.error, "err"); return; }
@@ -526,11 +639,21 @@ function importDialog(cat, reload) {
 // ============ 页面渲染序号（快速切路由时旧响应不得写入新页） ============
 let pageRenderSeq = 0;
 
+// 近期动态保留天数：面板展示「N 天后过期」用。tolerant——新旧字段位置都认，
+// 缺失/非法 → undefined（L.recentExpireDays 自行落默认 30）。
+function recentKeepDaysOf(st) {
+  const s = st && typeof st === "object" ? st : {};
+  const nested = s.settings && typeof s.settings === "object" ? s.settings.recentKeepDays : undefined;
+  const raw = nested !== undefined ? nested : s.recentKeepDays;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 // ============ 页面：四分类 / 长期记忆 ============
-async function renderCategoryPage(cat, title) {
+async function renderCategoryPage(cat, title, query = "") {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = title;
-  pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天）" : "";
+  pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天，可在设置页调整）" : "";
   page.innerHTML = '<div class="empty">加载中…</div>';
   let data;
   try {
@@ -540,10 +663,18 @@ async function renderCategoryPage(cat, title) {
     page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
     return;
   }
+  // 近期动态页顺路取一次保留天数（过期文案按真实配置显示）；其它分类跳过，不白拉
+  let keepDays;
+  if (cat === "recent-activity") {
+    try { keepDays = recentKeepDaysOf(await api("state")); } catch { /* 取不到走默认 30 天 */ }
+  }
   if (seq !== pageRenderSeq) return; // 旧渲染丢弃：用户已切到别的路由
-  const reload = () => { renderCategoryPage(cat, title); refreshCounts(); };
+  const all = data.entries ?? [];
+  let current = query;
+  const reload = () => { renderCategoryPage(cat, title, current); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">
+      <input class="inp search" data-q placeholder="检索：标题 / 描述 / 正文即时过滤">
       <button class="btn danger" data-reset>重置</button>
       <button class="btn" data-source>源码模式</button>
       <button class="btn" data-import>导入</button>
@@ -552,19 +683,29 @@ async function renderCategoryPage(cat, title) {
     </div>
     <div data-list></div>`;
   const list = page.querySelector("[data-list]");
-  const entries = data.entries ?? [];
-  if (entries.length === 0) {
-    list.innerHTML = '<div class="empty">暂无条目。对话中聊到相关信息后，DSH 会自动归类到这里；也可以手动新增或导入。</div>';
-  } else {
-    for (const e of entries) list.appendChild(entryCard(cat, e, reload));
-  }
+  const $q = page.querySelector("[data-q]");
+  $q.value = query;
+  // 空态拆两态——库空（引导语）vs 搜索无命中（回显 query，区别于库空）
+  const renderList = (entries, q = "") => {
+    list.innerHTML = "";
+    if (entries.length === 0) {
+      list.innerHTML = all.length === 0
+        ? '<div class="empty">暂无条目。对话中聊到相关信息后，DSH 会自动归类到这里；也可以手动新增或导入。</div>'
+        : `<div class="empty">没有匹配「${esc(q)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
+      return;
+    }
+    for (const e of entries) list.appendChild(entryCard(cat, e, reload, keepDays));
+  };
+  renderList(L.filterEntries(all, query), query);
+  $q.addEventListener("input", (ev) => { current = ev.target.value; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
   page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog(cat, reload));
   page.querySelector("[data-import]").addEventListener("click", () => importDialog(cat, reload));
-  page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog(cat, entries, reload));
+  // 源码模式改的是整类（不随检索框过滤）——恒用全量，避免只写回命中的那几条
+  page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog(cat, all, reload));
   page.querySelector("[data-reset]").addEventListener("click", () => {
     confirmDialog({
       title: `重置「${title}」`,
-      body: `将清空该分类全部 ${entries.length} 条。\n清空前系统会自动把当前内容存一份备份（可在「设置」页恢复）。`,
+      body: `将清空该分类全部 ${all.length} 条。\n清空前系统会自动把当前内容存一份备份（可在「设置」页恢复）。`,
       dangerText: "备份并清空",
       onConfirm: async () => {
         try {
@@ -578,7 +719,7 @@ async function renderCategoryPage(cat, title) {
 }
 
 // ============ 页面：长期记忆（检索增强） ============
-async function renderLongTermPage() {
+async function renderLongTermPage(query = "") {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = "长期记忆";
   pageSub.textContent = "跨会话保存的重要信息与结论，不会过期";
@@ -593,7 +734,8 @@ async function renderLongTermPage() {
   }
   if (seq !== pageRenderSeq) return;
   const all = data.entries ?? [];
-  const reload = () => { renderLongTermPage(); refreshCounts(); };
+  let current = query;
+  const reload = () => { renderLongTermPage(current); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">
       <input class="inp search" data-q placeholder="检索：标题 / 描述 / 正文即时过滤">
@@ -605,19 +747,21 @@ async function renderLongTermPage() {
     </div>
     <div data-list></div>`;
   const list = page.querySelector("[data-list]");
+  const $q = page.querySelector("[data-q]");
+  $q.value = query; // reload 后保留并回填检索词（不再被重置）
   // 空态拆两态——库空（引导语）vs 搜索无命中（回显 query，区别于库空）
-  const renderList = (entries, query = "") => {
+  const renderList = (entries, q = "") => {
     list.innerHTML = "";
     if (entries.length === 0) {
       list.innerHTML = all.length === 0
         ? '<div class="empty">暂无长期记忆。对话中沉淀出跨会话有价值的结论后，DSH 会自动归档；也可以手动新增或导入。</div>'
-        : `<div class="empty">没有匹配「${esc(query)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
+        : `<div class="empty">没有匹配「${esc(q)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
       return;
     }
     for (const e of entries) list.appendChild(entryCard("long-term", e, reload));
   };
-  renderList(all);
-  page.querySelector("[data-q]").addEventListener("input", (ev) => renderList(L.filterEntries(all, ev.target.value), ev.target.value));
+  renderList(L.filterEntries(all, query), query);
+  $q.addEventListener("input", (ev) => { current = ev.target.value; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
   page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog("long-term", reload));
   page.querySelector("[data-import]").addEventListener("click", () => importDialog("long-term", reload));
   page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog("long-term", all, reload));
@@ -675,32 +819,53 @@ async function renderPersonaPage() {
     dirty.textContent = editor.value !== savedContent ? "未保存" : "";
   });
   const presetsHost = page.querySelector("[data-presets]");
+  const isDirty = () => editor.value !== savedContent;
+  const applyPreset = (preset) => {
+    editor.value = preset.content;
+    renderPreview();
+    dirty.textContent = "未保存";
+  };
   for (const preset of L.PERSONA_PRESETS) {
     const btn = document.createElement("button");
     btn.className = "pill";
     btn.textContent = preset.label;
     btn.addEventListener("click", () => {
       if (preset.id === "custom") { editor.focus(); return; } // 自定义 = 保留当前文本
-      editor.value = preset.content;
-      renderPreview();
-      dirty.textContent = "未保存";
+      // 未保存改动会被预设整段覆盖——先确认，防一键丢失
+      if (isDirty()) {
+        confirmDialog({
+          title: "覆盖未保存内容？",
+          body: `当前编辑器有未保存的改动，套用「${preset.label}」会覆盖它们。确定要覆盖吗？`,
+          dangerText: "覆盖",
+          onConfirm: () => applyPreset(preset),
+        });
+        return;
+      }
+      applyPreset(preset);
     });
     presetsHost.appendChild(btn);
   }
-  page.querySelector("[data-save]").addEventListener("click", async () => {
+  const saveBtn = page.querySelector("[data-save]");
+  saveBtn.addEventListener("click", async () => {
+    saveBtn.disabled = true; // 三段式：busy 期间禁用，完成/失败恢复
+    saveBtn.textContent = "处理中…";
     try {
       await apiPut("persona", { content: editor.value });
       savedContent = editor.value;
       dirty.textContent = "";
-      toast("人设已保存，下一轮对话生效");
+      toast("人设已保存，保存后下一轮对话生效");
     } catch (err) { toast("保存失败：" + err.message, "err"); }
+    finally { saveBtn.disabled = false; saveBtn.textContent = "保存人设"; }
   });
-  page.querySelector("[data-reset]").addEventListener("click", () => {
+  const resetBtn = page.querySelector("[data-reset]");
+  resetBtn.addEventListener("click", () => {
     confirmDialog({
       title: "恢复默认人设",
       body: "将恢复为出厂默认模板（补充设定，不会清空官方人格）。当前内容会被覆盖。",
       dangerText: "恢复默认",
       onConfirm: async () => {
+        resetBtn.disabled = true;
+        resetBtn.textContent = "处理中…";
         try {
           const out = await apiPost("persona/reset");
           editor.value = out.content;
@@ -709,6 +874,7 @@ async function renderPersonaPage() {
           dirty.textContent = "";
           toast("已恢复默认人设");
         } catch (err) { toast("恢复失败：" + err.message, "err"); }
+        finally { resetBtn.disabled = false; resetBtn.textContent = "恢复默认"; }
       },
     });
   });
@@ -786,12 +952,14 @@ async function renderProjectsPage() {
   }
   page.innerHTML = projects.map((p) => `
     <div class="card"><h3><code class="k">${esc(p.id)}</code></h3>
-    <div class="meta">${p.entries} 条 · 最后更新 ${esc(fmtTime(p.lastMtimeMs))}</div>
+    <div class="meta">${p.entries} 条 · 最后更新 <span title="${esc(fmtTime(p.lastMtimeMs))}">${esc(L.relativeTimeOf(p.lastMtimeMs))}</span></div>
     <div class="row" style="margin-top:8px"><button class="btn sm" data-pexport="${esc(p.id)}">导出此项目（JSON）</button></div></div>`).join("")
     + '<div class="meta">项目记忆只读——由对话自动维护；全量导出走「设置」页。</div>';
   for (const btn of Array.from(page.querySelectorAll("[data-pexport]"))) {
     btn.addEventListener("click", async () => {
       const id = btn.getAttribute("data-pexport");
+      btn.disabled = true; // 三段式 busy：导出耗时且可能失败，完成/失败恢复
+      btn.textContent = "处理中…";
       try {
         const out = await api(`project/${encodeURIComponent(id)}/export`);
         const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
@@ -802,6 +970,7 @@ async function renderProjectsPage() {
         URL.revokeObjectURL(a.href);
         toast(`已导出 ${out.entries.length} 条`);
       } catch (err) { toast("导出失败：" + err.message, "err"); }
+      finally { btn.disabled = false; btn.textContent = "导出此项目（JSON）"; }
     });
   }
 }
@@ -851,6 +1020,18 @@ function pipeExtractionLogHtml(data, limit = 12) {
       </details>`;
 }
 
+/** 补提重试轮询窗口：单次提取超时 × 重试次数，夹在 [60s, 10min]。
+ *  新契约 /state.extractionTimeoutMs / extractionRetryAttempts 缺失=旧版 → 走缺省 120s × 3。
+ *  真实提取链耗时 ≈ retryAttempts × timeoutMs + 退避，窗口太短会误报"未恢复"。 */
+function retryPollWindowMs(st) {
+  const s = st && typeof st === "object" ? st : {};
+  const to = Number(s.extractionTimeoutMs);
+  const attempts = Number(s.extractionRetryAttempts);
+  const timeoutMs = Number.isFinite(to) && to > 0 ? to : 120000;
+  const n = Number.isFinite(attempts) && attempts > 0 ? attempts : 3;
+  return Math.min(10 * 60_000, Math.max(60_000, timeoutMs * n));
+}
+
 /** 管道健康卡：三态灯 + 分桶 + 最近 5 条详情 + 错过区间 + 失败日志 + 重试/诊断按钮。
  *  绿态折叠一行摘要；红/黄/在途展开病灶。 */
 function buildPipeHealthCard(data) {
@@ -860,6 +1041,8 @@ function buildPipeHealthCard(data) {
   const inFlight = data.extractionInFlight === true;
   const level = L.pipeHealthLevel(efRaw, { inFlight });
   const dotCls = level === "green" ? "green" : level === "yellow" ? "yellow" : level === "red" ? "red" : "grey";
+  // 状态词：颜色之外的第二编码（色弱/灰度屏也能读），与灯同 aria 标注
+  const statusWord = level === "green" ? "正常" : level === "yellow" ? "告警" : level === "red" ? "失败" : "进行中";
   const hasDetail = ef !== null && Array.isArray(ef.recent); // recent 缺失=旧服务端
   // 未恢复区间双源（提前算，绿态摘要文案要用）：内存态 lastFailedRange 在场照旧
   // （extractionRangeText 自带 streak≥1 门），否则回落盘侧 extractionLog.unrecovered——
@@ -914,6 +1097,10 @@ function buildPipeHealthCard(data) {
       : "（重启前遗留；在该会话里继续对话，或重开该会话后点「立即重试提取」，即可补提）";
     parts.push(`<div class="notice show err" style="margin:6px 0 0">${esc(rangeText)}${tail}</div>`);
   }
+  // 已放弃区间（连续失败过多被放弃、游标已推进）：盘侧 journal 持久可见，
+  // 不随后来任意一轮成功而消失——这部分记忆不会自动补上，必须留痕让用户知道。
+  const abandonedLine = L.abandonedNoticeText(data.extractionLog && data.extractionLog.abandoned);
+  if (abandonedLine) parts.push(`<div class="notice show err" style="margin:6px 0 0">${esc(abandonedLine)}</div>`);
   // 注入面一行（消息通道注入健康）——无数据（旧版宿主/0 次）不显示，改动静默
   // 写入安全面一行（八段摘要：回收站待清/校验失败/硬事实拦截/硬事实丢失/盲写降级/sha1 不符拒写/批锁冲突/快照失败）
   //   /state.safety 缺失（旧版宿主）→ safetySummaryText 返回 null，不渲染（tolerant 消费）。
@@ -931,7 +1118,7 @@ function buildPipeHealthCard(data) {
   card.className = "card";
   card.id = "data-pipe-health"; // 门牌「详情」深链滚动锚点
   card.innerHTML = `
-    <h3><span class="dot ${dotCls}"></span>自动提取管道${inFlight ? '<span class="badge">提取中…</span>' : ""}
+    <h3><span class="dot ${dotCls}" role="img" aria-label="状态：${statusWord}"></span><span class="statusWord ${dotCls}" title="自动提取管道状态">${statusWord}</span>自动提取管道${inFlight ? '<span class="badge">提取中…</span>' : ""}
       <span class="ops">
         <button class="btn sm" data-retryExtract>立即重试提取</button>
         <button class="btn sm" data-copyDiag>复制诊断信息</button>
@@ -974,9 +1161,11 @@ function buildPipeHealthCard(data) {
           toast("当前没有待重试的提取区间");
           return;
         }
-        // 每 2s 轮询 /state 最多 60s，看 streak 清零才算恢复——此路径绝不再次调 retry
+        // 轮询窗口按「单次提取超时 × 重试次数」推导（下限 60s 托底、上限 10 分钟封顶），
+        // 每 2s 轮询 /state，看 streak 清零才算恢复——此路径绝不再次调 retry
         pipeRetryBusy = true;
-        const deadline = Date.now() + 60000;
+        const pollWindowMs = retryPollWindowMs(data);
+        const deadline = Date.now() + pollWindowMs;
         const poll = async () => {
           let st = null;
           try { st = await api("state"); } catch { /* 单次拉取失败：继续轮 */ }
@@ -988,7 +1177,8 @@ function buildPipeHealthCard(data) {
           }
           if (Date.now() >= deadline) {
             pipeRetryBusy = false;
-            toast("重试后仍未恢复，查看失败详情", "err");
+            // 超时如实说：窗口内没等到状态翻转，但提取可能仍在进行（不是"失败"）
+            toast("等待超时：重试后仍未恢复，提取可能仍在进行——可稍后回来查看失败详情", "err");
             refreshPipeCards();
             return;
           }
@@ -1096,7 +1286,7 @@ async function renderTrashPage() {
         <button class="btn sm danger" data-purgeOld>清理过期（按保留天数）</button>
         <button class="btn sm danger" data-purgeAll>清空回收站</button>
       </span></h3>
-      <div class="meta">按天清理用「设置」里的保留天数（服务端 settings.trashKeepDays，默认 30 天）；清空 = 全清，不可恢复。</div></div>`;
+      <div class="meta">按天清理用「设置」页「保留策略」里的回收站保留天数（默认 30 天）；清空 = 全清，不可恢复。</div></div>`;
   for (const btn of Array.from(page.querySelectorAll("[data-restore]"))) {
     btn.addEventListener("click", () => {
       const e = entries[Number(btn.getAttribute("data-restore"))];
@@ -1105,11 +1295,13 @@ async function renderTrashPage() {
         body: `将把 ${e.files.length} 个文件恢复到原位（同名文件会被覆盖），并同步对账 MEMORY.md 索引。\n确定继续吗？`,
         dangerText: "恢复",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             const out = await apiPost("trash/restore", { id: e.id });
             toast(`已恢复 ${out.restored.length} 个文件${out.indexReconciled ? "（索引已对账）" : ""}`);
             reload();
           } catch (err) { toast("恢复失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "恢复全部"; }
         },
       });
     });
@@ -1124,12 +1316,14 @@ async function renderTrashPage() {
         body: `将把「${esc(f.name)}」恢复到 ${esc(L.safetyLocationText(f))}（同名文件会被覆盖；被覆盖的当前版本会自动留一份快照可找回）。\n确定继续吗？`,
         dangerText: "恢复",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             const out = await apiPost("trash/restore", { id: e.id, name: f.name });
             if (out.restored.length === 0) { toast("没有文件被恢复（副本可能已缺失）", "err"); return; }
             toast(`已恢复 ${out.restored[0]}${out.indexReconciled ? "（索引已对账）" : ""}`);
             reload();
           } catch (err) { toast("恢复失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "恢复此文件"; }
         },
       });
     });
@@ -1142,19 +1336,22 @@ async function renderTrashPage() {
         body: `将永久删除这条里的 ${e.files.length} 个文件副本，无法再恢复。\n确定继续吗？`,
         dangerText: "永久清除",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             const out = await apiPost("trash/purge", { id: e.id });
             toast(`已清除 ${out.purged} 条`);
             reload();
           } catch (err) { toast("清除失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "清除此条"; }
         },
       });
     });
   }
-  page.querySelector("[data-purgeOld]").addEventListener("click", () => {
+  const purgeOldBtn = page.querySelector("[data-purgeOld]");
+  purgeOldBtn.addEventListener("click", () => {
     confirmDialog({
       title: "清理过期条目",
-      body: "将永久删除超过保留天数（服务端 settings.trashKeepDays，默认 30 天）的回收站条目。\n确定继续吗？",
+      body: "将永久删除超过「设置」页「保留策略」里回收站保留天数的条目（默认 30 天）。\n确定继续吗？",
       dangerText: "清理过期",
       onConfirm: async () => {
         let days = 30;
@@ -1163,25 +1360,30 @@ async function renderTrashPage() {
           const d = Number(st.settings && st.settings.trashKeepDays);
           if (Number.isFinite(d) && d >= 0) days = d;
         } catch { /* 取不到就用默认 30 天，不阻断 */ }
+        purgeOldBtn.disabled = true; purgeOldBtn.textContent = "处理中…";
         try {
           const out = await apiPost("trash/purge", { olderThanDays: days });
           toast(out.purged > 0 ? `已清理 ${out.purged} 条过期条目（>${days} 天）` : `没有超过 ${days} 天的条目`);
           reload();
         } catch (err) { toast("清理失败：" + err.message, "err"); }
+        finally { purgeOldBtn.disabled = false; purgeOldBtn.textContent = "清理过期（按保留天数）"; }
       },
     });
   });
-  page.querySelector("[data-purgeAll]").addEventListener("click", () => {
+  const purgeAllBtn = page.querySelector("[data-purgeAll]");
+  purgeAllBtn.addEventListener("click", () => {
     confirmDialog({
       title: "清空回收站",
       body: `将永久删除全部 ${entries.length} 个条目里的所有文件副本，无法再恢复。\n确定继续吗？`,
       dangerText: "全部清空",
       onConfirm: async () => {
+        purgeAllBtn.disabled = true; purgeAllBtn.textContent = "处理中…";
         try {
           const out = await apiPost("trash/purge", {});
           toast(`已清空 ${out.purged} 条`);
           reload();
         } catch (err) { toast("清空失败：" + err.message, "err"); }
+        finally { purgeAllBtn.disabled = false; purgeAllBtn.textContent = "清空回收站"; }
       },
     });
   });
@@ -1220,7 +1422,7 @@ async function renderSnapshotsPage() {
         <tr><th style="width:32%">文件</th><th style="width:22%">位置</th><th style="width:88px">当时动作</th><th style="width:96px">sha1</th><th style="width:96px"></th></tr>
         ${s.files.map((f, j) => `<tr><td>${esc(f.name)}</td><td class="meta">${esc(L.safetyLocationText(f))}</td><td class="meta">${esc(L.safetyActionText(f.action))}</td><td class="meta">${esc(f.sha1 || "—")}</td><td><button class="btn sm" data-one="${i}:${j}">恢复此文件</button></td></tr>`).join("")}
       </table></div></div>`).join("")
-    + '<div class="meta">快照只增不减：超过保留份数（服务端 settings.surgicalKeep，默认 30 份）的最旧快照由写入路径自动清理；本页不提供手动删除入口。</div>';
+    + '<div class="meta">快照只增不减：超过保留份数（可在「设置」页「保留策略」调整，默认 30 份）的最旧快照由写入路径自动清理；本页不提供手动删除入口。</div>';
   for (const btn of Array.from(page.querySelectorAll("[data-restore]"))) {
     btn.addEventListener("click", () => {
       const s = snapshots[Number(btn.getAttribute("data-restore"))];
@@ -1229,11 +1431,13 @@ async function renderSnapshotsPage() {
         body: `将把快照里的 ${s.files.length} 个文件回拷到原位（同名文件会被覆盖），并同步对账 MEMORY.md 索引。\n当前更新的内容会被旧文覆盖，确定继续吗？`,
         dangerText: "恢复整份",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             const out = await apiPost("snapshots/restore", { id: s.id });
             toast(`已恢复 ${out.restored.length} 个文件${out.indexReconciled ? "（索引已对账）" : ""}`);
             reload();
           } catch (err) { toast("恢复失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "恢复整份快照"; }
         },
       });
     });
@@ -1248,12 +1452,14 @@ async function renderSnapshotsPage() {
         body: `将把「${esc(f.name)}」回拷到 ${esc(L.safetyLocationText(f))}（同名文件会被覆盖；被覆盖的当前版本会自动留一份快照可找回）。\n确定继续吗？`,
         dangerText: "恢复",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             const out = await apiPost("snapshots/restore", { id: s.id, name: f.name });
             if (out.restored.length === 0) { toast("没有文件被恢复（副本可能已缺失）", "err"); return; }
             toast(`已恢复 ${out.restored[0]}${out.indexReconciled ? "（索引已对账）" : ""}`);
             reload();
           } catch (err) { toast("恢复失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "恢复此文件"; }
         },
       });
     });
@@ -1287,13 +1493,23 @@ async function renderSettingsPage() {
   if (data.corrupt) corruptBits.push("settings.json（开关）");
   if (data.addressingCorrupt) corruptBits.push("addressing.json（称呼）");
   if (data.personaCorrupt) corruptBits.push("persona.md（人设）");
-  // 布局：开关卡 → 管道健康卡（承接原单行红卡）→ 提取模型卡 → corrupt 卡 → 数据卡 → 备份卡
+  // 备份时间列：createdAt 契约新增（ISO 串或毫秒），null → "—"；相对时间 + 悬停绝对时间
+  const backupTime = (b) => {
+    const raw = b && b.createdAt;
+    if (raw == null) return "—";
+    const ms = typeof raw === "number" ? raw : Date.parse(String(raw));
+    return Number.isFinite(ms) ? `<span title="${esc(fmtTime(ms))}">${esc(L.relativeTimeOf(ms))}</span>` : "—";
+  };
+  const BACKUP_LIST_LIMIT = 20;
+  const shownBackups = backups.slice(0, BACKUP_LIST_LIMIT);
+  // 布局：开关卡（损坏标记贴总开关）→ 管道健康卡 → 提取模型卡 → 嵌入卡 → 保留策略卡 → corrupt 卡 → 数据卡 → 备份卡
   page.innerHTML = `
     <div class="card"><h3>开关</h3>
       ${switchRow("conversationMemory", "对话记忆（总开关）", "关闭后不带任何记忆、也不再自动记录")}
+      ${data.corrupt ? '<div class="notice show err" style="margin:6px 0 0">设置文件已损坏，已按缺省运行——请复查以下开关是否符合预期（改动任一项会重写修复该文件）。</div>' : ""}
       ${switchRow("projectMemory", "项目记忆", "关闭后不再注入/记录项目记忆")}
       ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
-      <div class="meta" data-swHint>改动即时生效（下一轮对话）。</div>
+      <div class="meta" data-swHint>保存后下一轮对话生效。</div>
     </div>
     <div data-pipeHealth></div>
     <div data-pipeModel></div>
@@ -1315,17 +1531,29 @@ async function renderSettingsPage() {
         <button class="btn" id="embTest">测试连接</button>
         <button class="btn primary" id="embSave">保存</button></div>
     </div>
+    <div class="card" id="card-retention"><h3>保留策略</h3>
+      <div class="field"><label>回收站保留天数（0 = 可当天清理）</label>
+        <input class="inp" id="keepTrashDays" type="number" min="0" step="1"></div>
+      <div class="field"><label>快照保留份数（正整数）</label>
+        <input class="inp" id="keepSurgical" type="number" min="1" step="1"></div>
+      <div class="field"><label>近期动态保留天数（正整数）</label>
+        <input class="inp" id="keepRecentDays" type="number" min="1" step="1"></div>
+      <div class="meta" id="keepStatus">留空表示不改该项。默认：回收站 30 天、快照 30 份、近期动态 30 天；保存后下一轮对话生效。</div>
+      <div class="kv"><b>操作</b><span class="spacer"></span>
+        <button class="btn primary" id="keepSave">保存保留策略</button></div>
+    </div>
     ${corruptBits.length > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">解析失败（已按缺省运行）：${corruptBits.map(esc).join("、")}——点任意开关 / 重新保存对应内容即可重写修复。</div>` : ""}
     <div class="card"><h3>数据</h3>
       <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
       <div class="kv"><b>清空</b><button class="btn danger" data-clearAll>清空全部记忆（逐类自动备份）</button></div>
     </div>
     <div class="card"><h3>备份（重置/导入/恢复前自动留档）</h3>
-      ${backups.length === 0 ? '<div class="meta">暂无备份。</div>' : backups.slice(0, 20).map((b) => `
+      ${backups.length === 0 ? '<div class="meta">暂无备份。</div>' : shownBackups.map((b) => `
         <div class="kv"><b><code class="k">${esc(b.id)}</code></b>
-          <span class="meta">${esc(b.reason ?? "")}${b.incomplete ? "（不完整）" : ""}</span><span class="spacer"></span>
+          <span class="meta">${esc(b.reason ?? "")}${b.incomplete ? "（不完整）" : ""} · ${backupTime(b)}</span><span class="spacer"></span>
           <button class="btn sm" data-restore="${esc(b.id)}">恢复此备份</button>
         </div>`).join("")}
+      ${backups.length > BACKUP_LIST_LIMIT ? `<div class="meta">还有 ${backups.length - BACKUP_LIST_LIMIT} 条未显示（仅显示最近 ${BACKUP_LIST_LIMIT} 条）。</div>` : ""}
     </div>`;
   // 管道健康卡 + 提取模型卡（元素卡：重试与轮询只重渲染这两张，不打扰开关/备份区）
   page.querySelector("[data-pipeHealth]").replaceWith(buildPipeHealthCard(data));
@@ -1342,7 +1570,7 @@ async function renderSettingsPage() {
       const key = input.getAttribute("data-sw");
       try {
         await apiPut("settings", { [key]: input.checked });
-        page.querySelector("[data-swHint]").textContent = "已保存，下一轮对话生效。";
+        page.querySelector("[data-swHint]").textContent = "保存后下一轮对话生效。";
         refreshCounts();
       } catch (err) {
         input.checked = !input.checked;
@@ -1354,8 +1582,17 @@ async function renderSettingsPage() {
   {
     const emb = (data.settings && data.settings.embedding) || null;
     const eff = data.embeddingEffective || null;
+    const entryCfg = data.embeddingConfig && typeof data.embeddingConfig === "object" ? data.embeddingConfig : {};
     const q = (id) => page.querySelector("#" + id);
-    const prefill = emb ?? { enabled: eff ? eff.enabled === true : false, baseUrl: eff ? eff.baseUrl : "", model: eff ? eff.model : "", provider: eff ? eff.provider : "" };
+    // 预填优先取 settings.embedding（面板自己写的那份）；缺省时回落生效配置，再回落 entry config
+    // （后端契约新增 embeddingConfig.baseUrl/.model）——避免"表单空白 + 一保存就把好配置清空"。
+    // API Key 框永不预填明文（apiKeySet 布尔口径不变）。
+    const prefill = emb ?? {
+      enabled: eff ? eff.enabled === true : false,
+      baseUrl: (eff && eff.baseUrl) || entryCfg.baseUrl || "",
+      model: (eff && eff.model) || entryCfg.model || "",
+      provider: (eff && eff.provider) || entryCfg.provider || "",
+    };
     q("embBaseUrl").value = prefill.baseUrl || "";
     q("embModel").value = prefill.model || "";
     q("embProvider").value = prefill.provider || "";
@@ -1369,16 +1606,19 @@ async function renderSettingsPage() {
       if (q("embApiKey").value.length > 0) out.apiKey = q("embApiKey").value; // 仅在输入新 key 时提交，避免覆盖已存 key
       return out;
     };
-    q("embSave").addEventListener("click", async () => {
+    const embSaveBtn = q("embSave");
+    embSaveBtn.addEventListener("click", async () => {
       const patch = collect();
       const v = L.validateEmbeddingDraft(patch);
       if (!v.ok) { toast(v.error, "err"); return; }
+      embSaveBtn.disabled = true; embSaveBtn.textContent = "处理中…"; // 三段式 busy
       try {
         await apiPut("settings", { embedding: patch });
         q("embApiKey").value = "";
-        toast("嵌入配置已保存，下一轮对话生效。");
+        toast("嵌入配置已保存，保存后下一轮对话生效。");
         renderSettingsPage();
       } catch (err) { toast("保存失败：" + err.message, "err"); }
+      finally { embSaveBtn.disabled = false; embSaveBtn.textContent = "保存"; }
     });
     q("embTest").addEventListener("click", async () => {
       const btn = q("embTest");
@@ -1411,7 +1651,50 @@ async function renderSettingsPage() {
       });
     });
   }
-  page.querySelector("[data-export]").addEventListener("click", async () => {
+  // 保留策略卡：回收站保留天数 / 快照保留份数 / 近期动态保留天数。预填 /state.settings.*，
+  // 保存走 PUT /settings（键名即这三项；后端严格校验，非法值 400——前端先做正整数预检）。
+  {
+    const q = (id) => page.querySelector("#" + id);
+    const $td = q("keepTrashDays"), $sk = q("keepSurgical"), $rd = q("keepRecentDays"), $st = q("keepStatus");
+    // tolerant 预填：缺失不写 0（留空，placeholder 说明默认值）
+    if (s.trashKeepDays != null) $td.value = String(s.trashKeepDays);
+    if (s.surgicalKeep != null) $sk.value = String(s.surgicalKeep);
+    if (s.recentKeepDays != null) $rd.value = String(s.recentKeepDays);
+    const keepBtn = q("keepSave");
+    keepBtn.addEventListener("click", async () => {
+      // 正整数预检（回收站天数允许 0）：空/非整数/负数直接拦下，不发 400 空跑
+      const tdRaw = $td.value.trim();
+      const skRaw = $sk.value.trim();
+      const rdRaw = $rd.value.trim();
+      const patch = {};
+      if (tdRaw !== "") {
+        const n = Number(tdRaw);
+        if (!Number.isInteger(n) || n < 0) { toast("回收站保留天数必须是不小于 0 的整数", "err"); return; }
+        patch.trashKeepDays = n;
+      }
+      if (skRaw !== "") {
+        const n = Number(skRaw);
+        if (!Number.isInteger(n) || n < 1) { toast("快照保留份数必须是正整数", "err"); return; }
+        patch.surgicalKeep = n;
+      }
+      if (rdRaw !== "") {
+        const n = Number(rdRaw);
+        if (!Number.isInteger(n) || n < 1) { toast("近期动态保留天数必须是正整数", "err"); return; }
+        patch.recentKeepDays = n;
+      }
+      if (Object.keys(patch).length === 0) { toast("没有可保存的改动（三项均为空）", "err"); return; }
+      keepBtn.disabled = true; keepBtn.textContent = "处理中…";
+      try {
+        await apiPut("settings", patch);
+        toast("保留策略已保存，下一轮对话生效。");
+        renderSettingsPage();
+      } catch (err) { toast("保存失败：" + err.message, "err"); }
+      finally { keepBtn.disabled = false; keepBtn.textContent = "保存保留策略"; }
+    });
+  }
+  const exportBtn = page.querySelector("[data-export]");
+  exportBtn.addEventListener("click", async () => {
+    exportBtn.disabled = true; exportBtn.textContent = "处理中…";
     try {
       const out = await api("export");
       const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
@@ -1422,23 +1705,47 @@ async function renderSettingsPage() {
       URL.revokeObjectURL(a.href);
       toast("已导出");
     } catch (err) { toast("导出失败：" + err.message, "err"); }
+    finally { exportBtn.disabled = false; exportBtn.textContent = "导出全部（JSON）"; }
   });
-  page.querySelector("[data-clearAll]").addEventListener("click", () => {
+  const clearAllBtn = page.querySelector("[data-clearAll]");
+  clearAllBtn.addEventListener("click", () => {
     confirmDialog({
       title: "清空全部记忆",
       body: "将依次清空五个全局分类（每个分类清空前都会自动备份）。人设与称呼保留。\n确定继续吗？",
       dangerText: "逐类备份并清空",
       onConfirm: async () => {
+        clearAllBtn.disabled = true; clearAllBtn.textContent = "处理中…";
+        const cats = [
+          ["work-profile", "工作背景"], ["user-profile", "用户个人背景"],
+          ["current-focus", "当前关注"], ["recent-activity", "近期动态"], ["long-term", "长期记忆"],
+        ];
+        let total = 0;
+        const done = []; // {label, backupId}
+        const failed = []; // {label, message}
         try {
-          let total = 0;
-          for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
-            const out = await apiPost(`category/${cat}/reset`);
-            total += out.removed ?? 0;
+          for (const [cat, label] of cats) {
+            try {
+              const out = await apiPost(`category/${cat}/reset`);
+              total += out.removed ?? 0;
+              done.push({ label, backupId: out.backupId });
+            } catch (err) {
+              failed.push({ label, message: err.message });
+            }
           }
-          toast(`已清空全部（共 ${total} 条，逐类备份）`);
+          if (failed.length === 0) {
+            toast(`已清空全部（共 ${total} 条，逐类备份）`);
+          } else {
+            // 中途失败不静默：列出已清/未清分类 + 指路对应备份 id（逐类备份可单独恢复）
+            const doneText = done.length > 0
+              ? done.map((d) => `${d.label}（备份 ${d.backupId}）`).join("、")
+              : "无";
+            const failText = failed.map((f) => `${f.label}（${f.message}）`).join("、");
+            toast(`清空未完成——已清空：${doneText}；未清空：${failText}。可到下方备份列表按 id 恢复。`, "err");
+          }
           renderSettingsPage();
           refreshCounts();
         } catch (err) { toast("清空失败：" + err.message, "err"); }
+        finally { clearAllBtn.disabled = false; clearAllBtn.textContent = "清空全部记忆（逐类自动备份）"; }
       },
     });
   });
@@ -1450,12 +1757,14 @@ async function renderSettingsPage() {
         body: `将用备份 ${esc(id)} 全量覆盖当前全局记忆与人设/称呼。\n恢复前系统会先把当前状态再备份一次。确定继续吗？`,
         dangerText: "恢复",
         onConfirm: async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
           try {
             await apiPost("backup/restore", { id });
             toast("已恢复（恢复前现态已自动备份）");
             renderSettingsPage();
             refreshCounts();
           } catch (err) { toast("恢复失败：" + err.message, "err"); }
+          finally { btn.disabled = false; btn.textContent = "恢复此备份"; }
         },
       });
     });
@@ -1511,9 +1820,26 @@ function refreshCounts() {
         : key === "trash" ? L.safetyCountOf(data.safety, "trashPending")
         : key === "snapshots" ? L.safetyCountOf(data.safety, "surgicalBackups")
         : (byCat[key] || 0);
-      el.textContent = n > 0 ? String(n) : "";
+      // 提取连击红徽标：0 时隐藏（不是计数语义）；其余计数 0 也显示 "0"，
+      // 与"加载失败"的空态区分开（后者给可见提示态，不吞错）
+      el.textContent = key === "extraction-streak" ? (n > 0 ? String(n) : "") : String(n);
     });
-  }).catch(() => { /* 计数失败不炸导航 */ });
+    clearCountsError();
+  }).catch(() => { markCountsError(); }); // 计数失败显式提示态（不静默吞错）
+}
+
+/** 计数拉取失败提示：总开关旁给微弱可见标记（成功时清除）。 */
+function markCountsError() {
+  const nav = document.getElementById("nav");
+  if (nav) nav.classList.add("counts-error");
+  const el = document.getElementById("countsStatus");
+  if (el) { el.hidden = false; el.textContent = "计数暂时无法加载"; }
+}
+function clearCountsError() {
+  const nav = document.getElementById("nav");
+  if (nav) nav.classList.remove("counts-error");
+  const el = document.getElementById("countsStatus");
+  if (el) { el.hidden = true; }
 }
 
 window.addEventListener("load", () => {

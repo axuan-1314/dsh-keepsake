@@ -173,7 +173,7 @@ test("防漂移：红条文案兜底 extractionNoticeTextFallback 与实现表�
   }
   // 模板锚（任何一边改文案，另一边立刻失去一致性被上一循环抓住；此处再钉模板本身）
   assert.ok(clientSrc.includes("`自动提取失败 ${streak} 次 · 最近：${reason}（${model}）`"));
-  assert.ok(clientSrc.includes("`记忆自动提取最近连续失败 ${streak} 次，期间对话内容可能未被记录——请检查服务端日志。`"));
+  assert.ok(clientSrc.includes("`记忆自动提取最近连续失败 ${streak} 次，期间对话内容可能未被记录——可在记忆管理面板复制诊断信息（含 /state 快照）反馈给开发者。`"));
 });
 
 test("防漂移：错过区间兜底 extractionRangeTextFallback 与实现表驱动一致", () => {
@@ -189,7 +189,7 @@ test("防漂移：错过区间兜底 extractionRangeTextFallback 与实现表驱
   for (const [ef, range] of cases) {
     assert.equal(fn(ef, range), extractionRangeText(ef, range), `兜底与实现输出不一致：${JSON.stringify([ef, range])}`);
   }
-  assert.ok(clientSrc.includes("`seq ${from} 之后的轮次尚未记录，恢复后自动补提`"));
+  assert.ok(clientSrc.includes("`第 ${from} 轮对话之后的内容尚未记录，恢复后自动补提`"));
 });
 
 test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示", () => {
@@ -204,6 +204,7 @@ test("结构钉：门牌红条两行制 + 详情深链 + 恢复一次性提示",
 
 test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（消费锚）", () => {
   assert.match(panelSrc, /L\.extractionNoticeText\(/, "健康卡红态 headline 必须走共享文案纯函数");
+  assert.match(panelSrc, /L\.abandonedNoticeText\(/, "已放弃区间提示必须接线渲染（不接线=放弃留痕白做）");
   assert.match(panelSrc, /L\.pipeHealthLevel\(/, "三态判定必须走纯函数");
   assert.match(panelSrc, /L\.modelShortName\(/, "模型短名必须走纯函数");
   assert.match(panelSrc, /L\.relativeTimeOf\(/, "相对时间必须走纯函数");
@@ -225,9 +226,130 @@ test("结构钉：立即重试三段式——retry 只在 click handler、busy d
   assert.match(panelSrc, /retryBtn\.disabled = true/, "202 后按钮 busy disabled");
   assert.match(panelSrc, /retryBtn\.textContent = "提取中…"/, "busy 文案「提取中…」");
   assert.match(panelSrc, /toast\("提取已恢复"\)/, "streak 清零才 toast 成功（禁同步假承诺）");
-  assert.match(panelSrc, /重试后仍未恢复，查看失败详情/, "60s 超时文案");
+  assert.match(panelSrc, /等待超时：重试后仍未恢复/, "超时文案如实说「可能仍在进行」");
   assert.match(panelSrc, /setTimeout\(poll, 2000\)/, "2s 轮询节奏");
-  assert.match(panelSrc, /Date\.now\(\) \+ 60000/, "轮询上限 60s");
+  assert.match(panelSrc, /retryPollWindowMs\(data\)/, "轮询窗口必须按契约推导（非硬编码 60s）");
+  assert.match(panelSrc, /10 \* 60_000, Math\.max\(60_000, timeoutMs \* n\)/, "窗口夹在 [60s, 10min]"); 
+  assert.match(panelSrc, /extractionRetryAttempts/, "窗口消费契约新增 extractionRetryAttempts");
+  assert.match(panelSrc, /extractionTimeoutMs/, "窗口消费契约新增 extractionTimeoutMs");
+});
+
+// ---- 面板 UI 体验批行为锚 ----
+
+test("结构钉：错误类 toast 延长至 8s + 关闭按钮 + 最近错误回看区", () => {
+  assert.match(panelSrc, /const RECENT_ERRORS_MAX = 5;/, "最近错误保留 5 条");
+  assert.match(panelSrc, /isErr \? 8000 : 3200/, "错误类延长至 8s（读得完），成功类维持短时");
+  assert.match(panelSrc, /toastClose/, "toast 关闭按钮在位");
+  assert.match(panelSrc, /id="recentErrors"/, "最近错误回看区锚点在场");
+  assert.match(panelSrc, /el\.setAttribute\("aria-live", isErr \? "assertive" : "polite"\)/, "错误用 assertive、其余 polite");
+});
+
+test("结构钉：最近错误回看区文本必须过 esc()（XSS 防线，删掉即红）", () => {
+  // renderRecentErrors 用 innerHTML 拼字符串——at/text 皆不可信，两处都必须 esc()，
+  // 缺任一处即为可注入的 XSS 缺口（本批补钉子）。
+  const renderBody = panelSrc.slice(
+    panelSrc.indexOf("function renderRecentErrors()"),
+    panelSrc.indexOf("function toast("),
+  );
+  assert.match(renderBody, /esc\(it\.at\)/, "最近错误的时间戳必须 esc()");
+  assert.match(renderBody, /esc\(it\.text\)/, "最近错误的文案必须 esc()");
+});
+
+test("结构钉：坏时间戳不渲染「null 天后过期」——recentExpireDays 为 null 时整段徽标省略", () => {
+  assert.match(panelSrc, /const expireDays = L\.recentExpireDays\(/, "过期天数先取值再判定");
+  assert.match(
+    panelSrc,
+    /expireDays === null \? "" : ` · \$\{expireDays\} 天后过期`/,
+    "expireDays 为 null（坏时间戳）时不渲染「天后过期」字样，避免印出「null 天后过期」",
+  );
+});
+
+test("结构钉：api() 报错优先取后端 message（fallback 到 error）", () => {
+  assert.match(panelSrc, /throw new Error\(body\.message \|\| body\.error/, "优先展示中文 message，回落错误码");
+});
+
+test("结构钉：危险/耗时按钮 busy 态（保存人设/导出/清空/恢复）", () => {
+  assert.match(panelSrc, /saveBtn\.disabled = true; \/\/ 三段式：busy 期间禁用/, "保存人设 busy");
+  assert.match(panelSrc, /saveBtn\.textContent = "处理中…"/, "保存人设 busy 文案");
+  assert.match(panelSrc, /exportBtn\.disabled = true; exportBtn\.textContent = "处理中…"/, "导出全部 busy");
+  assert.match(panelSrc, /clearAllBtn\.disabled = true; clearAllBtn\.textContent = "处理中…"/, "清空全部 busy");
+  assert.match(panelSrc, /btn\.disabled = true; btn\.textContent = "处理中…";[\s\S]{0,80}backup\/restore/, "备份恢复 busy");
+  assert.match(panelSrc, /btn\.disabled = true; btn\.textContent = "处理中…";[\s\S]{0,80}snapshots\/restore/, "快照恢复 busy");
+  assert.match(panelSrc, /keepBtn\.disabled = true; keepBtn\.textContent = "处理中…"/, "保留策略保存 busy");
+});
+
+test("结构钉：人设预设覆盖未保存内容要确认 + 新增/源码取消丢草稿确认", () => {
+  assert.match(panelSrc, /覆盖未保存内容？/, "预设覆盖确认标题在位");
+  assert.match(panelSrc, /const isDirty = \(\) => editor\.value !== savedContent;/, "未保存判定");
+  assert.match(panelSrc, /放弃未保存内容？/, "取消丢草稿确认标题在位");
+  assert.match(panelSrc, /const dirty = \$t\.value\.trim\(\)\.length > 0/, "新增弹窗取消前的非空判定");
+  assert.match(panelSrc, /const changed = dialogHost\.querySelector\("\[data-src\]"\)\.value !== original;/, "源码模式取消前比对原内容");
+});
+
+test("结构钉：嵌入表单缺省预填 embeddingConfig + API Key 不预填明文", () => {
+  assert.match(panelSrc, /const entryCfg = data\.embeddingConfig/, "读契约新增 embeddingConfig");
+  assert.match(panelSrc, /baseUrl: \(eff && eff\.baseUrl\) \|\| entryCfg\.baseUrl \|\| ""/, "端点预填回落 entry config");
+  assert.match(panelSrc, /model: \(eff && eff\.model\) \|\| entryCfg\.model \|\| ""/, "模型预填回落 entry config");
+  assert.match(panelSrc, /if \(q\("embApiKey"\)\.value\.length > 0\) out\.apiKey/, "Key 仅非空时提交（口径不变）");
+});
+
+test("结构钉：设置页保留策略三输入 + 正整数预检 + PUT /settings", () => {
+  assert.match(panelSrc, /id="card-retention"/, "保留策略卡在场");
+  assert.match(panelSrc, /id="keepTrashDays"/, "回收站保留天数输入");
+  assert.match(panelSrc, /id="keepSurgical"/, "快照保留份数输入");
+  assert.match(panelSrc, /id="keepRecentDays"/, "近期动态保留天数输入");
+  assert.match(panelSrc, /if \(s\.trashKeepDays != null\) \$td\.value = String\(s\.trashKeepDays\)/, "预填 trashKeepDays");
+  assert.match(panelSrc, /if \(s\.recentKeepDays != null\) \$rd\.value = String\(s\.recentKeepDays\)/, "预填 recentKeepDays（契约新增）");
+  assert.match(panelSrc, /回收站保留天数必须是不小于 0 的整数/, "回收站天数前端预检");
+  assert.match(panelSrc, /快照保留份数必须是正整数/, "快照份数前端预检");
+  assert.match(panelSrc, /await apiPut\("settings", patch\)/, "保存走 PUT /settings");
+});
+
+test("结构钉：近期动态过期天数传 recentKeepDays + 分类页搜索 + query 保留", () => {
+  assert.match(panelSrc, /L\.recentExpireDays\(e\.timestamp, keepDays\)/, "过期天数按保留策略传参（非写死 30）");
+  assert.match(panelSrc, /function recentKeepDaysOf\(st\)/, "保留天数 tolerant 取值");
+  assert.match(panelSrc, /async function renderCategoryPage\(cat, title, query = ""\)/, "分类页带检索词参数");
+  assert.match(panelSrc, /\$q\.value = query; \/\/ reload 后保留并回填检索词/, "长/分类页 reload 回填 query");
+  assert.match(panelSrc, /没有匹配「\$\{esc\(q\)\}」的条目/, "搜索无命中回显 query");
+});
+
+test("结构钉：清空全部失败列明细 + 备份列表 createdAt/未显示提示", () => {
+  assert.match(panelSrc, /清空未完成——已清空：\$\{doneText\}；未清空：\$\{failText\}/, "清空失败列已清/未清分类");
+  assert.match(panelSrc, /const BACKUP_LIST_LIMIT = 20;/, "备份列表硬截 20（常量）");
+  assert.match(panelSrc, /还有 \$\{backups\.length - BACKUP_LIST_LIMIT\} 条未显示/, "未显示条数如实提示");
+  assert.match(panelSrc, /const backupTime = \(b\) =>/, "备份时间列走 createdAt 契约");
+  assert.match(panelSrc, /if \(raw == null\) return "—";/, "createdAt null 显示破折号");
+});
+
+test("结构钉：标题/描述 maxlength 实时计数", () => {
+  assert.match(panelSrc, /data-tcnt/, "标题计数锚点");
+  assert.match(panelSrc, /data-dcnt/, "描述计数锚点");
+  assert.match(panelSrc, /\$\{ \$t\.value\.length \} \/ 60|\$\{\$t\.value\.length\} \/ 60/, "标题计数文案");
+  assert.match(panelSrc, /const updTitleCnt = \(\) =>/, "标题计数更新函数");
+});
+
+test("结构钉：无障碍（侧栏 href / Esc 关窗 / 聚焦首钮 / 状态词 / corrupt 标记）", () => {
+  assert.match(panelSrc, /<a href="#\/category\/work-profile" data-route="category\/work-profile">/, "侧栏锚点带 href（键盘可达）");
+  assert.match(panelSrc, /if \(e\.key === "Escape"\) close\(\);/, "确认弹窗 Esc 关闭");
+  assert.match(panelSrc, /cancelBtn\.focus\(\)/, "弹窗打开聚焦首个按钮");
+  assert.match(panelSrc, /const statusWord = level === "green" \? "正常"/, "三态灯状态词在场");
+  assert.match(panelSrc, /aria-label="状态：\$\{statusWord\}"/, "三态灯 aria-label");
+  assert.match(panelSrc, /设置文件已损坏，已按缺省运行/, "settings.corrupt 醒目标记");
+});
+
+test("结构钉：窄屏 @media + 文案统一 + fmtHint + 计数 0 显示 + 删除移入回收站", () => {
+  assert.match(panelSrc, /@media \(max-width: 800px\)/, "窄屏媒体查询在位");
+  assert.match(panelSrc, /\.split \{ grid-template-columns: 1fr; \}/, "窄屏 split 堆叠单列");
+  assert.match(panelSrc, /<div class="group">记忆分类<\/div>/, "侧栏分组改名「记忆分类」");
+  assert.doesNotMatch(panelSrc, /改动即时生效（下一轮对话）/, "去掉自相矛盾的即时生效文案");
+  assert.match(panelSrc, /const FMT_HINTS = \{/, "导入格式说明表在位");
+  assert.match(panelSrc, /key === "extraction-streak" \? \(n > 0 \? String\(n\) : ""\) : String\(n\)/, "计数 0 也显示（红徽标除外）");
+  assert.match(panelSrc, /function markCountsError\(\)/, "refreshCounts 失败给提示态（不吞错）");
+  assert.match(panelSrc, /将移入回收站（可在回收站找回，保留天数见设置页保留策略）/, "删除确认文案对齐移入回收站（保留天数不写死，指向设置页保留策略）");
+  const delConfirm = panelSrc.slice(panelSrc.indexOf('title: "删除条目"'), panelSrc.indexOf('title: "删除条目"') + 400);
+  assert.doesNotMatch(delConfirm, /默认保留 30 天/, "删除确认不再写死「默认保留 30 天」（用户改 trashKeepDays 后误导）");
+  assert.match(panelSrc, /已移入回收站（可在回收站找回）/, "删除完成提示同步");
+  assert.match(panelSrc, /out\.existed === false\) toast\("条目不存在（可能已被删除）"\)/, "删除按 existed 分支：不存在时如实说，不无条件报已移入回收站");
 });
 
 test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer", () => {
@@ -272,7 +394,7 @@ test("结构钉：细节——tableScroll 滚动容器双处在场 + 长期记�
   assert.match(panelSrc, /\.tableScroll \{ overflow: auto/, "tableScroll 样式在位");
   const wrapped = panelSrc.match(/<div class="tableScroll"><table class="preview">/g) ?? [];
   assert.ok(wrapped.length >= 2, "导入预览表与失败详情表都必须包 tableScroll 容器");
-  assert.match(panelSrc, /没有匹配「\$\{esc\(query\)\}」/, "搜索无命中回显 query");
+  assert.match(panelSrc, /没有匹配「\$\{esc\(q\)\}」/, "搜索无命中回显 query（分类页/长期页共用渲染）");
   assert.match(panelSrc, /暂无长期记忆/, "库空态文案（与搜索无命中区分）");
   assert.match(panelSrc, /\.dot\.green \{ background: #50a05a; \}/, "灯点绿 #50a05a（不引新色值）");
   assert.match(panelSrc, /\.dot\.yellow \{ background: #c98a3d; \}/, "灯点黄 #c98a3d");

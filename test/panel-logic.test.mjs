@@ -4,7 +4,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   EXTRACTION_BUCKET_KEYS,
+  EXTRACTION_REASON_LABELS,
   PERSONA_PRESETS,
+  abandonedNoticeText,
   applyThemeVars,
   buildImportRequest,
   collectThemeVarsFromDoc,
@@ -27,6 +29,7 @@ import {
   parseSourceText,
   pipeHealthLevel,
   previewRowsOf,
+  reasonLabelOf,
   recentAgeOf,
   recentExpireDays,
   relativeTimeOf,
@@ -195,19 +198,35 @@ test("validateEntryDraft：必填 / 20000 字符上限 / 字节上限三道门",
 
 // ---- 近期动态 ----
 
-test("recentAgeOf：今天/1 天前/N 天前；非法时间戳按今天", () => {
+test("recentAgeOf：今天/1 天前/N 天前；非法时间戳显示「—」不冒充今天", () => {
   const now = Date.parse("2026-10-08T12:00:00Z");
   assert.deepEqual(recentAgeOf("2026-10-08T01:00:00Z", now), { days: 0, text: "今天" });
   assert.deepEqual(recentAgeOf("2026-10-07T13:00:00Z", now), { days: 0, text: "今天" }); // 22h
   assert.deepEqual(recentAgeOf("2026-10-06T13:00:00Z", now), { days: 1, text: "1 天前" });
   assert.deepEqual(recentAgeOf("2026-10-01T00:00:00Z", now), { days: 7, text: "7 天前" });
-  assert.deepEqual(recentAgeOf("bad", now), { days: 0, text: "今天" });
+  // 解析失败：days 给 null + text 给 "—"（旧行为返回 {days:0,text:"今天"} 是误报）
+  assert.deepEqual(recentAgeOf("bad", now), { days: null, text: "—" });
+  assert.deepEqual(recentAgeOf("", now), { days: null, text: "—" });
+  assert.deepEqual(recentAgeOf(null, now), { days: null, text: "—" });
 });
 
-test("recentExpireDays：keepDays - age，下限 0", () => {
+test("recentExpireDays：keepDays - age，下限 0；第二参数缺省/非法落 30；时间戳坏 → null", () => {
   const now = Date.parse("2026-10-08T12:00:00Z");
   assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 30, now), 27);
   assert.equal(recentExpireDays("2026-09-01T00:00:00Z", 30, now), 0);
+  // 第二参数按 keepDays 走（不再写死 30）——面板 用 /state.recentKeepDays 传入
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 7, now), 4);
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 90, now), 87);
+  // 第二参数缺省才落 30
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", void 0, now), 27);
+  // 非法 keepDays（0/负/NaN/非数字）一律按缺省 30 处理，不出负数或 NaN
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 0, now), 27);
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", -5, now), 27);
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", "x", now), 27);
+  assert.equal(recentExpireDays("2026-10-05T12:00:00Z", NaN, now), 27);
+  // 时间戳解析不了：不编造"还剩 N 天"，如实给 null
+  assert.equal(recentExpireDays("bad", 30, now), null);
+  assert.equal(recentExpireDays(null, 30, now), null);
 });
 
 // ---- 检索 ----
@@ -345,7 +364,7 @@ test("pipeHealthLevel 三态矩阵：红 streak≥1 / 灰 busy / 黄 恢复<24h 
 });
 
 test("extractionNoticeText：新版带病因+模型短名；streak 0 → 空；旧形态沿用旧单行文案（零回归）", () => {
-  const OLD = (n) => `记忆自动提取最近连续失败 ${n} 次，期间对话内容可能未被记录——请检查服务端日志。`;
+  const OLD = (n) => `记忆自动提取最近连续失败 ${n} 次，期间对话内容可能未被记录——可在记忆管理面板复制诊断信息（含 /state 快照）反馈给开发者。`;
   assert.equal(extractionNoticeText(null), "");
   assert.equal(extractionNoticeText(0), "");
   assert.equal(extractionNoticeText({ streak: 0, recent: [] }), "");
@@ -367,16 +386,17 @@ test("extractionNoticeText：新版带病因+模型短名；streak 0 → 空；�
   assert.equal(extractionNoticeText(3), OLD(3));
 });
 
-test("extractionRangeText：seq X 之后的轮次…（收紧措辞）；条件不满足 → 空", () => {
-  const TEXT = "seq 473 之后的轮次尚未记录，恢复后自动补提";
+test("extractionRangeText：第 X 轮对话之后…（去 seq 内部术语）；条件不满足 → 空", () => {
+  const TEXT = "第 473 轮对话之后的内容尚未记录，恢复后自动补提";
   assert.equal(extractionRangeText({ streak: 3 }, { from: 473, to: 478 }), TEXT);
   assert.equal(extractionRangeText({ streak: 1 }, { from: 473 }), TEXT);
-  assert.equal(extractionRangeText(2, { from: 10 }), "seq 10 之后的轮次尚未记录，恢复后自动补提", "旧数字形态 streak 也认");
+  assert.equal(extractionRangeText(2, { from: 10 }), "第 10 轮对话之后的内容尚未记录，恢复后自动补提", "旧数字形态 streak 也认");
   assert.equal(extractionRangeText({ streak: 0 }, { from: 473 }), "", "已恢复不提示");
   assert.equal(extractionRangeText({ streak: 3 }, null), "");
   assert.equal(extractionRangeText({ streak: 3 }, {}), "");
   assert.equal(extractionRangeText({ streak: 3 }, { from: "x" }), "", "非法 from 不渲染");
   assert.equal(extractionRangeText({ streak: 3 }, "473"), "", "非对象形态不渲染");
+  assert.doesNotMatch(TEXT, /seq/, "面板文案不得再露 seq 内部术语");
 });
 
 test("diagnosticTextOf：版本/全量分桶（含零值）/最近失败摘要/用车；旧版缺 recent 有旧版说明行", () => {
@@ -441,16 +461,16 @@ test("extractionRunLabel：zero-ops 两态（无可记 / 无可落盘）", () =>
   );
 });
 
-test("extractionRunLabel：skipped 四种中文原因 + 未收录 reason 原样透传", () => {
+test("extractionRunLabel：skipped 四种中文原因 + 未收录 reason 走兜底美化（连字符转空格）", () => {
   assert.equal(extractionRunLabel({ outcome: "skipped", reason: "direct-memory-write" }), "跳过：主 agent 直写记忆");
   assert.equal(extractionRunLabel({ outcome: "skipped", reason: "no-user-prose" }), "跳过：无有效用户发言");
   assert.equal(extractionRunLabel({ outcome: "skipped", reason: "gate-off" }), "跳过：对话记忆总开关关");
   assert.equal(extractionRunLabel({ outcome: "skipped", reason: "format-readonly" }), "跳过：存储格式只读保护");
-  assert.equal(extractionRunLabel({ outcome: "skipped", reason: "quota-exceeded" }), "跳过：quota-exceeded", "新 reason 未中文化时原样露（不错译）");
+  assert.equal(extractionRunLabel({ outcome: "skipped", reason: "quota-exceeded" }), "跳过：quota exceeded", "新 reason 未中文化时兜底美化（连字符转空格），不直接糊 token");
   assert.equal(extractionRunLabel({ outcome: "skipped" }), "跳过：—", "无 reason 不留空");
 });
 
-test("extractionRunLabel：failed 七种中文原因 + 未收录 reason 原样透传", () => {
+test("extractionRunLabel：failed 七种中文原因 + 未收录 reason 走兜底美化", () => {
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "llm-error" }), "失败：LLM 调用失败");
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "parse-error" }), "失败：输出解析失败");
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "io-error" }), "失败：落盘失败");
@@ -458,8 +478,15 @@ test("extractionRunLabel：failed 七种中文原因 + 未收录 reason 原样�
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "no-cwd" }), "失败：会话无工作区");
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "aborted" }), "失败：中止");
   assert.equal(extractionRunLabel({ outcome: "failed", reason: "exception" }), "失败：内部异常");
-  assert.equal(extractionRunLabel({ outcome: "failed", reason: "weird-new-reason" }), "失败：weird-new-reason");
+  assert.equal(extractionRunLabel({ outcome: "failed", reason: "weird-new-reason" }), "失败：weird new reason");
   assert.equal(extractionRunLabel({ outcome: "failed" }), "失败：—");
+});
+
+test("extractionRunLabel：abandoned（journal 第五态）报「已放弃：」+ 中文化原因，不落「未知：」", () => {
+  assert.equal(extractionRunLabel({ outcome: "abandoned", reason: "no-cwd" }), "已放弃：会话无工作区");
+  assert.equal(extractionRunLabel({ outcome: "abandoned", reason: "no-route" }), "已放弃：无模型路由");
+  assert.equal(extractionRunLabel({ outcome: "abandoned", reason: "weird-reason" }), "已放弃：weird reason", "未收录 reason 兜底美化");
+  assert.equal(extractionRunLabel({ outcome: "abandoned" }), "已放弃：—", "无 reason 不留空");
 });
 
 test("extractionRunLabel：未知 outcome 报「未知：<原值>」，脏输入不炸", () => {
@@ -513,17 +540,53 @@ test("extractionRunLines：坏条目跳过（非对象/缺 outcome）；空与�
   assert.equal(extractionRunLines([{ outcome: "skipped", reason: "gate-off" }])[0].label, "跳过：对话记忆总开关关");
 });
 
-test("unrecoveredTextFromLog：非空出提示串（与 extractionRangeText 同风格）；空/非数组 → 空串", () => {
-  assert.equal(unrecoveredTextFromLog([{ sessionId: "s1", from: 473, to: 478, at: 1, reason: "llm-error" }]), "seq 473 之后的轮次未提取");
-  assert.equal(unrecoveredTextFromLog([{ from: 10 }]), "seq 10 之后的轮次未提取", "只有 from 也够");
+test("unrecoveredTextFromLog：非空出提示串（与 extractionRangeText 同风格，说人话不露 seq）；空/非数组 → 空串", () => {
+  assert.equal(unrecoveredTextFromLog([{ sessionId: "s1", from: 473, to: 478, at: 1, reason: "llm-error" }]), "第 473 轮对话之后的内容未提取");
+  assert.equal(unrecoveredTextFromLog([{ from: 10 }]), "第 10 轮对话之后的内容未提取", "只有 from 也够");
   // 首条无合法 from 时往下找第二条（脏数据不该让整提示消失）
-  assert.equal(unrecoveredTextFromLog([{ from: "x" }, null, { from: 20 }]), "seq 20 之后的轮次未提取");
+  assert.equal(unrecoveredTextFromLog([{ from: "x" }, null, { from: 20 }]), "第 20 轮对话之后的内容未提取");
   assert.equal(unrecoveredTextFromLog([]), "");
   assert.equal(unrecoveredTextFromLog(null), "");
   assert.equal(unrecoveredTextFromLog(void 0), "");
   assert.equal(unrecoveredTextFromLog("x"), "");
   assert.equal(unrecoveredTextFromLog({ from: 1 }), "", "非数组（对象形态）不渲染");
-  assert.equal(unrecoveredTextFromLog([{ from: undefined }, { to: 5 }]), "", "全无合法 from → 空（不编造 seq）");
+  assert.equal(unrecoveredTextFromLog([{ from: undefined }, { to: 5 }]), "", "全无合法 from → 空（不编造轮次）");
+});
+
+// ---- 放弃区间红条（/state.extractionLog.abandoned tolerant 消费纯函数） ----
+
+test("EXTRACTION_REASON_LABELS：中英混杂 token 归一为纯中文（模型无产出/改动未落盘）", () => {
+  assert.equal(EXTRACTION_REASON_LABELS["model-无产出"], "模型无产出");
+  assert.equal(EXTRACTION_REASON_LABELS["ops-未落盘"], "改动未落盘");
+  // 全表值都不含连字符/下划线残留（面板不露 token 原形）
+  assert.ok(Object.values(EXTRACTION_REASON_LABELS).every((v) => !/[-_]/.test(v)));
+});
+
+test("reasonLabelOf：收录译中文；未收录兜底美化（连字符/下划线转空格）；空 → —", () => {
+  assert.equal(reasonLabelOf("llm-error"), "LLM 调用失败");
+  assert.equal(reasonLabelOf("model-无产出"), "模型无产出");
+  assert.equal(reasonLabelOf("ops-未落盘"), "改动未落盘");
+  assert.equal(reasonLabelOf("some_new-token"), "some new token", "未收录 token 转空格美化，不留连字符");
+  assert.equal(reasonLabelOf(""), "—");
+  assert.equal(reasonLabelOf("   "), "—");
+  assert.equal(reasonLabelOf(null), "—");
+  assert.equal(reasonLabelOf(void 0), "—");
+});
+
+test("abandonedNoticeText：有数据 → 文案字符串；空/非数组 → null（不渲染）", () => {
+  const r = abandonedNoticeText([{ from: 10, to: 20, sessionId: "s1" }, { from: 30, to: 40, sessionId: "s1" }]);
+  assert.equal(typeof r, "string", "返回裸文案字符串（面板按 err 红条渲染）");
+  assert.match(r, /有 2 段对话的提取已放弃/);
+  assert.match(r, /可在下方最近提取记录查看明细/);
+  // 单条
+  assert.equal(abandonedNoticeText([{ from: 1, to: 2 }]).startsWith("有 1 段对话的提取已放弃"), true);
+  // 无数据 / 旧版宿主 → null（不渲染，不装样子）
+  assert.equal(abandonedNoticeText([]), null);
+  assert.equal(abandonedNoticeText(null), null);
+  assert.equal(abandonedNoticeText(void 0), null);
+  assert.equal(abandonedNoticeText("x"), null);
+  // 数组里只有脏条目（非对象）→ 计数为 0 → null（不编造）
+  assert.equal(abandonedNoticeText([null, "x", 42]), null);
 });
 
 // ---- 注入面摘要（/state.injection tolerant 消费纯函数） ----

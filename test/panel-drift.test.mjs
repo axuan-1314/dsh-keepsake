@@ -39,7 +39,7 @@ test("面板漂移：safety 六函数在场且容错（旧宿主无 /state.safet
   assert.equal(L.safetyLocationText(null), "—");
   assert.equal(L.safetyActionText(""), "—");
   // 有数据时给真文案
-  assert.match(L.safetySummaryText({ trashPending: 3, hardfactDrops: 1 }), /回收站待清 3/);
+  assert.match(L.safetySummaryText({ trashPending: 3, hardfactDrops: 1 }), /回收站共 3 条/);
   assert.match(L.safetySummaryText({ trashPending: 3, hardfactDrops: 1 }), /硬事实丢失告警 1/);
   // hardfactBlocks（硬事实 block 回滚）与 verifyFailed 分列；零值不渲染
   assert.match(L.safetySummaryText({ hardfactBlocks: 2 }), /硬事实拦截 2/);

@@ -29,6 +29,7 @@ import {
 import { makeApiRoutes } from "../lib/api.js";
 import { createScheduler } from "../lib/state.js";
 import { createJournal } from "../lib/journal.js";
+import { effectiveEmbedding, readSettings, writeSettings } from "../lib/settings.js";
 
 // ---- errorlog 纯函数 ----
 
@@ -281,7 +282,7 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
       extraction: {
         triggerRetry: () => 0,
         inFlight: () => false,
-        configSummary: () => ({ provider: void 0, model: void 0, fallback: [], embeddingProvider: void 0, embeddingModel: void 0 }),
+        configSummary: () => ({ provider: void 0, model: void 0, fallback: [], embeddingProvider: void 0, embeddingModel: void 0, timeoutMs: 45000, recentKeepDays: 45 }),
       },
     }), "GET", "state");
     const res = mockRes();
@@ -297,13 +298,17 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
     assert.equal(body.lastAttemptAt, null);
     assert.equal(body.lastUsedRoute, null);
     assert.equal(body.storageRoot, root);
+    // 契约：近期动态保留天数 / 单次提取超时为数字（接 configSummary 现值）
+    assert.equal(body.recentKeepDays, 45);
+    assert.equal(body.extractionTimeoutMs, 45000);
+    assert.equal(body.settings.recentKeepDays, 45, "settings.recentKeepDays 回落到 config 现值");
     // 未配 overrides → 如实 null（跟随会话路由）
     assert.deepEqual(body.extractionConfig, { provider: null, model: null, fallback: [] });
-    assert.deepEqual(body.embeddingConfig, { provider: null, model: null });
+    assert.deepEqual(body.embeddingConfig, { provider: null, model: null, baseUrl: "" });
     // 提取结算层（面板最近提取记录数据源）：字段恒在，无 journal 依赖时为标准空形
     assert.ok(Array.isArray(body.extractionLog.runs));
     assert.ok(Array.isArray(body.extractionLog.unrecovered));
-    assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [] });
+    assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -357,7 +362,33 @@ test("api：只配 embeddingModel（不配 provider 标签）时 embeddingConfig
     const res = mockRes();
     await handler(makeReq("GET", "state"), res);
     const body = JSON.parse(res.body);
-    assert.deepEqual(body.embeddingConfig, { provider: null, model: "nomic-embed-text" });
+    assert.deepEqual(body.embeddingConfig, { provider: null, model: "nomic-embed-text", baseUrl: "" });
+    // 生效端点 URL 从 configSummary.embeddingEffective 取（未配置给空串）；apiKey 绝不出现在出参
+    assert.equal("apiKey" in body.embeddingConfig, false, "不回显任何 apiKey");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("api：GET state 的 embeddingConfig.baseUrl 取生效嵌入端点（settings 优先），绝不回显 apiKey", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-emburl-"));
+  const log = { info() {}, warn() {}, error() {} };
+  try {
+    writeSettings(root, { embedding: { enabled: true, baseUrl: "http://127.0.0.1:11434/v1/embeddings", model: "m", apiKey: "secret-key" } });
+    const handler = findRoute(makeApiRoutes({
+      storageRoot: root,
+      log,
+      extraction: {
+        triggerRetry: () => 0,
+        inFlight: () => false,
+        configSummary: () => ({ embeddingEffective: effectiveEmbedding({ recallEnabled: false, embeddingBaseUrl: "", embeddingModel: "", embeddingProvider: "", embeddingApiKey: "", recallTopK: 5, recallMinScore: 0.35, recallTimeoutMs: 8000 }, readSettings(root)) }),
+      },
+    }), "GET", "state");
+    const res = mockRes();
+    await handler(makeReq("GET", "state"), res);
+    const body = JSON.parse(res.body);
+    assert.equal(body.embeddingConfig.baseUrl, "http://127.0.0.1:11434/v1/embeddings");
+    assert.equal(JSON.stringify(body).includes("secret-key"), false, "响应体任何位置都不含明文 apiKey");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

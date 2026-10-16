@@ -163,6 +163,25 @@ test("parseExtractionOutput: 整批不可解析抛错；单条畸形跳单容错
   assert.equal(del.skippedMalformed, 1);
 });
 
+test("parseExtractionOutput: 跳单明细带具体 op（名称+原因+实际长度）——超大写入不再无痕", () => {
+  const big = "x".repeat(20001); // 超 MAX_CONTENT_CHARS（20000）
+  const parsed = parseExtractionOutput(JSON.stringify({
+    ops: [
+      { action: "write", name: "too-big.md", content: big },
+      { action: "write", name: "no-content.md" },
+      { action: "delete" },
+      { action: "write", name: "ok.md", content: "好" },
+    ],
+  }));
+  assert.equal(parsed.ops.length, 1, "只保留好的 op");
+  assert.equal(parsed.skippedMalformed, 3, "三条畸形");
+  assert.deepEqual(parsed.skippedDetails, [
+    { name: "too-big.md", reason: "content 超上限", length: 20001 },
+    { name: "no-content.md", reason: "write 缺 content" },
+    { name: "", reason: "delete 缺 name" },
+  ]);
+});
+
 test("parseExtractionOutput: 未知 type 归一为 project，缺省 indexLine", () => {
   const parsed = parseExtractionOutput('{"ops":[{"action":"write","name":"a.md","type":"diary","content":"b"}]}');
   assert.equal(parsed.ops[0].type, "project");

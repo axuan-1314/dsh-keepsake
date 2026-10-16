@@ -1,10 +1,10 @@
 // settings：settings.json 读取（缺省/损坏/mtime 缓存）与合并式原子写入。
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { defaultSettings, effectiveEmbedding, readSettings, resetSettingsCache, settingsPath, writeSettings } from "../lib/settings.js";
+import { defaultSettings, effectiveEmbedding, readSettings, resetSettingsCache, settingsLastGoodPath, settingsPath, validateSettingsNumber, writeSettings } from "../lib/settings.js";
 
 function freshRoot() {
   resetSettingsCache();
@@ -51,7 +51,7 @@ test("读取：非 boolean 值按 true 处理（!== false）", () => {
   }
 });
 
-test("损坏：非法 JSON = corrupt 标记 + 按缺省全开（可见降级不炸）", () => {
+test("损坏 + 无 last-good：corrupt 标记 + 按缺省全开（可见降级不炸）", () => {
   const root = freshRoot();
   try {
     writeFileSync(settingsPath(root), "{not json", "utf8");
@@ -60,8 +60,47 @@ test("损坏：非法 JSON = corrupt 标记 + 按缺省全开（可见降级不�
     assert.equal(s.conversationMemory, true);
     assert.equal(s.projectMemory, true);
     assert.equal(s.corrupt, true);
-    assert.equal(warns.length, 1); // 显式 warn（不静默）
-    assert.match(warns[0], /解析失败/);
+    assert.ok(warns.length >= 1, "显式 warn（不静默）");
+    assert.ok(warns.some((m) => /解析失败/.test(m)));
+    // 原损坏档改名存证（settings.json.corrupt-<ts>，原内容永不失访）
+    const corruptLeftovers = readdirSync(root).filter((f) => f.startsWith("settings.json.corrupt-"));
+    assert.equal(corruptLeftovers.length, 1, "损坏档被改名存证");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("损坏 + 有 last-good：从影子恢复原开关值 + corrupt 标记（关过的开关不被静默打开）", () => {
+  const root = freshRoot();
+  try {
+    // 先正常写入一份（同时刷新 last-good 影子）：用户把对话记忆关掉
+    writeSettings(root, { conversationMemory: false, projectMemory: false, globalExtraction: true, trashKeepDays: 7 });
+    assert.equal(existsSync(settingsLastGoodPath(root)), true, "成功写入刷新 last-good 影子");
+    // 把 settings.json 弄坏（外部手改/截断），影子仍在
+    writeFileSync(settingsPath(root), "{broken", "utf8");
+    const warns = [];
+    const s = readSettings(root, { warn: (m) => warns.push(m) });
+    assert.equal(s.conversationMemory, false, "恢复用户关过的开关（不是默认 true）");
+    assert.equal(s.projectMemory, false);
+    assert.equal(s.globalExtraction, true);
+    assert.equal(s.trashKeepDays, 7, "安全面现值也一并恢复");
+    assert.equal(s.corrupt, true, "损坏事实仍暴露（本次请求周期内可见）");
+    assert.ok(warns.some((m) => /last-good/.test(m)), "恢复来源写进日志");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("损坏 + last-good 也不可用：落默认 + corrupt（绝不 fail-open 静默开全）", () => {
+  const root = freshRoot();
+  try {
+    writeFileSync(settingsPath(root), "{broken", "utf8");
+    writeFileSync(settingsLastGoodPath(root), "also broken", "utf8");
+    const warns = [];
+    const s = readSettings(root, { warn: (m) => warns.push(m) });
+    assert.equal(s.conversationMemory, true);
+    assert.equal(s.corrupt, true);
+    assert.ok(warns.some((m) => /last-good|默认/.test(m)));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -79,7 +118,108 @@ test("损坏：顶层非对象 = corrupt + 缺省", () => {
   }
 });
 
-test("mtime 缓存：同 mtime+size 不重读；文件变更后重读生效", () => {
+test("损坏恢复后 corrupt 持久暴露（不因写回而一闪而过），用户重存设置才清除", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { conversationMemory: false, recentKeepDays: 88 }); // 建立 last-good 影子
+    writeFileSync(settingsPath(root), "{broken", "utf8");
+    // 第 1 次读：存证 + 从 last-good 恢复 + 写回 + corrupt
+    const first = readSettings(root, { warn: () => {} });
+    assert.equal(first.conversationMemory, false);
+    assert.equal(first.corrupt, true);
+    // 第 2/3 次读：settings.json 已被写回可解析，但损坏标记仍在 → 仍报 corrupt（用户视觉未恢复前不消失）
+    assert.equal(readSettings(root, { warn: () => {} }).corrupt, true, "损坏标记未清前 corrupt 恒在");
+    assert.equal(readSettings(root, { warn: () => {} }).conversationMemory, false, "恢复后的开关值仍生效");
+    // 用户面板重存设置 = 已重写修复 → 清标记，corrupt 转 false
+    writeSettings(root, { trashKeepDays: 5 });
+    const afterSave = readSettings(root, { warn: () => {} });
+    assert.equal(afterSave.corrupt, false, "用户重存设置后 corrupt 清除");
+    assert.equal(afterSave.trashKeepDays, 5);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- settings.json ENOENT 恢复窗口（fail-open 回归）：损坏恢复「先改名、后写回」两步之间
+//      崩溃/写回失败后，盘上只剩 last-good + settings.json 缺失——此时必须从影子恢复用户开关，
+//      不许静默落默认全开（否则之后任意一次写入会把全开值刷进 last-good，用户开关永久丢失）。----
+
+test("ENOENT + last-good 在场：从影子恢复用户开关 + corrupt:true（损坏恢复窗口中途崩溃）", () => {
+  const root = freshRoot();
+  try {
+    // 先正常写入一份建立 last-good 影子：用户关掉对话/项目记忆
+    writeSettings(root, { conversationMemory: false, projectMemory: false, trashKeepDays: 9 });
+    assert.equal(existsSync(settingsLastGoodPath(root)), true, "前置：影子在场");
+    // 模拟损坏恢复窗口中途崩溃：settings.json 已被改名存证出来，但写回还没落（盘上只剩影子）
+    rmSync(settingsPath(root), { force: true });
+    assert.equal(existsSync(settingsPath(root)), false, "前置：settings.json 缺失");
+    const warns = [];
+    const s = readSettings(root, { warn: (m) => warns.push(m) });
+    assert.equal(s.conversationMemory, false, "从影子恢复用户关过的开关，绝不默认全开");
+    assert.equal(s.projectMemory, false);
+    assert.equal(s.trashKeepDays, 9, "安全面现值一并恢复");
+    assert.equal(s.corrupt, true, "损坏恢复窗口暴露 corrupt");
+    assert.ok(warns.some((m) => /last-good/.test(m)), "恢复来源写进日志");
+    // 恢复结果已写回 settings.json（下次读不再回落默认）
+    assert.equal(existsSync(settingsPath(root)), true, "恢复结果写回盘上");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ENOENT：损坏 rename 后写回失败 → 再读仍恢复用户开关（级联丢失回归）", () => {
+  const root = freshRoot();
+  try {
+    writeSettings(root, { conversationMemory: false, globalExtraction: false });
+    // 模拟损坏恢复窗口：settings.json 已改名出去（原内容永不失访），写回失败后盘上只剩影子
+    const path = settingsPath(root);
+    renameSync(path, `${path}.corrupt-${Date.now()}`);
+    const s = readSettings(root, { warn: () => {} });
+    assert.equal(s.conversationMemory, false, "再读仍从影子恢复用户开关（不是全开）");
+    assert.equal(s.globalExtraction, false);
+    assert.equal(s.corrupt, true);
+    // 级联防线：此后一次普通写入，last-good 仍是用户开关（而非被全开值顶掉）
+    writeSettings(root, { trashKeepDays: 5 });
+    const shadow = JSON.parse(readFileSync(settingsLastGoodPath(root), "utf8"));
+    assert.equal(shadow.conversationMemory, false, "last-good 未被全开默认值污染（用户开关未永久丢失）");
+    assert.equal(shadow.trashKeepDays, 5);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ENOENT + 无影子 + 无标记：全新安装落默认全开 + corrupt:false（不误标损坏）", () => {
+  const root = freshRoot();
+  try {
+    const s = readSettings(root, { warn: () => {} });
+    assert.equal(s.conversationMemory, true);
+    assert.equal(s.projectMemory, true);
+    assert.equal(s.globalExtraction, true);
+    assert.equal(s.corrupt, false, "干净安装不是降级，不标 corrupt");
+    // 全新安装不写回：保持「干净安装盘上无 settings.json」形态
+    assert.equal(existsSync(settingsPath(root)), false, "全新安装不落 settings.json");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ENOENT + 影子本身损坏：存证改名 + 落默认 + corrupt:true", () => {
+  const root = freshRoot();
+  try {
+    writeFileSync(settingsLastGoodPath(root), "{broken shadow", "utf8");
+    const warns = [];
+    const s = readSettings(root, { warn: (m) => warns.push(m) });
+    assert.equal(s.conversationMemory, true, "影子坏 → 落默认全开（可见降级）");
+    assert.equal(s.corrupt, true, "影子损坏事实暴露（不静默吞）");
+    const shadowLeftovers = readdirSync(root).filter((f) => f.startsWith("settings.last-good.json.corrupt-"));
+    assert.equal(shadowLeftovers.length, 1, "损坏影子被改名存证");
+    assert.ok(warns.some((m) => /last-good/.test(m)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("无缓存：文件变更立即重读生效（含同 mtime+size 的静默改写——旧 mtime+size 缓存键会误读旧值）", () => {
   const root = freshRoot();
   try {
     const path = settingsPath(root);
@@ -91,6 +231,21 @@ test("mtime 缓存：同 mtime+size 不重读；文件变更后重读生效", ()
     const second = readSettings(root);
     assert.equal(second.conversationMemory, true);
     assert.equal(second.projectMemory, false);
+    // 同字节长度的不同内容 + 强制 mtime 相同：直读盘上真值，绝不误读缓存（mtime+size 键的经典盲区）
+    const a = JSON.stringify({ trashKeepDays: 30 });
+    const b = JSON.stringify({ trashKeepDays: 31 });
+    assert.equal(a.length, b.length, "前置：两份内容同长度");
+    const fixed = new Date("2020-01-01T00:00:00.000Z");
+    writeFileSync(path, a, "utf8");
+    utimesSync(path, fixed, fixed);
+    assert.equal(statSync(path).size, a.length);
+    assert.equal(readSettings(root).trashKeepDays, 30);
+    // 改写同尺寸内容并把 mtime 钉到同一时刻（mtime+size 完全相同的外部改写）
+    writeFileSync(path, b, "utf8");
+    utimesSync(path, fixed, fixed);
+    assert.equal(statSync(path).size, a.length, "前置：size 相同");
+    assert.equal(Math.floor(statSync(path).mtimeMs), fixed.getTime(), "前置：mtime 相同");
+    assert.equal(readSettings(root).trashKeepDays, 31, "同 mtime+size 改写也必须读到新值（无缓存键误读）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -226,6 +381,45 @@ test("写入：非 boolean 键被忽略", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("recentKeepDays：合法值写入并可读回；非法值保留现值；未提供保留现值", () => {
+  const root = freshRoot();
+  try {
+    const w = writeSettings(root, { recentKeepDays: 90 });
+    assert.equal(w.recentKeepDays, 90);
+    assert.equal(readSettings(root).recentKeepDays, 90);
+    // 显式非法（非正整数）→ 保留现值（90）
+    assert.equal(writeSettings(root, { recentKeepDays: 0 }).recentKeepDays, 90);
+    assert.equal(writeSettings(root, { recentKeepDays: "60" }).recentKeepDays, 90);
+    // 未提供 → 保留现值
+    assert.equal(writeSettings(root, { conversationMemory: false }).recentKeepDays, 90);
+    // 未设置过时缺位（不带该键），读侧回落 entry config
+    const root2 = freshRoot();
+    assert.equal(readSettings(root2).recentKeepDays, void 0);
+    rmSync(root2, { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("validateSettingsNumber：严格校验（正整数/上限）；trashKeepDays 允许 0", () => {
+  for (const key of ["surgicalKeep", "recentKeepDays"]) {
+    assert.equal(validateSettingsNumber(key, void 0).ok, true, "未提供 → ok");
+    assert.equal(validateSettingsNumber(key, 1).ok, true);
+    assert.equal(validateSettingsNumber(key, key === "surgicalKeep" ? 200 : 365).ok, true, "上限内");
+    assert.equal(validateSettingsNumber(key, 0).ok, false, "0 非法（非正整数）");
+    assert.equal(validateSettingsNumber(key, -1).ok, false);
+    assert.equal(validateSettingsNumber(key, 1.5).ok, false);
+    assert.equal(validateSettingsNumber(key, "5").ok, false);
+    assert.equal(validateSettingsNumber(key, 99999).ok, false, "超上限");
+    assert.match(validateSettingsNumber(key, 0).error, new RegExp(key));
+  }
+  // trashKeepDays：0 合法（既有语义），负数/非整数/超限非法
+  assert.equal(validateSettingsNumber("trashKeepDays", 0).ok, true);
+  assert.equal(validateSettingsNumber("trashKeepDays", 365).ok, true);
+  assert.equal(validateSettingsNumber("trashKeepDays", -1).ok, false);
+  assert.equal(validateSettingsNumber("trashKeepDays", 366).ok, false);
 });
 
 test("写入：目录不存在时自动创建（原子写 tmp+rename，无 .tmp 残留）", () => {

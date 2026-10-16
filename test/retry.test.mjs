@@ -143,6 +143,38 @@ function roundEvents(rounds, from, to) {
   return all.slice(from, to);
 }
 
+/**
+ * 两会话交错多轮 harness：同一 ctx/同一 storageRoot 下驱动两个 session 对象，
+ * 用于验证 streak 按会话分键（别会话的失败不把本会话顶到放弃线）。
+ * @param plan [{ sessionId, seq }] 逐条触发，seq 是该轮 turn/end 边界（宿主快照 seq）
+ */
+async function runTwoSessions({ root, plan, settleMs = 60 }) {
+  const { ctx, handlers, effects } = fakeCtx(() => { throw new Error("两会话 streak 用例不应发起 LLM 调用"); });
+  apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000 });
+  const sessions = new Map();
+  const getSession = (id) => {
+    let s = sessions.get(id);
+    if (s === void 0) {
+      s = {
+        id,
+        seq: 0,
+        header: { cwd: "" }, // 全程无 cwd → 每轮 no-cwd 失败
+        snapshotEvents(from, to) { return [USER_EVENT].slice(from, to); },
+      };
+      sessions.set(id, s);
+      handlers.get("session/event")(s, { type: "session/mounted", seq: 0, data: {} });
+    }
+    return s;
+  };
+  for (const step of plan) {
+    const session = getSession(step.sessionId);
+    session.seq = step.seq;
+    handlers.get("session/event")(session, { type: "turn/end", seq: step.seq - 1, data: { turn: 1, reason: { kind: "completed" } } });
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+  }
+  return { ctx, handlers, effects, sessions };
+}
+
 /** 读 journal 全部结算行（不存在则 []）。 */
 function journalRuns(root) {
   try {
@@ -879,12 +911,12 @@ test("no-cwd 两态：streak<5 → status='error' cursorAfter==from；第 5 次�
       assert.equal(runs[i].reason, "no-cwd");
       assert.equal(runs[i].cursorAfter, runs[i].from, `第 ${i + 1} 轮 cursor 不动`);
     }
-    // 第 5 轮：streak=5 → 放弃型，status='ok'（cursor 推进）但 outcome 仍是 failed
-    assert.equal(runs[4].outcome, "failed", "放弃也是 failed（这段没提取成）");
+    // 第 5 轮：streak=5 → 放弃型，status='ok'（cursor 推进），outcome=abandoned（独立留痕）
+    assert.equal(runs[4].outcome, "abandoned", "放弃型记 abandoned（与 failed 分列）");
     assert.equal(runs[4].reason, "no-cwd");
     assert.ok(runs[4].cursorAfter > runs[4].from, "第 5 轮 status='ok'：cursor 推进");
     // 第 6 轮：放弃后不 reset（no reset 调用在放弃分支），streak 续到 6 → 继续放弃型
-    assert.equal(runs[5].outcome, "failed");
+    assert.equal(runs[5].outcome, "abandoned");
     assert.equal(runs[5].reason, "no-cwd");
     assert.ok(runs[5].cursorAfter > runs[5].from, "第 6 轮仍是放弃型：cursor 继续推进");
     assert.ok(runs[4].cursorAfter > 0, "推进后的 cursor 不是 0（证明真的动了）");
@@ -919,15 +951,73 @@ test("no-route 两态：streak<5 → status='error' cursorAfter==from；第 5 �
       assert.equal(runs[i].reason, "no-route");
       assert.equal(runs[i].cursorAfter, runs[i].from, `第 ${i + 1} 轮 cursor 不动`);
     }
-    assert.equal(runs[4].outcome, "failed", "放弃也是 failed");
+    assert.equal(runs[4].outcome, "abandoned", "放弃型记 abandoned");
     assert.equal(runs[4].reason, "no-route");
     assert.ok(runs[4].cursorAfter > runs[4].from, "第 5 轮 status='ok'：cursor 推进");
-    assert.equal(runs[5].outcome, "failed");
+    assert.equal(runs[5].outcome, "abandoned");
     assert.equal(runs[5].reason, "no-route");
     assert.ok(runs[5].cursorAfter > runs[5].from, "第 6 轮继续放弃型");
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("streak 按会话分键：别会话的连续失败不把本会话顶到放弃线", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-streak-perm-"));
+  try {
+    // 会话 A 失败 4 轮（streak=4，未到放弃线），期间会话 B 也失败 4 轮——
+    // 若 streak 不分键，A 会被 B 顶到 ≥5 而提前进入放弃型（cursor 推进）；
+    // 分键后 A 的第 5 轮才到放弃线。
+    const plan = [];
+    for (let i = 1; i <= 4; i += 1) {
+      plan.push({ sessionId: "A", seq: i });
+      plan.push({ sessionId: "B", seq: i });
+    }
+    plan.push({ sessionId: "A", seq: 5 }); // A 的第 5 轮 = 放弃线
+    plan.push({ sessionId: "B", seq: 5 }); // B 的第 5 轮 = 放弃线
+    await runTwoSessions({ root, plan });
+    const runs = journalRuns(root);
+    const aRuns = runs.filter((r) => r.sessionId === "A");
+    const bRuns = runs.filter((r) => r.sessionId === "B");
+    assert.equal(aRuns.length, 5, "A 五轮各一条结算");
+    assert.equal(bRuns.length, 5, "B 五轮各一条结算");
+    // A 前 4 轮：cursor 不动、failed；第 5 轮才 abandoned（cursor 推进）
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(aRuns[i].outcome, "failed", `A 第 ${i + 1} 轮仍是 failed（不被 B 顶到放弃线）`);
+      assert.equal(aRuns[i].cursorAfter, aRuns[i].from, `A 第 ${i + 1} 轮 cursor 不动`);
+    }
+    assert.equal(aRuns[4].outcome, "abandoned", "A 第 5 轮才放弃");
+    // B 同理：前 4 轮 failed
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(bRuns[i].outcome, "failed", `B 第 ${i + 1} 轮仍是 failed`);
+      assert.equal(bRuns[i].cursorAfter, bRuns[i].from);
+    }
+    assert.equal(bRuns[4].outcome, "abandoned", "B 第 5 轮才放弃");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("streak 随会话消亡消退：A 连败 4 次后 disposed → 快照 streak 回 0（死会话红灯不长亮）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-streak-decay-"));
+  try {
+    // A 会话连败 4 轮（streak=4，未到放弃线），此时快照 streak=4
+    const { handlers, sessions } = await runTwoSessions({
+      root,
+      plan: Array.from({ length: 4 }, (_, i) => ({ sessionId: "A", seq: i + 1 })),
+    });
+    assert.equal(extractionFailureSnapshot().streak, 4, "A 连败期间快照 streak=4");
+    // A 会话消亡（session/disposed）→ 其连击键被清，快照不再对已不存在的会话报警
+    handlers.get("session/disposed")(sessions.get("A"));
+    assert.equal(extractionFailureSnapshot().streak, 0, "会话消亡后 streak 消退为 0（不再含 A）");
+    assert.equal(extractionFailureSnapshot().streakReason, "");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

@@ -97,13 +97,14 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(status, 200);
     assert.equal(json.ok, true);
-    // v0.4.0：settings 增写入安全面三项（surgicalKeep/trashKeepDays/hardfactPolicy）
+    // v0.4.0：settings 增写入安全面三项（surgicalKeep/trashKeepDays/hardfactPolicy）+ recentKeepDays
     assert.deepEqual(json.settings, {
       conversationMemory: true,
       projectMemory: true,
       globalExtraction: true,
       surgicalKeep: 30,
       trashKeepDays: 30,
+      recentKeepDays: 30,
       hardfactPolicy: "warn",
       corrupt: false,
     });
@@ -113,8 +114,11 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     assert.ok(json.persona && typeof json.persona.excerpt === "string");
     assert.ok(Array.isArray(json.projects));
     assert.equal(json.addressing.dshName, "");
+    // 契约字段：近期动态保留天数 / 单次提取超时（未接线 extraction 时 null）
+    assert.equal(json.recentKeepDays, 30);
+    assert.equal(json.extractionTimeoutMs, null);
     // 提取结算层：字段恒在（缺失=旧版判定依据），无 journal 依赖时为空形
-    assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [] });
+    assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -129,7 +133,9 @@ test("GET state：extractionLog 恒含 runs/unrecovered（含 journal 缺省的�
       assert.equal(status, 200);
       assert.ok(Array.isArray(json.extractionLog.runs), "runs 恒为数组");
       assert.ok(Array.isArray(json.extractionLog.unrecovered), "unrecovered 恒为数组");
-      assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [] });
+      assert.ok(Array.isArray(json.extractionLog.abandoned), "abandoned 恒为数组");
+      assert.equal(json.extractionLog.abandonedCount, 0);
+      assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
     }
     // ② 真 journal 记账后 → /state 如实反映（runs 新在前 + 未恢复失败区间）
     const journal = createJournal({ storageRoot: root, log: silentLog });
@@ -183,6 +189,41 @@ test("PUT settings：合并写入 + 下轮 GET 可见", async () => {
     const get = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(get.json.settings.conversationMemory, false);
     assert.equal(get.json.settings.projectMemory, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("PUT settings：数值三项严格校验（非法 400，中文明话 message，保留机读 code）", async () => {
+  const root = freshRoot();
+  try {
+    // 三项都非法：正整数/上限；trashKeepDays 允许 0
+    for (const [key, bad] of [["trashKeepDays", -1], ["trashKeepDays", 366], ["surgicalKeep", 0], ["surgicalKeep", 201], ["recentKeepDays", 1.5], ["recentKeepDays", 366]]) {
+      const res = await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { [key]: bad } });
+      assert.equal(res.status, 400, `${key}=${bad} 应 400`);
+      assert.equal(res.json.code, "E_SETTINGS");
+      assert.equal(typeof res.json.error, "string");
+      assert.equal(typeof res.json.message, "string", "带中文可读 message");
+      assert.match(res.json.message, new RegExp(key));
+      // 非法入参不落盘：现值保持默认
+      assert.equal((await callApi(root, { method: "GET", path: `${API_PREFIX}state` })).json.settings[key], 30);
+    }
+    // 合法值：写入成功 + /state.settings 三键回显
+    const ok = await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { trashKeepDays: 7, surgicalKeep: 11, recentKeepDays: 90 } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.settings.trashKeepDays, 7);
+    assert.equal(ok.json.settings.surgicalKeep, 11);
+    assert.equal(ok.json.settings.recentKeepDays, 90);
+    const get = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(get.json.settings.trashKeepDays, 7);
+    assert.equal(get.json.settings.surgicalKeep, 11);
+    assert.equal(get.json.settings.recentKeepDays, 90);
+    assert.equal(get.json.recentKeepDays, 90, "/state.recentKeepDays 反映现值");
+    // 未提及保留现值
+    await callApi(root, { method: "PUT", path: `${API_PREFIX}settings`, body: { conversationMemory: false } });
+    const get2 = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(get2.json.settings.trashKeepDays, 7);
+    assert.equal(get2.json.settings.recentKeepDays, 90);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -295,6 +336,7 @@ test("entry：PUT 改条目（含跨分类移动）/ DELETE 删条目", async ()
     assert.equal(put.json.categoryId, "long-term");
     const del = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "to-edit.md" } });
     assert.equal(del.json.existed, true);
+    assert.equal(del.json.trashed, true, "面板删除走回收站（不是硬删）");
     const ghost = await callApi(root, { method: "PUT", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md", content: "x" } });
     assert.equal(ghost.status, 404);
   } finally {
@@ -302,7 +344,73 @@ test("entry：PUT 改条目（含跨分类移动）/ DELETE 删条目", async ()
   }
 });
 
+test("DELETE entry 走回收站：文件移入 trash、响应带 trashed/trashId、listTrash 可见、restore 可找回、分类索引对账", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "Gone", name: "gone.md", content: "将被删除的正文" });
+    const indexBefore = readFileSync(join(categoryDir(root, "work-profile"), "MEMORY.md"), "utf8");
+    assert.match(indexBefore, /Gone/, "前置：索引里有该条");
+    const del = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "work-profile", name: "gone.md" } });
+    assert.equal(del.status, 200);
+    assert.equal(del.json.existed, true);
+    assert.equal(del.json.trashed, true);
+    assert.equal(typeof del.json.trashId, "string", "响应带回收站条目 id");
+    // 文件不在原位；索引对账（不残留悬挂行）
+    assert.equal(existsSync(join(categoryDir(root, "work-profile"), "gone.md")), false, "原件已移出");
+    const indexAfter = readFileSync(join(categoryDir(root, "work-profile"), "MEMORY.md"), "utf8");
+    assert.doesNotMatch(indexAfter, /Gone/, "分类 MEMORY.md 索引对账剔除该行");
+    // 回收站可见（含该文件）
+    const trashList = await callApi(root, { method: "GET", path: `${API_PREFIX}trash/list` });
+    const entry = trashList.json.entries.find((e) => e.files.some((f) => f.name === "gone.md"));
+    assert.ok(entry, "删除的条目出现在回收站清单");
+    assert.equal(entry.id, del.json.trashId);
+    // 可从回收站找回
+    const restore = await callApi(root, { method: "POST", path: `${API_PREFIX}trash/restore`, body: { id: entry.id } });
+    assert.equal(restore.status, 200);
+    assert.equal(restore.json.restored.length, 1);
+    assert.equal(existsSync(join(categoryDir(root, "work-profile"), "gone.md")), true, "恢复后文件回到原位");
+    assert.match(readFileSync(join(categoryDir(root, "work-profile"), "gone.md"), "utf8"), /将被删除的正文/);
+    // 删除不存在的条目 → existed=false 且不建回收站条目
+    const ghost = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "work-profile", name: "ghost.md" } });
+    assert.equal(ghost.status, 200);
+    assert.equal(ghost.json.existed, false);
+    assert.equal(ghost.json.trashed, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- PUT entry 手动保存前留档（v0.4.0 安全面）----
+
+test("DELETE entry 存在但读不出（同名目录占位）→ 409 显式失败不谎报不存在，盘上原样", async () => {
+  const root = freshRoot();
+  try {
+    // 目标存在但是目录（readFileSync 抛 EISDIR）：绝不能被当 "不存在" 谎报删除成功
+    mkdirSync(join(categoryDir(root, "long-term"), "occupied.md"), { recursive: true });
+    const del = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "occupied.md" } });
+    assert.equal(del.status, 409, "存在但读不出 → 显式失败（不是 200 谎报）");
+    assert.equal(del.json.code, "E_ENTRY_UNREADABLE");
+    assert.equal(del.json.existed, true);
+    assert.equal(del.json.trashed, false);
+    assert.match(del.json.message, /无法读取/);
+    // 盘上原样：目录占位未被删、未进回收站
+    assert.equal(existsSync(join(categoryDir(root, "long-term"), "occupied.md")), true, "占用目录原样保留");
+    const trashList = await callApi(root, { method: "GET", path: `${API_PREFIX}trash/list` });
+    assert.equal(trashList.json.entries.length, 0, "未进回收站（读失败即未动原件）");
+    // 不存在 → 仍走 200 existed:false（与上条明确区分）
+    const ghost = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md" } });
+    assert.equal(ghost.status, 200);
+    assert.equal(ghost.json.existed, false);
+    // 正常条目 → 200 existed:true,trashed:true
+    createEntry(root, "long-term", { title: "Norm", name: "norm.md", content: "正文" });
+    const ok = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "norm.md" } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.existed, true);
+    assert.equal(ok.json.trashed, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("PUT entry 覆盖既有：留手术快照（内容=旧文）+ 响应带 preSaveSnapshotId + 可恢复旧文", async () => {
   const root = freshRoot();
@@ -427,6 +535,9 @@ test("backup list/restore：列备份 + 恢复（恢复前自动再备份）", a
     const backupId = reset.json.backupId;
     const list = await callApi(root, { method: "GET", path: `${API_PREFIX}backup/list` });
     assert.equal(list.json.backups.length, 1);
+    // 契约：每项带 createdAt（ISO 字符串，备份生成时间）
+    assert.equal(typeof list.json.backups[0].createdAt, "string", "backups/list 项带 createdAt");
+    assert.ok(Number.isFinite(Date.parse(list.json.backups[0].createdAt)), "createdAt 是合法 ISO 时间");
     const restore = await callApi(root, { method: "POST", path: `${API_PREFIX}backup/restore`, body: { id: backupId } });
     assert.equal(restore.status, 200);
     assert.ok(restore.json.preRestoreBackupId); // 后悔药的后悔药
@@ -691,6 +802,9 @@ test("真实 http：超长请求体返回显式 413（不再 ECONNRESET；mock �
     assert.equal(res.status, 413);
     const j = await res.json();
     assert.match(String(j.error), /上限/);
+    assert.match(String(j.message), /上限/);
+    // 413 带上该端点的具体大小上限（persona 100KB），不再只说"有大小限制"
+    assert.match(String(j.message), /100\s*KB/, "413 message 给出该端点具体上限");
     assert.equal(readPersona(root).isDefault, true); // 未写入
   } finally {
     await new Promise((r) => server.close(r));
@@ -711,6 +825,8 @@ test("格式过新：写端点 503，GET /state 照常并报 writable=false", as
     const write = await callApi(root, { method: "PUT", path: `${API_PREFIX}persona`, body: { content: "不应写入" } });
     assert.equal(write.status, 503);
     assert.equal(write.json.code, "FORMAT_TOO_NEW");
+    assert.equal(write.json.error, "format-too-new");
+    assert.equal(write.json.message, "数据由更高版本写入，已转只读，升级插件后恢复", "503 带中文可读 message");
 
     const read = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(read.status, 200);
@@ -830,6 +946,58 @@ test("embedding/test：已存密钥只发往它所属端点（不随请求体任
   } finally {
     await eff.close();
     await alt.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("state：embeddingConfig/embeddingEffective baseUrl 剥离 URL 内嵌凭据（不回显 user:pass）", async () => {
+  const root = freshRoot();
+  try {
+    const routes = makeApiRoutes({
+      storageRoot: root,
+      log: silentLog,
+      onGlobalWrite: () => {},
+      extraction: {
+        triggerRetry: () => 0,
+        inFlight: () => false,
+        configSummary: () => ({
+          timeoutMs: 120000,
+          retryAttempts: 3,
+          embeddingEffective: { source: "settings", enabled: true, baseUrl: "http://user:EXAMPLE_PASSWORD@example.com@embed.local/v1/embeddings", model: "m", provider: "p", apiKey: "secret", topK: 5, minScore: 0, timeoutMs: 5000 },
+        }),
+      },
+    });
+    const handler = routes[0].handler;
+    const req = mockReq({ method: "GET", url: `${API_PREFIX}state` });
+    const res = mockRes();
+    await handler(req, res);
+    const json = JSON.parse(res.body);
+    assert.equal(json.embeddingConfig.baseUrl.includes("user"), false, "embeddingConfig.baseUrl 剥离 username");
+    assert.equal(json.embeddingConfig.baseUrl.includes("pass"), false, "embeddingConfig.baseUrl 剥离 password");
+    assert.equal(json.embeddingConfig.baseUrl, "http://embed.local/v1/embeddings");
+    assert.equal(json.embeddingEffective.baseUrl.includes("user"), false, "embeddingEffective.baseUrl 剥离凭据");
+    assert.equal(json.embeddingEffective.baseUrl, "http://embed.local/v1/embeddings");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("state：extractionRetryAttempts 补发（=cfg.retryAttempts，面板消费契约字段）", async () => {
+  const root = freshRoot();
+  try {
+    const routes = makeApiRoutes({
+      storageRoot: root,
+      log: silentLog,
+      onGlobalWrite: () => {},
+      extraction: { triggerRetry: () => 0, inFlight: () => false, configSummary: () => ({ timeoutMs: 120000, retryAttempts: 4 }) },
+    });
+    const handler = routes[0].handler;
+    const req = mockReq({ method: "GET", url: `${API_PREFIX}state` });
+    const res = mockRes();
+    await handler(req, res);
+    const json = JSON.parse(res.body);
+    assert.equal(json.extractionRetryAttempts, 4, "/state 产出 extractionRetryAttempts");
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

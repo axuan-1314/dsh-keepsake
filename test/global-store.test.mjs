@@ -13,7 +13,6 @@ import {
   countEntries,
   createBackup,
   createEntry,
-  deleteEntry,
   deriveEntryName,
   exportAll,
   globalRoot,
@@ -152,32 +151,6 @@ test("updateEntry：条目不存在返回 null", () => {
   const root = freshRoot();
   try {
     assert.equal(updateEntry(root, "work-profile", "ghost.md", { content: "x" }), null);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("deleteEntry：删文件 + 索引剔除；不存在返回 false", () => {
-  const root = freshRoot();
-  try {
-    const { name } = createEntry(root, "user-profile", { title: "Gone", content: "x" });
-    assert.equal(deleteEntry(root, "user-profile", name), true);
-    assert.equal(existsSync(join(categoryDir(root, "user-profile"), name)), false);
-    const index = readFileSync(join(categoryDir(root, "user-profile"), "MEMORY.md"), "utf8");
-    assert.doesNotMatch(index, /Gone/);
-    assert.equal(deleteEntry(root, "user-profile", name), false);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("deleteEntry：路径穿越名被三道闸拦（不删任何文件）", () => {
-  const root = freshRoot();
-  try {
-    const { name } = createEntry(root, "work-profile", { title: "Keep", content: "x" });
-    assert.equal(deleteEntry(root, "work-profile", "../escape"), false);
-    assert.equal(deleteEntry(root, "work-profile", "..\\..\\evil.md"), false);
-    assert.equal(existsSync(join(categoryDir(root, "work-profile"), name)), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -444,6 +417,15 @@ test("createBackup/listBackups：全量留档 + meta 可读 + 新在前", async 
     assert.equal(backups[1].reason, "reset:work-profile");
     // 备份内含 global 数据
     assert.equal(existsSync(join(root, "backups", id1, "global", "work-profile")), true);
+    // createdAt：优先 meta（ISO 字符串）；meta 缺失/不可解析时回落目录 mtime，取不到 null
+    assert.equal(typeof backups[0].createdAt, "string");
+    assert.ok(Number.isFinite(Date.parse(backups[0].createdAt)));
+    // 抹掉 meta 里的 createdAt → 回落目录 mtime（仍是可解析 ISO）
+    const metaPath = join(root, "backups", id2, "backup-meta.json");
+    writeFileSync(metaPath, JSON.stringify({ id: id2, reason: "import", version: 2, complete: true }), "utf8");
+    const fallback = listBackups(root).find((b) => b.id === id2);
+    assert.equal(typeof fallback.createdAt, "string");
+    assert.ok(Number.isFinite(Date.parse(fallback.createdAt)), "meta.createdAt 缺失时回落目录 mtime");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

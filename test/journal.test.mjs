@@ -128,8 +128,70 @@ test("journal：getUnrecovered 三分支（在列 / 后续推进出列 / 放弃�
   }
 });
 
-// ---- 4. 并发：20 次 recordRun 不 await，混合 2 个会话 ----
+// ---- 3b. 放弃区间（abandoned）：独立留痕 + 跨重启可见 + 与 lost 区间互斥 ----
 
+test("journal：abandoned 独立留痕（新在前、封顶、abandonedCount）+ 与 unrecovered 互斥", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, abandonedMax: 3 });
+    // 放弃型：cursorAfter>from（cursor 已推进），不进 unrecovered，只进 abandoned
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "abandoned", reason: "no-cwd", at: 1700000000000 });
+    await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 20, outcome: "abandoned", reason: "no-route", at: 1700000001000 });
+    // failed 未推进：进 unrecovered 不进 abandoned
+    await journal.recordRun({ sessionId: "s2", from: 0, to: 5, cursorAfter: 0, outcome: "failed", reason: "llm-error", at: 1700000002000 });
+    const snap = journal.snapshot();
+    assert.equal(snap.abandoned.length, 2, "两条放弃区间在列");
+    assert.equal(snap.abandonedCount, 2);
+    assert.deepEqual(snap.abandoned[0], { from: 10, to: 20, sessionId: "s1", at: "2023-11-14T22:13:21.000Z", reason: "no-route" }, "新在前");
+    assert.equal(snap.unrecovered.length, 1, "failed 未推进在未恢复清单");
+    assert.equal(snap.unrecovered[0].sessionId, "s2");
+    assert.equal(snap.abandoned.every((a) => a.sessionId === "s1"), true, "放弃区间不含 failed 的 s2");
+    // 封顶：超 abandonedMax 裁尾（保留最新），但 abandonedCount 不封顶
+    await journal.recordRun({ sessionId: "s1", from: 20, to: 30, cursorAfter: 30, outcome: "abandoned", reason: "no-cwd", at: 1700000003000 });
+    await journal.recordRun({ sessionId: "s1", from: 30, to: 40, cursorAfter: 40, outcome: "abandoned", reason: "no-cwd", at: 1700000004000 });
+    assert.equal(journal.snapshot().abandoned.length, 3, "封顶 3");
+    assert.equal(journal.snapshot().abandonedCount, 4, "累计计数不封顶");
+    assert.deepEqual(journal.snapshot().abandoned.map((a) => a.from), [30, 20, 10], "保留最新（新在前）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：abandoned 顺序稳定（按 at 定序、跨重放一致，不靠 unshift 隐式顺序）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    // 入列顺序故意与 at 时序相悖（时钟偏差/盘上手改/交错重放）：纯 unshift 顺序会给出
+    // [from=1(at 早), from=0(at 晚)]，而按 at 降序（新在前）应得 [from=0, from=1]。
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 1, cursorAfter: 1, outcome: "abandoned", reason: "no-cwd", at: 1700000002000 });
+    await journal.recordRun({ sessionId: "s1", from: 1, to: 2, cursorAfter: 2, outcome: "abandoned", reason: "no-cwd", at: 1700000001000 });
+    const order = journal.snapshot().abandoned.map((a) => a.from);
+    assert.deepEqual(order, [0, 1], "按 at 降序（新在前），与入列序无关");
+    // 重启重放：同一 at 序 → 同一顺序（收集序由内容确定，非 unshift 机制）
+    const again = createJournal({ storageRoot: root });
+    assert.deepEqual(again.snapshot().abandoned.map((a) => a.from), [0, 1], "重放后顺序一致");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：放弃区间跨『重启』（重放）仍可见——放弃不再永久消失", async () => {
+  const root = tempRoot();
+  try {
+    const first = createJournal({ storageRoot: root });
+    await first.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "abandoned", reason: "no-cwd", at: 1700000000000 });
+    await first.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 20, outcome: "written", writes: 1, at: 1700000001000 });
+    const before = first.snapshot();
+    // 新实例（模拟进程重启）重放盘上 JSONL
+    const second = createJournal({ storageRoot: root });
+    assert.deepEqual(second.snapshot().abandoned, before.abandoned, "重放后放弃区间逐字段恢复");
+    assert.equal(second.snapshot().abandonedCount, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 4. 并发：20 次 recordRun 不 await，混合 2 个会话 ----
 test("journal：并发 20 次 recordRun（2 会话混合）全部落盘、行数正确、无坏行", async () => {
   const root = tempRoot();
   try {
@@ -268,17 +330,47 @@ test("journal：轮转 rotateAt=5/keepOnRotate=3 —— 文件只剩 3 行且内
   }
 });
 
-test("journal：轮转不吞未恢复失败区间（裁掉旧行后 unrecovered 仍在内存态）", async () => {
+test("journal：轮转强制保留未恢复失败区间（裁掉普通旧行，失败行留盘 + 重启仍可见）", async () => {
   const root = tempRoot();
   try {
     const journal = createJournal({ storageRoot: root, rotateAt: 3, keepOnRotate: 1 });
     await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 10, outcome: "failed", reason: "llm-error", at: 1700000000000 });
     await journal.recordRun({ sessionId: "s2", from: 0, to: 1, cursorAfter: 1, outcome: "written", at: 1700000001000 });
     await journal.recordRun({ sessionId: "s2", from: 1, to: 2, cursorAfter: 2, outcome: "written", at: 1700000002000 });
-    assert.equal(lines(root).length, 1, "已轮转到 1 行");
-    // 失败行已被裁出文件，但未恢复清单必须还在——那是跨重启补提的命脉
+    // 轮转后：普通旧行（s2 第一条）被裁，尾窗 1 行 + 强制保留的失败行 → 2 行（可超 keepEff）
+    const onDisk = lines(root);
+    assert.equal(onDisk.length, 2, "尾窗 1 行 + 强制保留的未恢复失败行 1 行");
+    assert.equal(JSON.parse(onDisk[0]).outcome, "failed", "失败行留在盘上（无论多旧）");
+    // 内存态未恢复清单不受轮转影响
     assert.deepEqual(journal.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]), [["s1", 10, 20]]);
     assert.equal(journal.getCursor("s1"), 10);
+    // 重启重放：未恢复区间从盘上重建（此前裁掉旧行后重启就再也见不到）
+    const again = createJournal({ storageRoot: root, rotateAt: 3, keepOnRotate: 1 });
+    assert.deepEqual(again.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]), [["s1", 10, 20]], "重启后未恢复区间仍可见");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：轮转强制保留 abandoned（永久留痕跨轮转 + 跨重启仍可见，abandonedCount 不丢）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, rotateAt: 4, keepOnRotate: 2 });
+    // 先记一条放弃区间（旧行），随后写足普通结算把它挤出尾窗
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "abandoned", reason: "no-cwd", at: 1700000000000 });
+    for (let i = 1; i <= 6; i += 1) {
+      await journal.recordRun({ sessionId: "s2", from: i - 1, to: i, cursorAfter: i, outcome: "written", at: 1700000000000 + i });
+    }
+    // 盘上：尾窗内普通行 + 强制保留的 abandoned 行（放弃行无论多旧都不被裁）
+    const onDisk = lines(root).map((l) => JSON.parse(l));
+    assert.equal(onDisk.filter((r) => r.outcome === "abandoned").length, 1, "放弃行永久留痕（未被轮转裁掉）");
+    assert.ok(onDisk.length >= 3, "尾窗普通行 + 强制保留 abandoned 行同存盘上（可超 keepOnRotate）");
+    // 重启重放：放弃区间与累计计数都从盘上恢复
+    const again = createJournal({ storageRoot: root, rotateAt: 4, keepOnRotate: 2 });
+    const snap = again.snapshot();
+    assert.equal(snap.abandoned.length, 1, "重启后放弃区间仍可见");
+    assert.deepEqual(snap.abandoned[0], { from: 0, to: 10, sessionId: "s1", at: "2023-11-14T22:13:20.000Z", reason: "no-cwd" });
+    assert.equal(snap.abandonedCount, 1, "累计放弃计数不因轮转丢");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

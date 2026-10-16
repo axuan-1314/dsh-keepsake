@@ -4,22 +4,27 @@
 //   minimal 场景不再依赖 section、视野去重（同内容不重复）、内容变化补发、视野丢失补发、
 //   开关关闭不注入、预算丢弃可见、section 模式不注册 pre-step。
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { apply } from "../lib/index.js";
-import { createEntry, writePersona } from "../lib/global-store.js";
+import { createEntry, categoryDir, writePersona } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 import { __resetMetricsForTest, injectionSnapshot, recallSnapshot } from "../lib/metrics.js";
 import { skipReason } from "../lib/transcript.js";
 
-function fakeCtx() {
+function fakeCtx({ logs = null } = {}) {
   const sections = [];
   const handlers = new Map();
+  const record = (level, ...args) => { if (logs !== null) logs.push({ level, args }); };
   const ctx = {
-    logger: { info() {}, warn() {}, error() {} },
+    logger: {
+      info: (...a) => record("info", ...a),
+      warn: (...a) => record("warn", ...a),
+      error: (...a) => record("error", ...a),
+    },
     on(event, handler) {
       handlers.set(event, handler);
       return () => {};
@@ -557,5 +562,206 @@ test("召回块按「全部历史块」去重：命中集变化再回到旧集�
     assert.ok(!outC.messages.some((m) => m.source?.form === "memory-recall"), "轮 C 不应产生新召回块");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 召回受总开关管（conversationMemory）/ 项目范围均衡 / 项目记忆开关 ----
+
+test("总开关关（conversationMemory=false）→ 零注入 + 零嵌入调用（召回不再只认 emb.enabled）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "包管理", content: "团队统一用 pnpm 管理依赖" });
+    writeSettings(root, { conversationMemory: false }); // 面板关掉对话记忆
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    let calls = 0;
+    const impl = async () => { calls += 1; throw new Error("总开关关：不得发起嵌入调用"); };
+    const decision = { kind: "enter", messages: [userMsg("我们 用 pnpm 还是 python？")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.equal(calls, 0, "总开关关：零嵌入调用");
+    assert.ok(!out.messages.some((m) => m.source?.kind === "plugin:dsh-keepsake"), "总开关关：零注入（主块与召回块都不投）");
+    assert.equal(recallSnapshot().hits, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("projectMemory=false → 召回只收集全局、不做项目范围召回（零项目条目）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    // 只放项目条目（无全局条目）+ 关掉项目记忆 → 候选集为空 → 不召回、不发起嵌入
+    seedProjectMemory(root);
+    writeSettings(root, { projectMemory: false });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    let calls = 0;
+    const impl = async () => { calls += 1; throw new Error("项目记忆关且无全局条目：无候选，不应发起嵌入"); };
+    const decision = { kind: "enter", messages: [userMsg("项目 条目 P")] };
+    const out = await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.equal(calls, 0, "项目范围被关且无全局条目 → 候选为空 → 零嵌入调用");
+    assert.ok(!out.messages.some((m) => m.source?.form === "memory-recall"), "无召回块");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回候选范围均衡：全局先占满不再饿死项目（各半名额，总量仍受上限约束）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    // 全局条目数 > RECALL_MAX_ITEMS（1000）：旧实现全局先占满候选，项目永远轮不上。
+    // 用裸文件写（createEntry 逐条重建索引太慢），listEntries 读 .md 即可。
+    const gDir = categoryDir(root, "long-term");
+    mkdirSync(gDir, { recursive: true });
+    for (let i = 0; i < 1100; i += 1) {
+      const name = `g-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(gDir, name), `---\nname: g${i}\ntitle: G${i}\ndescription: d\n---\n全局正文 ${i}\n`);
+    }
+    seedProjectMemory(root); // 1 条项目条目（含 "项目正文"）
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl, calls } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    // 批次里至少嵌过项目条目——旧实现全局先占满会让项目永远轮不上
+    const embeddedTexts = calls.flatMap((c) => c.body.input.map(String));
+    assert.ok(embeddedTexts.some((t) => t.includes("项目正文")), "项目条目进入了嵌入候选（范围均衡生效）");
+    // 总量仍受 RECALL_MAX_ITEMS 约束（候选条目数不超过 1000；剔除同批里的查询文本）
+    const QUERY = "pnpm 命令";
+    const candidateTexts = new Set(embeddedTexts.filter((t) => t !== QUERY));
+    assert.ok(candidateTexts.size <= 1000, `候选总量不超上限（实际 ${candidateTexts.size}）`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回候选双向让位：全局 1100 项目 1 → 全局吃满余量（旧实现白丢 499 名额）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const gDir = categoryDir(root, "long-term");
+    mkdirSync(gDir, { recursive: true });
+    for (let i = 0; i < 1100; i += 1) {
+      const name = `g-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(gDir, name), `---\nname: g${i}\ntitle: G${i}\ndescription: d\n---\n全局正文 ${i}\n`);
+    }
+    seedProjectMemory(root); // 1 条项目条目
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl, calls } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    const QUERY = "pnpm 命令";
+    const embedded = new Set(calls.flatMap((c) => c.body.input.map(String)).filter((t) => t !== QUERY));
+    // 双向让位：项目只占 1 名额，其余 999 名额全给全局（旧单向实现 global 恒 ≤500）
+    const globalCount = [...embedded].filter((t) => t.includes("全局正文")).length;
+    assert.equal(embedded.size, 1000, "候选吃满上限（全局占满项目让出的余量）");
+    assert.equal(globalCount, 999, "全局侧拿到 999 名额（=1000 - 1 个项目条目）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回候选双向让位：全局 1 项目 1100 → 项目吃满余量（与 1100:1 对称）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "G0", name: "g0.md", content: "全局正文 0" });
+    const { memoryDir } = projectMemoryPaths(root, root);
+    mkdirSync(memoryDir, { recursive: true });
+    for (let i = 0; i < 1100; i += 1) {
+      const name = `p-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(memoryDir, name), `---\nname: p${i}\ntitle: P${i}\ndescription: d\n---\n项目正文 ${i}\n`);
+    }
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl, calls } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    const QUERY = "pnpm 命令";
+    const embedded = new Set(calls.flatMap((c) => c.body.input.map(String)).filter((t) => t !== QUERY));
+    const projectCount = [...embedded].filter((t) => t.includes("项目正文")).length;
+    assert.equal(embedded.size, 1000, "候选吃满上限（项目占满全局让出的余量）");
+    assert.equal(projectCount, 999, "项目侧拿到 999 名额（=1000 - 1 个全局条目）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回候选截断：超上限时 log.warn 可见（不静默丢候选）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const gDir = categoryDir(root, "long-term");
+    mkdirSync(gDir, { recursive: true });
+    for (let i = 0; i < 1100; i += 1) {
+      const name = `g-${String(i).padStart(4, "0")}.md`;
+      writeFileSync(join(gDir, name), `---\nname: g${i}\ntitle: G${i}\ndescription: d\n---\n全局正文 ${i}\n`);
+    }
+    const logs = [];
+    const { ctx, handlers } = fakeCtx({ logs });
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    assert.ok(
+      logs.some((l) => l.level === "warn" && String(l.args[0]).includes("召回候选超上限已截断")),
+      "候选超上限必须留 warn 痕（此前该 warn 无牙）",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("召回候选确定性：超限取舍按稳定序（mtime 降序），与 readdir 遍历序无关", async () => {
+  __resetMetricsForTest();
+  // 1100 项目条目：mtime = 递增（p-1099 最新、p-0000 最旧），故意与文件名 readdir 序相悖。
+  // mtime 降序取舍的期望集 = p-1099 … p-0100；若按 readdir 序（文件名序）截取会得到
+  // p-0000 … p-0999（不同的集）——两次运行独立 root 都取到同一期望集才算稳定序生效。
+  const seedSame = (root) => {
+    const { memoryDir } = projectMemoryPaths(root, root);
+    mkdirSync(memoryDir, { recursive: true });
+    const base = new Date("2020-01-01T00:00:00.000Z").getTime();
+    for (let i = 0; i < 1100; i += 1) {
+      const name = `p-${String(i).padStart(4, "0")}.md`;
+      const full = join(memoryDir, name);
+      writeFileSync(full, `---\nname: p${i}\ntitle: P${i}\ndescription: d\n---\n项目正文 ${i}\n`);
+      const t = new Date(base + i * 1000);
+      utimesSync(full, t, t);
+    }
+  };
+  const collectOnce = async (root) => {
+    seedSame(root);
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, ...RECALL_CONFIG });
+    const handler = handlers.get("agent/pre-step");
+    const { impl, calls } = stubFetch();
+    const decision = { kind: "enter", messages: [userMsg("pnpm 命令")] };
+    await withFetch(impl, () => run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision));
+    const QUERY = "pnpm 命令";
+    return calls.flatMap((c) => c.body.input.map(String)).filter((t) => t !== QUERY);
+  };
+  const rootA = freshRoot();
+  const rootB = freshRoot();
+  try {
+    const first = await collectOnce(rootA);
+    const second = await collectOnce(rootB);
+    assert.equal(first.length, 1000, "项目侧超限取满上限（全局无条目，余量全给项目）");
+    // 期望集：mtime 降序前 1000 条 = p-1099 … p-0100
+    const expected = new Set();
+    for (let i = 1099; i >= 100; i -= 1) expected.add(`P${i}\nd\n项目正文 ${i}`);
+    assert.deepEqual(new Set(first), expected, "取舍按 mtime 降序（不是 readdir 文件名序）");
+    assert.deepEqual(first, second, "同输入两次运行选集完全相同（稳定序）");
+  } finally {
+    rmSync(rootA, { recursive: true, force: true });
+    rmSync(rootB, { recursive: true, force: true });
   }
 });

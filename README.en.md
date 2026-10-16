@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.4.0 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.4.1 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -23,7 +23,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 > Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
 ```
 
 ## Contents
@@ -34,6 +34,7 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
   - [Semantic recall (optional)](#semantic-recall-optional)
   - [Memory management panel](#memory-management-panel)
   - [Pipeline health card and "retry extraction now"](#pipeline-health-card-and-retry-extraction-now)
+  - [Extraction run log and cross-restart resume](#extraction-run-log-and-cross-restart-resume)
   - [Failure resilience: retry, classification, on-disk trail](#failure-resilience-retry-classification-on-disk-trail)
   - [Automatic backups](#automatic-backups)
   - [Write reversibility: snapshots and trash](#write-reversibility-snapshots-and-trash)
@@ -105,7 +106,7 @@ Off by default. Enable `recallEnabled` and configure an embedding endpoint (`emb
 
 ### Memory management panel
 
-Entry point: DSH settings → **Memory** section → "Open memory management". Opening degrades gracefully (new window → embedded iframe → full page); the panel follows the host's light/dark theme. The settings block itself is a quick-action surface: master switch, "DSH's name" / "what to call me" inputs (debounced auto-save), status summary (N global entries · M projects), and a red bar with a "details" deep link on extraction failure.
+Entry point: DSH settings → **Memory** section (the Memory block on the DSH settings page, referred to below as the settings block) → "Open memory management". Opening degrades gracefully (new window → embedded iframe → full page); the panel follows the host's light/dark theme. The settings block itself is a quick-action surface: master switch, "DSH's name" / "what to call me" inputs (debounced auto-save), status summary (N global entries · M projects), and a red bar with a "details" deep link on extraction failure.
 
 ![Settings page: three-layer switches and extraction pipeline health](docs/panel-settings.png)
 
@@ -124,18 +125,26 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 - **Addressing page**: two inputs ("DSH's name" / "what to call me", 40 chars each), debounced auto-save, same data as the settings block.
 - **Project memory page** (read-only): per-project entry count and last update; per-project JSON export.
 - **Trash page / Snapshots page** (see [Write reversibility](#write-reversibility-snapshots-and-trash)): deleted entries and pre-batch archives, restorable per entry or per file.
-- **Settings page**: the three switches; pipeline health card and extraction-model card; data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
-- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt persona/addressing files are preserved as `*.corrupt-<ts>` before being overwritten.
+- **Settings page**: the three switches; pipeline health card and extraction-model card; a **retention policy** card (trash retention days / snapshot count / recent-activity retention days, effective next turn); data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
+- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt files are preserved as `*.corrupt-<ts>` before being overwritten. A corrupt `settings.json` is preserved (renamed to `settings.json.corrupt-<ts>`) and then recovered from the shadow file `settings.last-good.json` (refreshed on every successful write), restoring your switch choices — it only falls back to defaults when no shadow is available, not by discarding your settings outright.
 
 ### Pipeline health card and "retry extraction now"
 
 - **Three-state light**: green = no recent failure (collapsed to one line); yellow = recent failure but auto-recovered; red = currently failing (with same-reason streak); gray pulse = extracting. While a streak is active it polls every 5s; the sidebar "Settings" item shows a red streak badge.
 - **Failure buckets**: by reason (no-route / no-cwd / LLM call / parse / IO), showing only non-zero buckets.
 - **Last 5 failures**: time / reason / model / error summary, plus the failure log path (`<storageRoot>/extraction-errors.log`).
-- **Missed-range hint**: "turns after seq X are not yet recorded; they will be backfilled on recovery".
+- **Missed-range hint**: "content after turn X is not yet recorded; it will be backfilled on recovery".
 - **"Retry extraction now" button**: actually triggers one LLM extraction for sessions with un-extracted ranges (confirmation dialog notes the small token cost); 10s minimum interval, 409 while in flight.
 - **"Copy diagnostics" button**: copies a state summary for pasting into an issue.
 - **Extraction-model card**: honestly shows the extraction route (explicit `provider`/`model`, or "unspecified (follows session route)"), fallback config, the last route used, and the embedding model (for semantic recall).
+
+### Extraction run log and cross-restart resume
+
+The root cause behind "I chatted for a few turns but keepsake shows no feedback" was that success / zero-output / skip left no trace at all, failure details lived only in process memory (zeroed on every DSH restart), and failed ranges were lost permanently across restarts. This version adds a durable observation surface:
+
+- **Extraction run log (durable surface)**: each settled extraction appends a line to `<storageRoot>/extraction-journal.jsonl` — `written` (how many written / deleted) / `zero-ops` (nothing worth recording, or ops that could not land) / `skipped` (direct write into memory, no usable user prose, master switch off, format read-only) / `failed` (the same reason names as the failure buckets) / `abandoned` (the same structural cause failed too many times, the range was explicitly abandoned and the cursor advanced without further retry). Appends are serialized to avoid concurrent corruption; past 2000 lines the file rotates keeping the last 1000; a write failure only logs a warning and never blocks extraction. It is not a source of truth — deleting it loses no memory (only the observation history and the resume boundary). See [FORMAT.md](FORMAT.md) section 7.
+- **Panel "recent extraction records"**: the settings-page health card gains a collapsible list (time + seq range + result label), so "why wasn't that recorded" is answerable per turn. The "unrecovered range" red bar is now dual-sourced — after a restart it falls back to the on-disk unrecovered list instead of disappearing, and structurally abandoned ranges are also recorded on disk (the panel shows an "abandoned N ranges" hint).
+- **Cross-restart resume**: the per-session extraction cursor is persisted alongside the run log, so after a DSH restart a reopened session **resumes from the last boundary** and failed ranges are no longer lost to a restart. **Trade-off**: a session that was never extracted still does not back-scan its history — extraction is driven by the session continuing to produce new turns, so an un-extracted history is picked up only when that session keeps chatting.
 
 ### Failure resilience: retry, classification, on-disk trail
 
@@ -160,17 +169,17 @@ Every bulk destructive action has an undo:
 Writes from automatic extraction are not irreversible — the project side and the global side each leave a way back, visible and rollback-able in the panel:
 
 - **Pre-batch snapshots (project side)**: before a batch overwrites or deletes existing entries, the old text is archived to `backups/surgical/<batchId>/` (latest `surgicalKeep`, default 30 batches). The panel's **Snapshots** page can restore **a whole batch** or **a single file**; the index (`MEMORY.md`) is reconciled afterwards.
-- **Trash (deferred delete)**: deletions produced by **automatic extraction** are no longer hard-deleted — a copy lands in `trash/<entryId>/` first and the original is removed only after the copy is confirmed in place, kept for `trashKeepDays` (default 30 days). The panel's **Trash** page restores a whole entry or a single file, and can purge one entry, purge everything older than the retention window, or empty the trash (emptying = real deletion). This path covers automatic extraction only: the panel's manual **"delete entry"** (`DELETE /entry`), **category reset** (`clearCategory`) and **recent-activity rolling prune** (`pruneRecentActivity`) still delete outright and do not go through the trash (the panel's delete confirmation already says "cannot be undone"; a category reset takes a full auto-backup first).
+- **Trash (deferred delete)**: deletions are no longer hard-deleted — a copy lands in `trash/<entryId>/` first and the original is removed only after the copy is confirmed in place, kept for `trashKeepDays` (default 30 days). The panel's **Trash** page restores a whole entry or a single file, and can purge one entry, purge everything older than the retention window, or empty the trash (emptying = real deletion). This path covers both deletions produced by **automatic extraction** and the panel's manual **"delete entry"** (`DELETE /entry`), while **category reset** (`clearCategory`) and the **recent-activity rolling prune** (`pruneRecentActivity`) still delete outright and do not go through the trash (a category reset takes a full auto-backup first).
 - **Write-then-verify (project and global side)**: after landing, the file is read back and its four frontmatter fields and body are validated; on failure the **old text is rolled back** (a pure addition with nothing to roll back has its dirty file removed and lands in trash), and on the project side the new file is kept as a specimen under the snapshot's `failed/` directory. The global write path also verifies on read-back.
 - **Hard-fact guard (project side)**: if an overwrite drops an existing hard fact (numbers, version numbers, hex identifiers, byte sizes) it is logged and counted (`hardfactDrops`); set `hardfactPolicy` to `block` and that op is rolled back and counted as `hardfactBlocks` (kept separate from write-verification failures `verifyFailed`; default `warn`: alert only, no blocking). Honest about the detection limits: a drop is flagged only when a whole type disappears from the new text or is displaced by a near-identical value (a suspected transcription slip, like 269 → 267) — frontmatter, index lines and dynamic notes (dates / countdowns) are excluded from the comparison, and **a whole-line delete may go undetected when the body contains many numbers of the same type**; the warn / block semantics are unchanged.
 - **Three write-path gates (project side)**: an overwrite (full replacement) only happens with a matching expected sha1 — if the op's `sha1` field does not match the current file the op is rejected (counted as `expectedSha1Mismatches`), so no overwrite is based on stale content; a "blind" write without the sha1 never replaces the old body — it **downgrades to an append** (old body kept, new content after a separator) instead of replacing the whole file; extraction takes a batch lock (`<storageRoot>/extract.lock`), and a lock conflict blocks destructive operations.
 - **Snapshot before global overwrites**: before automatic extraction rewrites an existing global-memory entry, the old text is archived to `backups/surgical/`; if the snapshot fails the overwrite is skipped and the original text is left untouched (better to miss one update than to lose the old text). **Manual panel saves (entry edits) are archived the same way**: if the pre-save archive fails the save is refused outright (503, old text untouched), and a successful response carries a `preSaveSnapshotId` so the replaced old text can be recovered from the **Snapshots** page.
 - **Restores keep a copy too**: before restoring from a snapshot / trash / full backup, existing conflicting files at the restore target are archived first. A **full-backup restore** (`restoreBackup`) renames the old data to `retired-*` then swaps the new copy in; if the swap fails it renames the old data back (**automatic rollback** — and if even that rename fails, the `retired-*` directory is kept for manual recovery). A **snapshot / trash restore** (`restoreSurgicalSnapshot` / `restoreTrash`), however, does **not** auto-rollback — it writes files in a loop and stops in place on failure without restoring the previous state; the pre-restore archive it left behind is still on disk, and the API's failure response carries a `preRestoreSnapshotId` plus a hint pointing to it, so you can recover the overwritten old versions **by hand**. Restore endpoints share the same batch lock as extraction write-back, so a restore never interleaves with writes.
-- **Visible on the health card**: the "automatic extraction pipeline" card on the settings page gains a write-safety line (trash pending / verify failures / hard-fact blocks / hard-fact alerts / blind-write downgrades / sha1 mismatches / lock conflicts / snapshot failures — shown only when non-zero); the sidebar also shows pending trash and snapshot counts. The data source `/state.safety` has ten fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) and seven in-process counters (`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**).
+- **Visible on the health card**: the "automatic extraction pipeline" card on the settings page gains a write-safety line (trash count / verify failures / hard-fact blocks / hard-fact alerts / blind-write downgrades / sha1 mismatches / lock conflicts / snapshot failures — shown only when non-zero); the sidebar also shows trash and snapshot counts. The data source `/state.safety` has ten fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) and seven in-process counters (`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**).
 
 > The only source of truth is `*.md` and `MEMORY.md`: `backups/` and `trash/` are **copy directories that are safe to delete** (deleting them loses no current memory, only the ability to roll back). See [FORMAT.md](FORMAT.md) section 7.
 
-The three write-safety settings live in `~/.dsh/memory/settings.json` (the same file as the three switches — **not** entry config; putting them in `cordis.patch.yml` is rejected; the current panel build has no inputs for them, so edit the file by hand and they take effect next turn):
+The three write-safety settings live in `~/.dsh/memory/settings.json` (the same file as the three switches — **not** entry config; putting them in `cordis.patch.yml` is rejected). `surgicalKeep` / `trashKeepDays` and the recent-activity retention days `recentKeepDays` can be edited directly from the settings page's **retention policy** card (effective next turn); `hardfactPolicy` has no panel input yet, so edit the file by hand and it takes effect next turn:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -190,7 +199,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
 # profile: web / headless / desktop
 ```
 
@@ -240,7 +249,7 @@ cordis entry config (see `cordis.patch.yml`):
 | `injectChannel` | **`"message"`** | Injection channel: `"message"` = durable user-message channel (default, all presets); `"section"` = legacy four-segment system-prompt injection (rollback) |
 | `injectMaxChars` | 60000 | **Total** budget for message-channel injection (chars): the recall block and the main block share it, and the main block yields to the recall block; overflow drops whole segments by priority, with a visible WARNING |
 | `storageRoot` | `~/.dsh/memory` | Root for all memory (tests / migration; usually leave alone) |
-| `provider` / `model` | empty (follow session) | Extraction route; must appear as a pair. Empty captures the current session route |
+| `provider` / `model` | empty (follow session) | Extraction call route; must appear as a pair, else an error. Empty auto-captures the current session route (`request/header` first, `assistant/message`'s `source` as fallback, the same session-title strategy) |
 | `minUserWords` | 3 | Lower bound on prose word count for the skip condition |
 | `timeoutMs` | 120000 | Per-extraction timeout |
 | `maxOutputTokens` | 4096 | Extraction output cap |
@@ -275,7 +284,13 @@ Data layout:
 
 ```text
 ~/.dsh/memory/
-├── settings.json                          # three-layer switches (panel-editable, read each turn)
+├── keepsake-format.json                   # storage-format version marker (internal; see FORMAT.md section 8)
+├── extract.lock                           # extraction/restore batch lock (self-managed, safe to delete)
+├── extraction-journal.jsonl               # extraction run log (observation + resume boundary; not source of truth, safe to delete)
+├── settings.json                          # three-layer switches + retention policy (panel-editable, read each turn)
+├── settings.last-good.json                # settings shadow (refreshed on every successful write; source for recovery when settings.json is corrupt)
+├── settings.corrupt                       # corruption flag (set when settings.json fails to parse, cleared once settings are re-saved; keeps the red bar visible)
+├── settings.json.corrupt-<ts>             # preserved copy of a corrupt settings.json (renamed, original content never lost)
 ├── extraction-errors.log                  # extraction failure log (always on, rotated at 512KB)
 ├── debug.log                              # diagnostic log when DSH_KEEPSAKE_DEBUG=1
 ├── embeddings.json                        # semantic-recall vector cache (created when recallEnabled)
@@ -291,6 +306,8 @@ Data layout:
 │   └── surgical/<batchId>/                # pre-batch snapshots: old text before overwrite/delete (latest 30 kept)
 └── trash/<entryId>/                       # trash: originals of deleted entries (kept 30 days by default)
 ```
+
+- `keepsake-format.json` / `extract.lock` / `extraction-journal.jsonl` are all **self-managed, non-source-of-truth files that are safe to delete** (restamped if missing / rebuilt next batch / restarted afresh respectively); the only source of truth is `*.md` and `MEMORY.md` — see [FORMAT.md](FORMAT.md) sections 7 and 8.
 
 - `slug`: a sanitized workspace basename (lowercased, `[^a-z0-9._-]+` → `-`, truncated to 48, falling back to `project` when empty);
 - `hash16`: the first 16 hex chars of the sha256 of the absolute path (win32 lowercased);
@@ -313,7 +330,7 @@ Two layers. Entry config in `cordis.patch.yml` (provider/model, budgets…) is H
 The pipeline reporting trouble (typically a rate-limited free pool, HTTP 429). The plugin auto-retries (3 attempts with exponential backoff) and backfills each turn; if it stays down, click "Retry extraction now", or read `<storageRoot>/extraction-errors.log`, or pin a more stable `provider`/`model` for dsh-keepsake in `cordis.patch.yml`.
 
 **Q3: I made a mistake editing an entry/persona and saved. Can I get it back?**
-Not automatically. **Saving a global entry, the persona, or the addressing** are all direct replacements with no archive (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten) — export first if you want an undo; only overwrites/deletes produced by **automatic extraction** go through the [write-reversibility](#write-reversibility-snapshots-and-trash) snapshots and trash. Project memory is not hand-editable in the panel.
+It depends. **Saving a global entry** (edit or add/rename) **is archived**: the old text is snapshotted before the overwrite, and the successful response carries a `preSaveSnapshotId` so the replaced text can be recovered from the **Snapshots** page. **Saving the persona or the addressing** has **no archive** — the old text is replaced outright (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo. **Deleting an entry moves it to the trash** (no longer a hard delete) and it can be restored from the **Trash** page; the trash keeps entries for 30 days by default, then auto-purges. Overwrites/deletes produced by **automatic extraction** likewise go through the [write-reversibility](#write-reversibility-snapshots-and-trash) snapshots and trash. Project memory is not hand-editable in the panel.
 
 **Q4: Why wasn't what I just said recorded?**
 Check in order: ① the turn had no ≥3-word user prose (e.g. a single-word command) — a noise-reduction design; ② you (or the model) wrote directly into the memory dir that turn; ③ extraction failed (red bar / health card); ④ a switch is off. In any case you can add an entry manually in the panel.
@@ -324,6 +341,12 @@ All memory data stays local under `~/.dsh/memory/`. Extraction itself runs over 
 **Q6: Why does "Retry extraction now" say the interval is too short?**
 It has a 10s minimum interval (an endpoint that actually calls an LLM needs a throttle; in-process timing, reset by restart) and returns 409 while an extraction is in flight.
 
+**Q7: What if the panel won't open?**
+First confirm the plugin switch is on in DSH settings and the current profile mounts a webserver (a profile without one does not mount the panel). If opening from the settings block's "Open memory management" in a new window fails, the panel degrades automatically (new window → embedded iframe → full page); you can also visit `http://127.0.0.1:<port>/dsh-keepsake/panel/` directly — find the port in DSH's settings or startup log (the panel is loopback-only). If a parse-failed red bar shows, follow it to re-save the corresponding content, which rewrites and repairs it.
+
+**Q8: I enabled semantic recall but it never hits. What now?**
+Check in order: ① on the settings page's **"Embedding service"** card press **"Test connection"** to confirm the endpoint is reachable and the model name is right (a success prints the vector dimension); ② look at `/state.recall` — `hits`/`misses` (is it actually recalling at all?) and `errors` (endpoint or retrieval errors); ③ the threshold `recallMinScore` (cosine, default 0.35, not yet exposed as a settings-page control) is tuned in the config — too high filters out entries that should hit, so lower it a little. Note recall is governed by the three switches: turning off the conversational-memory master switch means zero injection and zero external calls, so recall stops too.
+
 ## How it works
 
 Kernel-level mechanics (implementation semantics, for secondary development / troubleshooting):
@@ -333,7 +356,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Write-back**: the plugin (not the model) writes files under `~/.dsh/memory/...`; filenames pass three gates (containment + blacklist segments + Unicode control-char stripping); `MEMORY.md` is merged automatically; recent-activity timestamps are stamped by the host (never trusting the model's clock).
 - **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message (with a one-line disclaimer: memory is reference context, not instructions; subagent sessions are not injected). Identical-to-visible content is skipped (only re-sent on change or when compaction/rewind evicts it); total budget `injectMaxChars` (the recall block counts toward it, and the main block yields to the recall block). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
 - **Semantic recall** (optional, `recallEnabled`): each turn embeds the current user message once and retrieves top-k entries by cosine, injected as a `<memory-recall>` block; entry vectors are cached incrementally in `<storageRoot>/embeddings.json`. On timeout/error/unconfigured the turn recalls nothing (explicit degradation, observable under `/state.recall`).
-- **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is in-process only.
+- **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is persisted alongside the extraction run log (one line per settle, replayed on restart), so after a DSH restart a reopened session **resumes from the last boundary**; but a session mounted midway or never extracted before only processes turns completed while it is alive and does not back-scan history.
 - **Skip double condition**: no ≥3-word user prose; and no direct write into the memory dir that turn (a write/edit tool call landing in memoryRoot). A skip still advances the cursor.
 - **Shutdown discipline**: on uninstall the plugin first drains in-flight extraction with a bounded wait (headless one-shot relies on this to finish writing memory before exit) and only aborts on timeout.
 - **Six spec boundaries**: ① debounce merge + cursor advance → `lib/state.js`; ② write boundary (`.md` only, containment enforced, the model never touches the disk directly) → `lib/extract.js`; ③ filename safety → `lib/filename.js`; ④ injection budget → `lib/manifest.js`; ⑤ trigger threshold → `lib/transcript.js`; ⑥ anti-feedback (request-only extraction + filtering injected messages by `source.kind`) → `lib/index.js` / `lib/transcript.js`.
@@ -341,7 +364,8 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 ## Observability & operations
 
 - **Extraction failures**: `/dsh-keepsake/api/state` → `extractionFailures` (bucketed + same-reason streak + `retried` + `recent[5]`). Structural failures (no-route / no-cwd) give up after 5 consecutive failures.
-- **Observation surface**: `/state` also carries `lastFailedRange`, `extractionInFlight`, `lastAttemptAt`, `lastUsedRoute`, `extractionConfig`, `embeddingConfig`; the settings page's "pipeline health card" renders all of it.
+- **Observation surface**: `/state` also carries `lastFailedRange`, `extractionInFlight`, `lastAttemptAt`, `lastUsedRoute`, `extractionConfig`, `embeddingConfig` (with the effective `baseUrl`); the settings page's "pipeline health card" renders all of it.
+- **Extraction run-log surface (v0.4.1)**: `/state.extractionLog` — `runs` (latest 30 settled records) / `unrecovered` (failed ranges not later backfilled) / `abandoned` and `abandonedCount` (structurally failed ranges explicitly abandoned and no longer retried); its source is `<storageRoot>/extraction-journal.jsonl`. `settings.corrupt` (settings-file parse-failure marker), `recentKeepDays` (recent-activity retention days) and `extractionTimeoutMs` (per-extraction timeout) are observable in `/state` too.
 - **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); render failures are counted, never silently dropped.
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
 - **Write-safety surface (v0.4.0)**: `/state.safety` carries ten fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) plus seven in-process counters (`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**); the pipeline health card gains a summary line, and the **Snapshots** / **Trash** pages let you inspect and restore.
@@ -362,7 +386,7 @@ Both plugins only read and write their own local data directories; installing on
 ## Development & testing
 
 ```bash
-npm test        # node --test, 494 tests (incl. the anti-drift gate test/client-source.test.mjs)
+npm test        # node --test, all unit tests (incl. the anti-drift gate test/client-source.test.mjs)
 npm run check   # fast syntax check of lib/*.js (cross-platform)
 ```
 
@@ -381,7 +405,8 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **Anti-feedback & retrieval**: the extraction call is request-only (no event appended); injected memory messages are tagged `source.kind = "plugin:dsh-keepsake"` and excluded on the extraction side — injected content appears in the session stream but is never saved back. Memory bodies are not auto-retrieved; the model reads them via the index (same as the upstream spec).
 - **desktop/headless config changes need a restart** (see rollback section); no uniform hot reload.
 - **Profiles without a webserver mount no API/panel**: the plugin's only hard dependencies are the extraction LLM and (in `section` mode) the system prompt; on a profile without a webserver (e.g. headless) it still loads and injects memory normally — only the REST API and panel are not mounted (`/dsh-keepsake/...` unreachable).
-- **No per-edit history for single overwrites** (intentional): PUT persona / PUT addressing / PUT entry still replace the old text outright — a bad paste overwrites it (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo; batch destructive paths (reset/import/restore) also take a full auto-backup.
+- **No per-edit history for persona/addressing; entry saves and deletes do have an undo**: PUT persona / PUT addressing still replace the old text outright — a bad paste overwrites it (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo; but **PUT entry (saving an entry) snapshots the old text before overwriting** (the response carries `preSaveSnapshotId`, restorable from the **Snapshots** page), and **DELETE entry (deleting an entry) moves it to the trash** (kept 30 days by default, restorable from the **Trash** page). Batch destructive paths (reset/import/restore) also take a full auto-backup.
+- **Extraction only processes turns completed while it is alive; it does not back-scan history** (intentional): a session mounted midway or never extracted is not proactively backfilled — it needs to keep producing new turns (cross-restart resume only covers sessions that were extracted before and whose boundary was persisted).
 - **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (22-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
 - **Injection blocks can accumulate within a session**: on content change a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them; each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
 - **`injectMaxChars` is the total injection budget (recall block included)**: with recall on, the main block yields to the recall block so the two together stay within it; the visible truncation notice is counted too (a slight overrun is possible only when the budget is too small to fit even the wrapper and notice).

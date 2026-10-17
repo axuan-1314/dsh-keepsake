@@ -1,7 +1,7 @@
 // global-store：全局记忆区 CRUD（原子写/三道闸/索引重建）、人设与称呼、
 // 滚动清理、分类重置、导出/备份/恢复。
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -603,6 +603,99 @@ test("sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
     assert.ok(removed >= 2);
     assert.ok(!existsSync(join(gDir, "long-term", "a.md.tmp-1-2")));
     assert.ok(!existsSync(join(sRoot, "settings.json.tmp-1-2")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 临时档清扫：*.tmp / *.json.tmp 残留（原子写另一套命名）----
+
+/** 把文件 mtime 改到「ageMs 之前」（造龄用）。 */
+function ageFile(path, ageMs) {
+  const t = (Date.now() - ageMs) / 1000;
+  utimesSync(path, t, t);
+}
+
+test("sweepTmpOrphans：*.json.tmp 残留（embeddings.json.tmp）到龄清扫，未到龄不动", () => {
+  const root = freshRoot();
+  try {
+    const stale = join(root, "embeddings.json.tmp");
+    const fresh = join(root, "recall.json.tmp");
+    writeFileSync(stale, "半截向量缓存", "utf8");
+    writeFileSync(fresh, "在途写入", "utf8");
+    ageFile(stale, 3 * 3_600_000); // 3 小时前 = 到龄（>1h）
+    // fresh 的 mtime 就是现在 = 未到龄：在途写入绝不能被启动清扫删掉
+    const removed = sweepTmpOrphans(root);
+    assert.equal(existsSync(stale), false, "到龄的 *.json.tmp 残留被清扫");
+    assert.equal(existsSync(fresh), true, "未到龄（在途）的 *.json.tmp 保留");
+    assert.equal(removed, 1, "只清到龄的那一个");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：*.tmp 残留覆盖 storage 根与子目录（global/ 与分类目录）", () => {
+  const root = freshRoot();
+  try {
+    const atRoot = join(root, "settings.json.tmp");
+    const atGlobal = join(globalRoot(root), "persona.md.tmp");
+    const atCat = join(categoryDir(root, "long-term"), "a.md.tmp");
+    mkdirSync(join(globalRoot(root), "long-term"), { recursive: true });
+    for (const p of [atRoot, atGlobal, atCat]) {
+      writeFileSync(p, "半截", "utf8");
+      ageFile(p, 2 * 3_600_000);
+    }
+    const removed = sweepTmpOrphans(root);
+    assert.equal(existsSync(atRoot), false, "storage 根的 *.tmp 被清");
+    assert.equal(existsSync(atGlobal), false, "global/ 子目录的 *.tmp 被清");
+    assert.equal(existsSync(atCat), false, "分类目录的 *.tmp 被清");
+    assert.equal(removed, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：到龄的 retired-* 抢救副本与留档区临时档一律不碰", () => {
+  // 红线钉子：retired-* 携带恢复前数据（最后一份），backups/snapshots/surgical/trash 是留档本体区。
+  // 若清扫把名字判据放宽成「按 mtime 判龄」，刚留下的抢救副本会被误删——与错误消息「切勿删除」矛盾。
+  const root = freshRoot();
+  try {
+    const retired = join(root, `global.retired-${process.pid}-${Date.now() - 5 * 3_600_000}`);
+    mkdirSync(retired, { recursive: true });
+    writeFileSync(join(retired, "persona.md"), "抢救副本-勿删", "utf8");
+    const old = Date.now() - 6 * 3_600_000;
+    utimesSync(retired, old / 1000, old / 1000); // 名字与 mtime 双双超龄
+    const retiredTmp = join(root, "global.retired-1-1.tmp");
+    writeFileSync(retiredTmp, "抢救副本的临时档", "utf8");
+    ageFile(retiredTmp, 6 * 3_600_000);
+    // 留档区内的临时档（backups/ 与其子目录）
+    const inBackups = join(root, "backups", "2024-01-01.tmp");
+    const inTrash = join(root, "trash", "entry.tmp");
+    mkdirSync(join(root, "backups"), { recursive: true });
+    mkdirSync(join(root, "trash"), { recursive: true });
+    writeFileSync(inBackups, "x", "utf8");
+    writeFileSync(inTrash, "x", "utf8");
+    ageFile(inBackups, 9 * 3_600_000);
+    ageFile(inTrash, 9 * 3_600_000);
+    const removed = sweepTmpOrphans(root);
+    assert.equal(removed, 0, "红线区一个都不清");
+    assert.equal(existsSync(retired), true, "超龄的 retired-* 抢救副本保留");
+    assert.equal(existsSync(retiredTmp), true, "带 retired-* 名字的临时档同样保留");
+    assert.equal(existsSync(inBackups), true, "backups/ 内临时档不碰");
+    assert.equal(existsSync(inTrash), true, "trash/ 内临时档不碰");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：解析不出年龄的 *.tmp 保守保留（宁可留垃圾不可删在途数据）", () => {
+  const root = freshRoot();
+  try {
+    const ghost = join(root, "embeddings.json.tmp");
+    mkdirSync(ghost, { recursive: true }); // 目录（不是文件）→ 不属临时档清扫面
+    const removed = sweepTmpOrphans(root);
+    assert.equal(removed, 0);
+    assert.equal(existsSync(ghost), true, "目录不按临时档清（只清文件）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

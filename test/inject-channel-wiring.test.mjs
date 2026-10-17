@@ -12,7 +12,8 @@ import { apply } from "../lib/index.js";
 import { createEntry, categoryDir, writePersona } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
-import { __resetMetricsForTest, injectionSnapshot, recallSnapshot } from "../lib/metrics.js";
+import { __resetMetricsForTest, injectionSnapshot, recallSnapshot, recordInjection, recordInjectionSuperseded, recordInjectionThrottled } from "../lib/metrics.js";
+import { MEMORY_CONTEXT_INTRO, MEMORY_CONTEXT_SUPERSEDE_NOTE } from "../lib/inject-channel.js";
 import { skipReason } from "../lib/transcript.js";
 
 function fakeCtx({ logs = null } = {}) {
@@ -64,6 +65,20 @@ function makeAgent({ cwd, events = [] } = {}) {
   };
 }
 
+/** 同一会话跨多轮的 agent 句柄：setEvents 换视野（本机实际环境里一会话一 agent，surface 随压缩/新轮变化）。
+ *  跨轮断言必须用它——每轮新建 makeAgent 会被当成新会话，与本机实际环境语义不符。 */
+function makeMutableAgent({ cwd, events = [] } = {}) {
+  const state = { events: [...events] };
+  return {
+    setEvents(next) { state.events = [...next]; },
+    session: {
+      header: { cwd },
+      get surface() { return { nodes: state.events.map((_, index) => index) }; },
+      eventAt(seq) { return state.events[seq]; },
+    },
+  };
+}
+
 const payloadOf = ({ agent, messages, step = 1, aborted = false }) => ({ agent, messages, step, signal: { aborted } });
 const run = (handler, payload, decision) => handler(payload, async () => decision);
 const textOf = (message) => message.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
@@ -108,7 +123,7 @@ test("默认 message 模式——pre-step 注入 memory-context（不依赖 sect
   }
 });
 
-test("同内容已在视野 → 不重复注入；内容变化 → 补发；视野丢失 → 补发", async () => {
+test("同内容已在视野 → 不重复注入；小变化被节流；大变化补发；视野丢失必补发", async () => {
   __resetMetricsForTest();
   const root = freshRoot();
   try {
@@ -118,29 +133,147 @@ test("同内容已在视野 → 不重复注入；内容变化 → 补发；视�
     const handler = handlers.get("agent/pre-step");
     const decision = () => ({ kind: "enter", messages: [userMsg("正常 用户 一句话")] });
 
+    // 同一会话跨多轮共享一个 agent 句柄（本机实际环境语义：一会话一 agent，surface 随压缩/新轮变化）
+    const agent = makeMutableAgent({ cwd: root });
+
     // 第一次：注入
-    const first = await run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: [] }), decision());
+    const first = await run(handler, payloadOf({ agent, messages: [] }), decision());
     assert.equal(first.messages.length, 2);
     const injected = first.messages[1];
+    assert.equal(injectionSnapshot().throttled, 0, "首轮与节流无关");
 
     // 第二次：surface 里已有同内容 → 不重复
     const visibleEvent = { type: "user/message", data: injected };
-    const second = await run(handler, payloadOf({ agent: makeAgent({ cwd: root, events: [visibleEvent] }), messages: [] }), decision());
+    agent.setEvents([visibleEvent]);
+    const second = await run(handler, payloadOf({ agent, messages: [] }), decision());
     assert.equal(second.messages.length, 1, "同内容不重复注入");
     assert.equal(injectionSnapshot().count, 1);
+    assert.equal(injectionSnapshot().throttled, 0, "规范化相同不变 ≠ 节流，两态分列记账");
 
-    // 第三次：内容变化（新条目）→ 补发
+    // 第三次：内容变化但幅度太小 → 节流（同源替换：少发是 append-only 下唯一的收敛手段）
     createEntry(root, "work-profile", { title: "B", content: "二" });
-    const third = await run(handler, payloadOf({ agent: makeAgent({ cwd: root, events: [visibleEvent] }), messages: [] }), decision());
-    assert.equal(third.messages.length, 2, "内容变化应补发");
-    assert.equal(injectionSnapshot().resends, 1);
+    const third = await run(handler, payloadOf({ agent, messages: [] }), decision());
+    assert.equal(third.messages.length, 1, "小变化被节流：本轮不注入新块");
+    assert.equal(injectionSnapshot().count, 1, "节流轮不记成功注入");
+    assert.equal(injectionSnapshot().throttled, 1, "节流轮记一笔 throttled（想发而没发，可见）");
+    assert.equal(injectionSnapshot().superseded, 0, "没发新块就没有旧块被作废");
 
-    // 第四次：视野里没有（compaction 挤出）→ 补发
-    const fourth = await run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: [] }), decision());
+    // 第三次半：变化够大（人设正文涨 3000 字符）→ 节流放行，补发并作废旧块。
+    // 3000 字符是为了稳稳越过 max(200, 全长 1%) 的地板值——升级阈值只认幅度，
+    // 索引行数量的小幅增长本就该被节流（那是节流的本职工作，不是漏发）。
+    writePersona(root, "人设正文".repeat(500));
+    const thirdHalf = await run(handler, payloadOf({ agent, messages: [] }), decision());
+    assert.equal(thirdHalf.messages.length, 2, "大变化应补发");
+    assert.equal(injectionSnapshot().resends, 1, "补发记 resends");
+    assert.equal(injectionSnapshot().superseded, 1, "发新块即凭取代声明作废旧块，记一次 superseded");
+    assert.equal(injectionSnapshot().throttled, 1, "superseded 不挤占 throttled 计数");
+
+    // 第四次：视野里没有（compaction 挤出）→ 节流让路，无条件补发。
+    // 视野里虽然看不到旧块，但会话自记的上一块仍在（resend 判定的依据），
+    // 故这条补发同样作废了历史里那个看不见的旧块——这才是同源替换要的语义：
+    // 模型视野里只会同时留下"最后一块 + 声明"，不管它是否还在 surface 上。
+    agent.setEvents([]);
+    const fourth = await run(handler, payloadOf({ agent, messages: [] }), decision());
     assert.equal(fourth.messages.length, 2, "视野丢失应补发");
+    assert.equal(injectionSnapshot().superseded, 2, "视野丢失轮：旧块已不在 surface，但会话仍知道发过，记 superseded");
+    assert.equal(injectionSnapshot().throttled, 1, "视野丢失轮不记节流");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("superseded 按会话记账：新会话首发不计取代，同会话换块才计", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "A", content: "一" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root });
+    const handler = handlers.get("agent/pre-step");
+    const decision = () => ({ kind: "enter", messages: [userMsg("正常 用户 一句话")] });
+
+    // 会话甲：首发
+    const agentA = makeMutableAgent({ cwd: root });
+    const a1 = await run(handler, payloadOf({ agent: agentA, messages: [] }), decision());
+    assert.equal(a1.messages.length, 2);
+    assert.equal(injectionSnapshot().superseded, 0, "甲会话首发没有旧块可取代");
+
+    // 会话乙：全新会话首发——进程里虽然发过，但乙视野里没有旧块，不得记取代
+    const agentB = makeMutableAgent({ cwd: root });
+    const b1 = await run(handler, payloadOf({ agent: agentB, messages: [] }), decision());
+    assert.equal(b1.messages.length, 2, "乙会话首发照常注入");
+    assert.equal(injectionSnapshot().superseded, 0, "乙会话首发不计取代（跨会话不串账）");
+
+    // 会话甲：内容大改且旧块已挤出视野 → 补发并作废甲自己的旧块 → 记一次取代
+    writePersona(root, "人设正文".repeat(500));
+    const a2 = await run(handler, payloadOf({ agent: agentA, messages: [] }), decision());
+    assert.equal(a2.messages.length, 2);
+    assert.equal(injectionSnapshot().superseded, 1, "同会话换块才记取代");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("接线结构钉：召回查询走统一机器来源判据、补发判定带会话自记的上一块", () => {
+  const src = readFileSync(new URL("../lib/index.js", import.meta.url), "utf8");
+  const anchor = src.indexOf("function latestUserProse");
+  assert.ok(anchor > 0, "latestUserProse 应在");
+  const region = src.slice(anchor, anchor + 500);
+  assert.ok(region.includes("isMachineOrigin(message)"), "召回查询应与提取侧同一机器来源判据");
+  assert.ok(!region.includes("isPluginSourcedMessage"), "不再用只认自家插件的窄判据");
+  assert.ok(src.includes("injectStates.get(agent)"), "注入判定应按会话取自记状态");
+  assert.ok(/shouldReinject\(\{ visible: prior !== void 0, lastInjectedText,/.test(src), "shouldReinject 应收到会话自记的 lastInjectedText（否则 resend 分支不可达）");
+});
+
+test("主块注入带块首取代声明（同源替换：旧块撤不回，声明让模型只认最后一块）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "A", content: "一" });
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root });
+    const handler = handlers.get("agent/pre-step");
+    const decision = { kind: "enter", messages: [userMsg("正常 用户 一句话")] };
+    const out = await run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision);
+    const text = textOf(out.messages[1]);
+    // 声明行在免责/署名行之前（两者同处块首，顺序固定）
+    assert.ok(text.indexOf(MEMORY_CONTEXT_SUPERSEDE_NOTE) < text.indexOf(MEMORY_CONTEXT_INTRO), "取代声明须在免责行之前");
+    assert.match(text, /supersedes any earlier memory-context block/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("metrics：同源替换两计数分层记账（throttled 想发没发 / superseded 发了作废旧块）", () => {
+  __resetMetricsForTest();
+  // 空态：两个新字段恒在（/state.injection 契约双端同形，缺失=旧版）
+  const empty = injectionSnapshot();
+  assert.equal(empty.throttled, 0);
+  assert.equal(empty.superseded, 0);
+  // 节流轮：只有"想发而没发"，不碰 count/chars（没有消息真的发出）
+  recordInjectionThrottled();
+  recordInjectionThrottled();
+  const throttled = injectionSnapshot();
+  assert.equal(throttled.throttled, 2);
+  assert.equal(throttled.count, 0, "节流不记成功注入");
+  assert.equal(throttled.totalChars, 0, "节流不记字符");
+  assert.equal(throttled.superseded, 0, "节流与取代无关");
+  // 发新块：真的注入 + 作废旧块各记各的
+  recordInjection({ chars: 500, resend: true });
+  recordInjectionSuperseded();
+  const sent = injectionSnapshot();
+  assert.equal(sent.count, 1);
+  assert.equal(sent.totalChars, 500);
+  assert.equal(sent.superseded, 1);
+  assert.equal(sent.throttled, 2, "两计数互不挤占");
+  // 快照不可变（改返回值不影响内部态）
+  sent.throttled = 999;
+  sent.superseded = 999;
+  assert.equal(injectionSnapshot().throttled, 2);
+  assert.equal(injectionSnapshot().superseded, 1);
+  __resetMetricsForTest();
+  assert.equal(injectionSnapshot().throttled, 0, "复位生效");
+  assert.equal(injectionSnapshot().superseded, 0, "复位生效");
 });
 
 test("非注入场景一律原样返回（reject / step≠1 / 空批 / 批内已含我方消息 / 开关关）", async () => {
@@ -229,13 +362,15 @@ test("injectMaxChars 预算触发整段丢弃 + 可见截断提示 + droppedSegm
     createEntry(root, "work-profile", { title: "A", content: "一".repeat(200) });
     seedProjectMemory(root);
     const { ctx, handlers } = fakeCtx();
-    apply(ctx, { enabled: true, storageRoot: root, injectMaxChars: 220 });
+    // 720：块首两行固定开销（取代声明 179 + 免责）+ 包裹 + 人设正文（~220）都装得下的最小档，
+    // 再低就会掉进"预算连固定开销都不够"的另一条路径（见下一条用例）。
+    apply(ctx, { enabled: true, storageRoot: root, injectMaxChars: 720 });
     const handler = handlers.get("agent/pre-step");
     const decision = { kind: "enter", messages: [userMsg("正常 用户 一句话")] };
     const out = await run(handler, payloadOf({ agent: makeAgent({ cwd: root }), messages: decision.messages }), decision);
     const text = textOf(out.messages[1]);
     assert.match(text, /\[memory-context truncated/, "超预算应留可见提示");
-    assert.ok(text.length <= 320, `应受预算约束（实际 ${text.length}）`);
+    assert.ok(text.length <= 720, `应受预算约束（实际 ${text.length}）`);
     assert.ok(injectionSnapshot().droppedSegments >= 1, "应记录丢弃段数");
   } finally {
     rmSync(root, { recursive: true, force: true });

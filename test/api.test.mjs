@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
-import { API_PREFIX, isLoopbackRequest, makeApiRoutes, planImport } from "../lib/api.js";
+import { API_PREFIX, collectMaintenanceInputs, isLoopbackRequest, makeApiRoutes, planImport, validateRepairPlan } from "../lib/api.js";
 import { createJournal } from "../lib/journal.js";
 import { categoryDir, createEntry, listEntries, readPersona, listBackups } from "../lib/global-store.js";
 import { listSurgicalSnapshots, surgicalRoot, acquireExtractLock } from "../lib/safety.js";
@@ -49,8 +49,8 @@ function mockRes() {
   };
 }
 
-async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal }) {
-  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal });
+async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal, recovery, maintenance }) {
+  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal, recovery, maintenance });
   const handler = routes[0].handler;
   assert.equal(routes[0].kind, "prefix");
   assert.equal(routes[0].path, API_PREFIX.replace(/\/$/, "")); // 内核 prefix 不带尾斜杠（实证）
@@ -407,6 +407,88 @@ test("DELETE entry 存在但读不出（同名目录占位）→ 409 显式失�
     assert.equal(ok.status, 200);
     assert.equal(ok.json.existed, true);
     assert.equal(ok.json.trashed, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- DELETE entry 三态（不存在 / 已移入回收站 / 存在但删不掉）----
+
+test("DELETE entry 三态互不混同：不存在=existed:false；删除成功=existed+trashed；删不掉=显式错误带 code/reason", async () => {
+  const root = freshRoot();
+  try {
+    // ---- 态①：条目不存在 → 200 existed:false, trashed:false（不谎报、不建回收站条目）----
+    const ghost = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "ghost.md" } });
+    assert.equal(ghost.status, 200);
+    assert.equal(ghost.json.ok, true);
+    assert.equal(ghost.json.existed, false, "态①：不存在 = existed:false");
+    assert.equal(ghost.json.trashed, false, "态①：不存在 = 未移入回收站");
+    assert.equal(ghost.json.trashId, void 0, "态①：不凭空给出回收站 id");
+    const trashAfterGhost = await callApi(root, { method: "GET", path: `${API_PREFIX}trash/list` });
+    assert.equal(trashAfterGhost.json.entries.length, 0, "态①：未建回收站条目");
+
+    // ---- 态②：存在且移入回收站 → 200 existed:true, trashed:true, 带 trashId ----
+    createEntry(root, "long-term", { title: "Norm", name: "norm.md", content: "正文" });
+    const ok = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "norm.md" } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.existed, true, "态②：存在 = existed:true");
+    assert.equal(ok.json.trashed, true, "态②：已移入回收站 = trashed:true");
+    assert.equal(typeof ok.json.trashId, "string", "态②：响应带回收站条目 id");
+    assert.equal(existsSync(join(categoryDir(root, "long-term"), "norm.md")), false, "态②：原件已移出");
+
+    // ---- 态③：存在但移不进回收站（trash 根被文件占位 → 条目建立失败）→ 显式错误，不谎报成功 ----
+    createEntry(root, "long-term", { title: "Stuck", name: "stuck.md", content: "删不掉的正文" });
+    rmSync(join(root, "trash"), { recursive: true, force: true }); // 清掉态②留下的回收站，好把 trash 根换成文件占位
+    writeFileSync(join(root, "trash"), "占位文件（trash 根被占 → 回收站条目建不起来）", "utf8");
+    const stuck = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "stuck.md" } });
+    assert.notEqual(stuck.status, 200, "态③：绝不回 200 谎报删除成功");
+    assert.equal(stuck.json.ok, void 0, "态③：不带 ok（失败不是成功）");
+    assert.equal(stuck.json.existed, true, "态③：不假装不存在（明明在场）");
+    assert.equal(stuck.json.trashed, false, "态③：如实说明未移入回收站");
+    assert.equal(stuck.json.code, "E_ENTRY_DELETE_FAILED", "态③：错误体带可辨识 code");
+    assert.equal(typeof stuck.json.reason, "string", "态③：错误体带可辨识 reason");
+    assert.ok(stuck.json.reason.length > 0, "态③：reason 非空（面板接线据此分流）");
+    assert.match(String(stuck.json.error), /未删除/, "态③：文案明确说未删除");
+    // 盘上原样：原件仍在（副本+meta 不成立 → 一个都没删）
+    assert.equal(existsSync(join(categoryDir(root, "long-term"), "stuck.md")), true, "态③：原件原样保留");
+    // 不因失败而串味到态①/②：清掉占位后同一条目可正常删除
+    rmSync(join(root, "trash"), { force: true });
+    const retry = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "stuck.md" } });
+    assert.equal(retry.status, 200);
+    assert.deepEqual([retry.json.existed, retry.json.trashed], [true, true], "占位清掉后回到态②");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DELETE entry 态③ 另一路：存在但读不出（同名目录占位）→ 409 E_ENTRY_UNREADABLE 显式失败", async () => {
+  const root = freshRoot();
+  try {
+    mkdirSync(join(categoryDir(root, "long-term"), "occupied.md"), { recursive: true });
+    const del = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "occupied.md" } });
+    assert.equal(del.status, 409, "态③：存在但读不出 → 显式失败（不是 200 谎报）");
+    assert.equal(del.json.code, "E_ENTRY_UNREADABLE");
+    assert.equal(del.json.reason, "UNREADABLE", "错误体带可辨识 reason（与移入失败分支可分）");
+    assert.equal(del.json.existed, true, "绝不谎报不存在");
+    assert.equal(del.json.trashed, false);
+    assert.equal(existsSync(join(categoryDir(root, "long-term"), "occupied.md")), true, "盘上原样未动");
+    const trashList = await callApi(root, { method: "GET", path: `${API_PREFIX}trash/list` });
+    assert.equal(trashList.json.entries.length, 0, "未进回收站");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("DELETE entry 态① 边界：请求名未过闸（越界段）→ 按未删除处理并 warn（不静默归到\"不存在\"）", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "long-term", { title: "Real", name: "real.md", content: "在场" });
+    const bad = await callApi(root, { method: "DELETE", path: `${API_PREFIX}entry`, body: { category: "long-term", name: "../../real.md" } });
+    // 净化不出安全相对路径 → 无从判定"存在"，绝不谎报 existed:true 或删除成功
+    assert.equal(bad.status, 200);
+    assert.equal(bad.json.existed, false, "未过闸 ≠ 确认存在：无法判定就不声称存在");
+    assert.equal(bad.json.trashed, false);
+    assert.equal(existsSync(join(categoryDir(root, "long-term"), "real.md")), true, "盘上原样未动（越界名删不到任何东西）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -776,7 +858,8 @@ test("state：injection 注入面字段在场（服务端恒在；缺失=旧版�
     const inj = s.json.injection;
     assert.equal(typeof inj, "object");
     // 契约字段恒在（字段缺失=旧版宿主，面板 tolerant 消费）
-    for (const k of ["count", "lastChars", "totalChars", "resends", "droppedSegments", "renderFailures", "lastAt"]) {
+    // throttled/superseded：同源替换两计数（想发没发 / 发了作废旧块），0.5.0 起恒在
+    for (const k of ["count", "lastChars", "totalChars", "resends", "droppedSegments", "throttled", "superseded", "renderFailures", "lastAt"]) {
       assert.ok(Object.prototype.hasOwnProperty.call(inj, k), `injection 缺字段 ${k}`);
     }
     assert.equal(typeof inj.count, "number");
@@ -997,6 +1080,344 @@ test("state：extractionRetryAttempts 补发（=cfg.retryAttempts，面板消费
     await handler(req, res);
     const json = JSON.parse(res.body);
     assert.equal(json.extractionRetryAttempts, 4, "/state 产出 extractionRetryAttempts");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 会话补提端点（GET /sessions/pending / POST /sessions/recover）----
+
+/** 假 recovery 依赖：pending 返回固定清单；start 记录调用并返回 busy/started。 */
+function fakeRecovery({ items = [], hostSupported = true, busy = false } = {}) {
+  const calls = [];
+  return {
+    deps: {
+      pending: async () => ({ hostSupported, items }),
+      start: (sessionId, from, to) => { calls.push({ sessionId, from, to }); return busy ? { started: false, busy: true } : { started: true }; },
+      state: () => ({ inFlight: false, lastAt: 123, lastOutcome: "written", lastSessionId: "sess-1" }),
+    },
+    calls,
+  };
+}
+
+test("GET sessions/pending：hostSupported + items 形状（未接线时恒出空形而非 404）", async () => {
+  const root = freshRoot();
+  try {
+    // 未接线（旧构建）：200 + hostSupported:false + items:[]（面板 tolerant 消费）
+    {
+      const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}sessions/pending` });
+      assert.equal(status, 200);
+      assert.equal(json.ok, true);
+      assert.equal(json.hostSupported, false);
+      assert.deepEqual(json.items, []);
+    }
+    // 已接线：如实透出 hostSupported 与清单
+    const { deps } = fakeRecovery({ items: [{ sessionId: "s1", from: 3, to: 9, kind: "failed", sessionAvailable: true, eventCount: 20 }], hostSupported: true });
+    {
+      const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}sessions/pending`, recovery: deps });
+      assert.equal(status, 200);
+      assert.equal(json.hostSupported, true);
+      assert.equal(json.items.length, 1);
+      assert.equal(json.items[0].sessionId, "s1");
+      assert.equal(json.items[0].kind, "failed");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST sessions/recover：参数校验 400（缺参/非数字/to<=from）", async () => {
+  const root = freshRoot();
+  try {
+    const { deps, calls } = fakeRecovery({ items: [{ sessionId: "s1", sessionAvailable: true }] });
+    const cases = [
+      { sessionId: "s1", from: 1 }, // 缺 to
+      { sessionId: "", from: 1, to: 3 }, // sessionId 空
+      { sessionId: "s1", from: "1", to: 3 }, // from 非数字
+      { sessionId: "s1", from: 1, to: 3.5 }, // to 非整数
+      { sessionId: "s1", from: 5, to: 5 }, // to == from
+      { sessionId: "s1", from: 9, to: 3 }, // to < from
+      { sessionId: "s1", from: -1, to: 3 }, // 负数
+    ];
+    for (const body of cases) {
+      const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}sessions/recover`, body, recovery: deps });
+      assert.equal(status, 400, `应 400：${JSON.stringify(body)}`);
+      assert.equal(json.code, "E_INVALID_ARGUMENT");
+    }
+    assert.equal(calls.length, 0, "参数非法一律不触发执行");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST sessions/recover：host 不支持 503 / 会话不存在 404 / 已有补提在跑 409 / 通过 202", async () => {
+  const root = freshRoot();
+  try {
+    // ① host 不支持 → 503 E_HOST_UNSUPPORTED
+    {
+      const { deps } = fakeRecovery({ hostSupported: false });
+      const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}sessions/recover`, body: { sessionId: "s1", from: 1, to: 5 }, recovery: deps });
+      assert.equal(status, 503);
+      assert.equal(json.code, "E_HOST_UNSUPPORTED");
+    }
+    // ② 会话不存在（清单里标不可读）→ 404 E_SESSION_NOT_FOUND
+    {
+      const { deps } = fakeRecovery({ items: [{ sessionId: "s1", sessionAvailable: false }] });
+      const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}sessions/recover`, body: { sessionId: "s1", from: 1, to: 5 }, recovery: deps });
+      assert.equal(status, 404);
+      assert.equal(json.code, "E_SESSION_NOT_FOUND");
+    }
+    // ③ 已有补提在跑（单飞）→ 409 E_BUSY
+    {
+      const { deps } = fakeRecovery({ items: [{ sessionId: "s1", sessionAvailable: true }], busy: true });
+      const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}sessions/recover`, body: { sessionId: "s1", from: 1, to: 5 }, recovery: deps });
+      assert.equal(status, 409);
+      assert.equal(json.code, "E_BUSY");
+    }
+    // ④ 通过 → 202 { ok:true, started:true }
+    {
+      const { deps, calls } = fakeRecovery({ items: [{ sessionId: "s1", sessionAvailable: true }] });
+      const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}sessions/recover`, body: { sessionId: "s1", from: 1, to: 5 }, recovery: deps });
+      assert.equal(status, 202);
+      assert.equal(json.ok, true);
+      assert.equal(json.started, true);
+      assert.deepEqual(calls, [{ sessionId: "s1", from: 1, to: 5 }]);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("state：recover 观测面字段恒在（未接线空形 / 已接线真值）", async () => {
+  const root = freshRoot();
+  try {
+    const empty = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.json.recover, { inFlight: false, lastAt: null, lastOutcome: null, lastSessionId: null });
+    const { deps } = fakeRecovery({});
+    const wired = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, recovery: deps });
+    assert.equal(wired.json.recover.lastOutcome, "written");
+    assert.equal(wired.json.recover.lastAt, 123);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 记忆整理端点（GET /maintenance/suggestions / POST /maintenance/repair-index）----
+
+test("GET maintenance/suggestions：形状完整（duplicates/stale/indexHealth/counts/generatedAt）", async () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "A", content: "同样的正文内容" });
+    createEntry(root, "user-profile", { title: "A", content: "同样的正文内容" }); // 跨分类同名 + 正文相同 → 重复候选
+    const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}maintenance/suggestions` });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.ok(Array.isArray(json.duplicates));
+    assert.ok(json.duplicates.length >= 1, "跨分类同名+正文相同应命中重复候选");
+    assert.ok(Array.isArray(json.stale));
+    assert.ok(json.indexHealth && Array.isArray(json.indexHealth.dangling) && Array.isArray(json.indexHealth.orphans));
+    assert.equal(typeof json.counts.entries, "number");
+    assert.equal(json.counts.truncated, false);
+    assert.match(json.generatedAt, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST maintenance/repair-index：悬挂行剔除 + 漏行补齐，且幂等（第二次 fixed=[]）", async () => {
+  const root = freshRoot();
+  try {
+    const dir = categoryDir(root, "work-profile");
+    // 磁盘上两个条目文件；索引里：一个悬挂行（指向不存在文件）+ 只登记了其一（漏登记 b）
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.md"), "---\nname: a\ntitle: A\n---\n正文A\n");
+    writeFileSync(join(dir, "b.md"), "---\nname: b\ntitle: B\n---\n正文B\n");
+    writeFileSync(join(dir, "MEMORY.md"), "- [A](a.md) — 钩子\n- [Ghost](ghost.md) — 悬挂\n");
+    const first = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(first.status, 200);
+    assert.equal(first.json.ok, true);
+    // 响应契约：fixed 为【已应用动作明细】数组（与 planIndexRepair 的 op 同形），fixedCount = 条数
+    assert.ok(Array.isArray(first.json.fixed), "fixed 是明细数组（面板按数组消费）");
+    assert.ok(first.json.fixed.length >= 2, `应修悬挂行+补漏行（实际 ${first.json.fixed.length}）`);
+    assert.equal(first.json.fixedCount, first.json.fixed.length, "fixedCount = 明细条数");
+    assert.equal(first.json.unchanged, false, "有动作即未 unchanged");
+    const removeOp = first.json.fixed.find((f) => f.type === "remove-line");
+    assert.ok(removeOp, "明细含 remove-line 动作");
+    assert.equal(removeOp.category, "global:work-profile");
+    assert.match(removeOp.line, /ghost\.md/, "remove-line 的 line 是悬挂行原文");
+    const addOp = first.json.fixed.find((f) => f.type === "add-line");
+    assert.ok(addOp, "明细含 add-line 动作");
+    assert.equal(addOp.name, "b.md", "add-line 的 name 是漏登记文件名");
+    // 落盘核对：悬挂行没了、漏行补上了、两个条目文件仍在（绝不删文件）
+    const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+    assert.doesNotMatch(after, /ghost\.md/, "悬挂行应被剔除");
+    assert.match(after, /b\.md/, "漏登记条目应补上");
+    assert.ok(existsSync(join(dir, "a.md")) && existsSync(join(dir, "b.md")), "条目文件绝不能被删");
+    // 幂等：再跑一次计划为空 → fixed=[]、fixedCount=0、unchanged=true
+    const second = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(second.status, 200);
+    assert.deepEqual(second.json.fixed, [], "已对上账后第二次修复无动作（幂等）：fixed=[]");
+    assert.equal(second.json.fixedCount, 0, "fixedCount=0");
+    assert.equal(second.json.unchanged, true, "unchanged=true");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST maintenance/repair-index：嵌套条目在盘在索引 → 不报 dangling、不产 remove-line（递归对账）", async () => {
+  // 嵌套条目名合法形态含多段（sub/topic.md）：只扫顶层会把它的有效索引行误判成悬挂行而删掉。
+  const root = freshRoot();
+  try {
+    const dir = categoryDir(root, "work-profile");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(join(dir, "sub", "topic.md"), "---\nname: topic\ntitle: 嵌套主题\n---\n正文\n");
+    writeFileSync(join(dir, "MEMORY.md"), "- [嵌套主题](sub/topic.md) — 钩子\n");
+    const { json } = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(json.ok, true);
+    assert.equal(json.fixed.some((f) => f.type === "remove-line"), false, "嵌套有效索引行不得被当悬挂行删");
+    const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+    assert.match(after, /sub\/topic\.md/, "嵌套索引行仍在（未被误删）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST maintenance/repair-index：嵌套文件不在索引 → orphan 如实报、补登记补上（递归对账）", async () => {
+  const root = freshRoot();
+  try {
+    const dir = categoryDir(root, "work-profile");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(join(dir, "sub", "topic.md"), "---\nname: topic\ntitle: 嵌套主题\n---\n正文\n");
+    writeFileSync(join(dir, "MEMORY.md"), "");
+    const { json } = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(json.ok, true);
+    const addOp = json.fixed.find((f) => f.type === "add-line");
+    assert.ok(addOp, "嵌套孤儿应被如实报为漏登记并补行");
+    assert.equal(addOp.name, "sub/topic.md", "orphan 名为相对目录的多段路径");
+    const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+    assert.match(after, /sub\/topic\.md/, "嵌套孤儿补登记已落盘");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST maintenance/repair-index：留底快照失败 fail-closed —— 该分类索引不被改写、不计入 fixed", async () => {
+  // 留底（手术快照）失败时必须跳过该分类、绝不改索引（宁可不修，也不在没有原档的情况下动索引）。
+  // 把 backups/surgical 占位成文件 → createSurgicalSnapshot 的 mkdirSync 抛错 → continue 分支。
+  // 删掉该 continue 会让索引照改（本用例的 MEMORY.md 应保持原样这一断言立即变红）。
+  const root = freshRoot();
+  try {
+    const dir = categoryDir(root, "work-profile");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.md"), "---\nname: a\ntitle: A\n---\n正文A\n");
+    const original = "- [A](a.md) — 钩子\n- [Ghost](ghost.md) — 悬挂\n";
+    writeFileSync(join(dir, "MEMORY.md"), original);
+    // 占位 backups/surgical 为文件：快照根建不出来 → 留底失败
+    mkdirSync(join(root, "backups"), { recursive: true });
+    writeFileSync(join(root, "backups", "surgical"), "占位：不是目录");
+    const { status, json } = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.fixed, [], "留底失败 → 该分类未应用任何动作，明细为空");
+    assert.equal(json.fixedCount, 0);
+    assert.equal(json.unchanged, true);
+    assert.equal(readFileSync(join(dir, "MEMORY.md"), "utf8"), original, "留底失败时索引原文一字未动（fail-closed）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("POST maintenance/repair-index：present.has 存在性兜底 —— 指向索引文件自身的行不被误删", async () => {
+  // remove-line 前按名做存在性检查：目标文件在盘上就绝不剔。MEMORY.md 自链行是探针——
+  // 它被对账判为 dangling（索引文件不在 files 清单里），但文件确实在盘上，兜底必须拦住。
+  // 删掉 present.has 兜底会让这行被删（本用例的 doesMatch 立即变红）。
+  const root = freshRoot();
+  try {
+    const dir = categoryDir(root, "work-profile");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.md"), "---\nname: a\ntitle: A\n---\n正文A\n");
+    writeFileSync(join(dir, "MEMORY.md"), "- [索引](MEMORY.md) — 自链\n- [A](a.md) — 钩子\n");
+    const { json } = await callApi(root, { method: "POST", path: `${API_PREFIX}maintenance/repair-index` });
+    assert.equal(json.ok, true);
+    assert.equal(json.fixed.some((f) => f.type === "remove-line"), false, "指向索引文件自身的行不得被判悬挂删除");
+    const after = readFileSync(join(dir, "MEMORY.md"), "utf8");
+    assert.match(after, /\[索引\]\(MEMORY\.md\)/, "自链行仍在（存在性兜底拦住了误删）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("state：settingsDiagnostics 字段恒在（形状 { coercedFields: [...] }）", async () => {
+  const root = freshRoot();
+  try {
+    const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    assert.equal(status, 200);
+    assert.ok(json.settingsDiagnostics && typeof json.settingsDiagnostics === "object");
+    assert.ok(Array.isArray(json.settingsDiagnostics.coercedFields));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("validateRepairPlan：只放行 remove-line/add-line，删文件类动作整单拒绝（绝不删条目文件）", () => {
+  // 合法计划：一路放行
+  assert.deepEqual(validateRepairPlan([]), { ok: true });
+  assert.deepEqual(validateRepairPlan([{ type: "remove-line" }, { type: "add-line" }]), { ok: true });
+  // 任何非白名单动作（含删文件）→ 整单拒绝，badType 如实带出
+  assert.deepEqual(validateRepairPlan([{ type: "delete-file" }]), { ok: false, badType: "delete-file" });
+  assert.deepEqual(validateRepairPlan([{ type: "remove-line" }, { type: "delete-file", name: "a.md" }]), { ok: false, badType: "delete-file" });
+  assert.deepEqual(validateRepairPlan([{ type: "unlink" }]), { ok: false, badType: "unlink" });
+  assert.deepEqual(validateRepairPlan([{}]), { ok: false, badType: "undefined" });
+  // 非数组：按空计划放行（不炸）
+  assert.deepEqual(validateRepairPlan(null), { ok: true });
+});
+
+test("collectMaintenanceInputs：条目描述 + 索引现状两份现状（title 取 frontmatter 真标题，truncated 达标）", () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "真标题", content: "正文" });
+    const { entries, indexStatus, counts } = collectMaintenanceInputs(root);
+    assert.ok(entries.length >= 1);
+    const hit = entries.find((e) => e.category === "global:work-profile");
+    assert.ok(hit, "应含全局分类条目");
+    assert.equal(hit.title, "真标题", "title 取 frontmatter 真标题");
+    assert.equal(typeof hit.mtimeMs, "number");
+    assert.ok(indexStatus.some((g) => g.category === "global:work-profile" && Array.isArray(g.lines) && Array.isArray(g.files)));
+    assert.equal(counts.truncated, false);
+    assert.equal(typeof counts.entryTotal, "number");
+    // 上限截断：limit=0 时全部截断、如实标注
+    const tiny = collectMaintenanceInputs(root, { limit: 0 });
+    assert.equal(tiny.entries.length, 0);
+    assert.equal(tiny.counts.truncated, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collectMaintenanceInputs：递归收集——嵌套（含多段）条目进 files 与 entries，口径同 manifest", () => {
+  const root = freshRoot();
+  try {
+    // 全局分类下的嵌套条目
+    const dir = categoryDir(root, "work-profile");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    writeFileSync(join(dir, "sub", "topic.md"), "---\nname: topic\ntitle: 嵌套标题\n---\n正文\n");
+    // 项目记忆下的嵌套条目
+    const memDir = join(root, "projects", "demo-aabb0011223344", "memory");
+    mkdirSync(join(memDir, "deep", "inner"), { recursive: true });
+    writeFileSync(join(memDir, "deep", "inner", "note.md"), "---\nname: note\ntitle: 深层\n---\n项目正文\n");
+    writeFileSync(join(memDir, "MEMORY.md"), "");
+    const { entries, indexStatus } = collectMaintenanceInputs(root);
+    // files 是 auditIndex 的对账依据：两条嵌套条目都必须在列（只扫顶层会误判/漏报）
+    const g = indexStatus.find((x) => x.category === "global:work-profile");
+    assert.ok(g.files.includes("sub/topic.md"), "嵌套全局条目进 files（posix 多段相对路径）");
+    const p = indexStatus.find((x) => x.category === "project:demo-aabb0011223344");
+    assert.ok(p.files.includes("deep/inner/note.md"), "嵌套项目条目进 files（深层多段路径）");
+    // 项目记忆的 entry 组装同样递归：嵌套条目进 entries（name 为相对路径、title 取 frontmatter）
+    assert.ok(
+      entries.some((e) => e.category === "project:demo-aabb0011223344" && e.name === "demo-aabb0011223344/deep/inner/note.md" && e.title === "深层"),
+      "嵌套项目条目进 entries（name 为相对路径、title 取 frontmatter）",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

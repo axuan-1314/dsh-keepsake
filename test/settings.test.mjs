@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { defaultSettings, effectiveEmbedding, readSettings, resetSettingsCache, settingsLastGoodPath, settingsPath, validateSettingsNumber, writeSettings } from "../lib/settings.js";
+import { defaultSettings, effectiveEmbedding, getSettingsDiagnostics, readSettings, resetSettingsCache, settingsLastGoodPath, settingsPath, validateSettingsNumber, writeSettings } from "../lib/settings.js";
 
 function freshRoot() {
   resetSettingsCache();
@@ -344,6 +344,81 @@ test("读取：盘上历史非数值/数字字符串 → 落默认 30（与默�
     // 显式数字 0 读回仍是 0（合法配置不被抬回默认）
     writeFileSync(settingsPath(root), JSON.stringify({ trashKeepDays: 0 }), "utf8");
     assert.equal(readSettings(root).trashKeepDays, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 落默认可见化（getSettingsDiagnostics）----
+
+test("落默认可见化：错型值落默认 → warn 明细 + coercedFields 记名字；取值语义不变", () => {
+  const root = freshRoot();
+  try {
+    // 手改 settings.json 的常见错型：该是数字给了字符串、该是白名单值给了别的
+    writeFileSync(
+      settingsPath(root),
+      JSON.stringify({ surgicalKeep: "90", trashKeepDays: "7", hardfactPolicy: "blocked", recentKeepDays: "60" }),
+      "utf8",
+    );
+    const warns = [];
+    const s = readSettings(root, { warn: (m) => warns.push(String(m)) });
+    // 取值语义不变（文档化的「非数值走默认」规则保持）
+    assert.equal(s.surgicalKeep, 30, "错型 surgicalKeep 仍落默认 30");
+    assert.equal(s.trashKeepDays, 30, "错型 trashKeepDays 仍落默认 30");
+    assert.equal(s.hardfactPolicy, "warn", "白名单外仍落默认 warn");
+    assert.equal(s.recentKeepDays, void 0, "错型 recentKeepDays 仍按缺键处理");
+    // 可见化：warn 里带字段名 + 收到的值 + 落的默认值
+    const joined = warns.join("\n");
+    for (const field of ["surgicalKeep", "trashKeepDays", "hardfactPolicy", "recentKeepDays"]) {
+      assert.match(joined, new RegExp(field), `warn 点名 ${field}`);
+    }
+    assert.match(joined, /"90"/, "warn 带收到的值（字符串 90 带引号便于辨识）");
+    assert.match(joined, /30/, "warn 带落的默认值");
+    // 诊断记账
+    const diag = getSettingsDiagnostics();
+    assert.deepEqual(diag.coercedFields.slice().sort(), ["hardfactPolicy", "recentKeepDays", "surgicalKeep", "trashKeepDays"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("落默认诊断：随最近一次 readSettings 重算（修好就不再记）+ 缺键不算落默认", () => {
+  const root = freshRoot();
+  try {
+    writeFileSync(settingsPath(root), JSON.stringify({ surgicalKeep: "90", trashKeepDays: 7 }), "utf8");
+    readSettings(root, { warn: () => {} });
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, ["surgicalKeep"], "只记错型的那一项；合法 7 与缺键不记");
+    // 重读（同一份坏档）仍记同一项（不累积重复）
+    readSettings(root, { warn: () => {} });
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, ["surgicalKeep"], "同名字段不重复记账");
+    // 修好后重读 → 重算为空（诊断随最近一次读取走，不持久化）
+    writeFileSync(settingsPath(root), JSON.stringify({ surgicalKeep: 90, trashKeepDays: 7 }), "utf8");
+    readSettings(root, { warn: () => {} });
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, [], "修好后重算为空");
+    // 全新安装（无任何键）→ 不记账（缺键走默认属于向后兼容，不是用户写错）
+    const root2 = freshRoot();
+    readSettings(root2, { warn: () => {} });
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, [], "全新安装不刷落默认噪音");
+    rmSync(root2, { recursive: true, force: true });
+    // 合法值（含合法 0）→ 不记账
+    writeFileSync(settingsPath(root), JSON.stringify({ surgicalKeep: 5, trashKeepDays: 0, hardfactPolicy: "block", recentKeepDays: 30 }), "utf8");
+    readSettings(root, { warn: () => {} });
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, [], "合法 0 与白名单值不误记");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("getSettingsDiagnostics：返回拷贝（外改不污染内部态）+ 形状恒为 { coercedFields: [] }", () => {
+  const root = freshRoot();
+  try {
+    writeFileSync(settingsPath(root), JSON.stringify({ surgicalKeep: "x" }), "utf8");
+    readSettings(root, { warn: () => {} });
+    const diag = getSettingsDiagnostics();
+    assert.ok(Array.isArray(diag.coercedFields));
+    diag.coercedFields.push("tampered");
+    diag.coercedFields.length = 0;
+    assert.deepEqual(getSettingsDiagnostics().coercedFields, ["surgicalKeep"], "再读仍是原值（拷贝语义）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

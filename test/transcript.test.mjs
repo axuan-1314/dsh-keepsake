@@ -1,7 +1,7 @@
 // transcript：触发门槛（边界⑤：≥3 词用户散文 / 直写记忆跳过）与摘录渲染
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clipTail, hasDirectMemoryWrite, hasEnoughUserProse, renderTranscript, skipReason } from "../lib/transcript.js";
+import { clipTail, hasDirectMemoryWrite, hasEnoughUserProse, isMachineOrigin, renderTranscript, skipReason } from "../lib/transcript.js";
 
 // 路径按平台取（直写判定对 file_path 相对 memoryRoot 解析：Windows 绝对路径在 posix 不是绝对）
 const IS_WIN = process.platform === "win32";
@@ -200,86 +200,75 @@ test("renderTranscript: 摘录含用户/助手/工具行并截断", () => {
   assert.doesNotMatch(text, /思考/); // reasoning 不进摘录
 });
 
-// ── 防自食：插件注入消息（source.kind 属插件）不进门槛、不进摘录 ──
+// ── 防自食：已知机器来源不进门槛、不进摘录；其余来源保守地按真人处理 ──
 
-test("纯插件注入长文不算用户散文（≥3 词门槛不被架空）", () => {
-  const longText = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
+const MACHINE_ORIGIN_CASES = [
+  ["别家插件", "plugin:other-memory"],
+  ["本插件", "plugin:dsh-keepsake"],
+  ["注入", "inject"],
+  ["指令", "instruction"],
+  ["系统", "system"],
+  ["工具", "tool"],
+  ["摘要", "summary"],
+  ["压缩", "compaction"],
+  ["记忆", "memory"],
+  ["便笺", "note"],
+  ["合成", "synthetic"],
+];
+
+const HUMAN_ORIGIN_CASES = [
+  ["无来源", void 0],
+  ["用户", "user"],
+  ["转向", "steer"],
+  ["追问", "followup"],
+  ["未知类型", "agent-instructions"],
+  ["无冒号的 plugin", "plugin"],
+];
+
+/** 构造用户消息；kind 省略时不生成 source，覆盖最常见的真人消息形态。 */
+function userMessageEvent(seq, text, kind) {
+  const data = { role: "user", content: [{ type: "text", text }] };
+  if (kind !== void 0) data.source = { kind };
+  return { type: "user/message", surfaceOp: "append", seq, data };
+}
+
+for (const [label, kind] of MACHINE_ORIGIN_CASES) {
+  test(`机器来源矩阵：${label} 不计入门槛且不进摘录`, () => {
+    const marker = `MACHINE-${kind}`;
+    const events = [userMessageEvent(1, `${marker} one two three four`, kind)];
+    assert.equal(isMachineOrigin(events[0].data), true, `${label} 应识别为机器来源`);
+    assert.equal(hasEnoughUserProse(events, 3), false, `${label} 的长文不得满足用户散文门槛`);
+    assert.equal(skipReason(events, ROOT, 3), "no-user-prose", `${label} 不得触发提取`);
+    assert.doesNotMatch(renderTranscript(events), new RegExp(marker), `${label} 不得进入摘录`);
+  });
+}
+
+for (const [label, kind] of HUMAN_ORIGIN_CASES) {
+  test(`真人来源矩阵：${label} 照常计入门槛与摘录`, () => {
+    const marker = `HUMAN-${kind ?? "none"}`;
+    const events = [userMessageEvent(1, `${marker} one two three`, kind)];
+    assert.equal(isMachineOrigin(events[0].data), false, `${label} 应按真人来源处理`);
+    assert.equal(hasEnoughUserProse(events, 3), true, `${label} 必须满足用户散文门槛`);
+    assert.equal(skipReason(events, ROOT, 3), null, `${label} 必须照常触发提取`);
+    assert.match(renderTranscript(events), new RegExp(marker), `${label} 必须进入摘录`);
+  });
+}
+
+test("混合消息跳过机器注入后仍保留真人内容", () => {
   const events = [
-    {
-      type: "user/message",
-      surfaceOp: "append",
-      seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: longText }] },
-    },
-  ];
-  assert.equal(hasEnoughUserProse(events, 3), false);
-  assert.equal(skipReason(events, ROOT, 3), "no-user-prose");
-});
-
-test("前缀判定覆盖 kind='plugin'（无冒号）", () => {
-  const events = [
-    {
-      type: "user/message",
-      surfaceOp: "append",
-      seq: 1,
-      data: { role: "user", source: { kind: "plugin" }, content: [{ type: "text", text: "one two three four" }] },
-    },
-  ];
-  assert.equal(hasEnoughUserProse(events, 3), false);
-  assert.equal(skipReason(events, ROOT, 3), "no-user-prose");
-  assert.doesNotMatch(renderTranscript(events), /User:/);
-});
-
-test("回归：正常用户消息（无 source / 非 plugin kind）仍过门槛", () => {
-  const noSource = [
-    { type: "user/message", surfaceOp: "append", seq: 1, data: { role: "user", content: [{ type: "text", text: "one two three" }] } },
-  ];
-  assert.equal(hasEnoughUserProse(noSource, 3), true);
-  assert.equal(skipReason(noSource, ROOT, 3), null);
-
-  const otherKind = [
-    {
-      type: "user/message",
-      surfaceOp: "append",
-      seq: 1,
-      data: { role: "user", source: { kind: "agent-instructions" }, content: [{ type: "text", text: "one two three" }] },
-    },
-  ];
-  assert.equal(hasEnoughUserProse(otherKind, 3), true); // 非 plugin 前缀不误伤
-
-  const mixed = [
-    {
-      type: "user/message",
-      surfaceOp: "append",
-      seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: `注入 ${"y ".repeat(30)}` }] },
-    },
-    { type: "user/message", surfaceOp: "append", seq: 2, data: { role: "user", content: [{ type: "text", text: "one two three" }] } },
-  ];
-  assert.equal(hasEnoughUserProse(mixed, 3), true); // 跳过注入后，正常散文仍达标
-});
-
-test("renderTranscript 剔除插件注入行，保留正常用户/助手/工具行", () => {
-  const injected = `MEMORY-CONTEXT-SHOULD-NOT-APPEAR ${"x".repeat(50)}`;
-  const events = [
-    {
-      type: "user/message",
-      surfaceOp: "append",
-      seq: 1,
-      data: { role: "user", source: { kind: "plugin:dsh-keepsake" }, content: [{ type: "text", text: injected }] },
-    },
-    { type: "user/message", surfaceOp: "append", seq: 2, data: { role: "user", content: [{ type: "text", text: "真实用户发言" }] } },
+    userMessageEvent(1, `MACHINE-CONTEXT ${"x ".repeat(30)}`, "plugin:other-memory"),
+    userMessageEvent(2, "HUMAN-CONTENT one two three", "followup"),
     { type: "assistant/message", surfaceOp: "append", seq: 3, data: { message: { content: [{ type: "text", text: "助手答复" }] } } },
-    { type: "tool/call", seq: 4, data: { name: "read", arguments: '{"file_path":"D:/x"}' } },
+    { type: "tool/call", seq: 4, data: { name: "read", arguments: '{"file_path":"sample.txt"}' } },
     { type: "tool/result", seq: 5, data: { message: { content: [{ type: "text", text: "工具结果" }] } } },
   ];
+  assert.equal(hasEnoughUserProse(events, 3), true);
   const text = renderTranscript(events);
-  assert.doesNotMatch(text, /MEMORY-CONTEXT-SHOULD-NOT-APPEAR/);
-  assert.doesNotMatch(text, /\[seq 1\] User:/);
-  assert.match(text, /\[seq 2\] User: 真实用户发言/);
-  assert.match(text, /\[seq 3\] Assistant: 助手答复/);
-  assert.match(text, /\[seq 4\] ToolCall read:/);
-  assert.match(text, /\[seq 5\] ToolResult: 工具结果/);
+  assert.doesNotMatch(text, /MACHINE-CONTEXT/);
+  assert.match(text, /HUMAN-CONTENT/);
+  assert.match(text, /助手答复/);
+  assert.match(text, /ToolCall read/);
+  assert.match(text, /工具结果/);
 });
 
 test("renderTranscript 剥掉助手回复里回声的注入块（<memory-context> 整段）", () => {

@@ -128,6 +128,63 @@ test("journal：getUnrecovered 三分支（在列 / 后续推进出列 / 放弃�
   }
 });
 
+test("journal：出列判据收紧为完全覆盖——部分覆盖（起点更晚）不得出列", async () => {
+  // R1 复现：pending [0,10)，随后同会话一段 from=5、cursorAfter=12 的补提（尾巴伸过了 10），
+  // 但 [0,5) 这段从没提取过——旧判据只看 cursorAfter>=to 会把它整段出列、留痕凭空消失。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 0, outcome: "failed", reason: "llm-error", at: 1700000000000 });
+    assert.deepEqual(journal.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]), [["s1", 0, 10]], "前置：失败区间在列");
+    // 起点更晚（from=5 > 0）：只盖住了 [5,12)，[0,5) 仍未提取 → 不出列
+    await journal.recordRun({ sessionId: "s1", from: 5, to: 12, cursorAfter: 12, outcome: "written", writes: 1, at: 1700000001000 });
+    assert.deepEqual(
+      journal.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]),
+      [["s1", 0, 10]],
+      "部分覆盖不得出列（[0,5) 从未提取，留痕不能丢）",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：出列判据收紧为完全覆盖——完全覆盖照旧出列（起点对齐 + 尾巴伸过）", async () => {
+  // 起点与 cursor 对齐的在线连续推进（rec.from === p.from）、以及起点更早的补提，
+  // 都算整段覆盖 → 照常出列；收紧判据不得把这两条正确路径误伤。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    // 起首对齐：from=10 与失败区间起点一致，cursorAfter 伸过 to → 出列
+    await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 10, outcome: "failed", reason: "llm-error", at: 1700000000000 });
+    await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 20, outcome: "written", writes: 1, at: 1700000001000 });
+    assert.deepEqual(journal.getUnrecovered(), [], "起点对齐的连续推进照常出列");
+    // 起点更早（from=5 <= 10）且尾巴伸过 to → 整段覆盖，同样出列
+    await journal.recordRun({ sessionId: "s2", from: 10, to: 30, cursorAfter: 10, outcome: "failed", reason: "io-error", at: 1700000002000 });
+    await journal.recordRun({ sessionId: "s2", from: 5, to: 30, cursorAfter: 30, outcome: "written", writes: 1, at: 1700000003000 });
+    assert.deepEqual(journal.getUnrecovered(), [], "起点更早且完全覆盖照常出列");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：出列先于入列的顺序钉——[from==to] 退化区间不得自出列", async () => {
+  // 若把 apply() 里的顺序颠倒（先入列再出列），刚入列的失败区间会拿自己的记录判自己「已覆盖」：
+  // rec.from<=p.from（相等）且 rec.cursorAfter>=p.to（相等）成立 → 立刻自出列、凭空消失。
+  // [from==to] 的退化区间（零长度承诺）正是这条顺序的探针：入列后必须仍在列。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    await journal.recordRun({ sessionId: "s1", from: 5, to: 5, cursorAfter: 5, outcome: "failed", reason: "llm-error", at: 1700000000000 });
+    assert.deepEqual(
+      journal.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]),
+      [["s1", 5, 5]],
+      "退化区间入列后必须仍在列（出列必须先于入列，否则会自出列）",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- 3b. 放弃区间（abandoned）：独立留痕 + 跨重启可见 + 与 lost 区间互斥 ----
 
 test("journal：abandoned 独立留痕（新在前、封顶、abandonedCount）+ 与 unrecovered 互斥", async () => {
@@ -386,6 +443,80 @@ test("journal：轮转阈值按 >= 触发（恰满 rotateAt 即转，主档恒�
     }
     assert.equal(lines(root).length, 2, "恰满 rotateAt 即轮转到 keepOnRotate 行");
     assert.equal(journal.getCursor("s1"), 4, "内存态 cursor 不受轮转影响");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：轮转 keepEff 钳制——keepOnRotate 大于 rotateAt 时盘上行数仍被压到 rotateAt 以内", async () => {
+  // keepOnRotate > rotateAt 会让轮转自相矛盾（每次想保留的行数比触发线还多，行数越攒越多）。
+  // 实现把 keepEff 钳到 rotateAt；若去掉这层钳制（keepEff 直接用 keepOnRotate），
+  // 可裁窗口恒大于在场行数 → 永不裁剪 → 盘上行数随写入无上限增长，本用例应变红。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, rotateAt: 4, keepOnRotate: 100, ringMax: 30 });
+    for (let i = 1; i <= 10; i += 1) {
+      await journal.recordRun({ sessionId: "s1", from: i - 1, to: i, cursorAfter: i, outcome: "written", at: 1700000000000 + i });
+    }
+    const kept = lines(root);
+    assert.ok(kept.length <= 4, `盘上行数应被压到 rotateAt（4）以内，实际 ${kept.length}`);
+    assert.equal(kept.length, 4, "钳制后保留窗口 = rotateAt");
+    assert.equal(JSON.parse(kept[kept.length - 1]).cursorAfter, 10, "最尾部是最新一行");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 6b. 轮转裁剪顺序（skipped 先裁，failed/abandoned 留存）----
+
+test("journal：轮转裁剪按 outcome 定序——skipped 最先裁，written/failed 让位留存（gate-off 不丢失败留痕）", async () => {
+  // 钉住「裁剪顺序」而非「行序」：gate-off 期间 skipped 成海，若仍按行序一刀切留尾部，
+  // 更早的 failed 行会被冲掉——跨重启补提的命脉就没了。此处让 skipped 行【更新】却先被裁。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, rotateAt: 6, keepOnRotate: 2, ringMax: 30 });
+    // 第 1 行：失败（cursor 未动 = 未恢复区间，进 pending）；第 2 行：放弃（永久留痕）
+    // 放弃行另用一个会话：同会话且 cursor 推过 to 会把该失败区间判为「已补上」而出列（入/出列判据）。
+    await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 10, outcome: "failed", reason: "llm-error", at: 1700000000000 });
+    await journal.recordRun({ sessionId: "s0", from: 20, to: 30, cursorAfter: 30, outcome: "abandoned", reason: "no-cwd", at: 1700000001000 });
+    await journal.recordRun({ sessionId: "s2", from: 0, to: 1, cursorAfter: 1, outcome: "written", at: 1700000002000 });
+    // 随后 3 条 skipped（最晚落的 3 行 = 按旧口径（留尾部）正是会被留下的那批）
+    for (let i = 1; i <= 3; i += 1) {
+      await journal.recordRun({ sessionId: "s3", from: i - 1, to: i, cursorAfter: i, outcome: "skipped", reason: "gate-off", at: 1700000003000 + i });
+    }
+    const kept = lines(root).map((l) => JSON.parse(l));
+    // 旧口径（留尾部 2 行）会留 [skipped, skipped]，written 与一切非保护行全灭；
+    // 新口径按 outcome 裁：skipped 先让位，written 保住，失败/放弃照旧留痕。
+    assert.equal(kept.filter((r) => r.outcome === "skipped").length, 1, "3 条 skipped 被优先裁掉 2 条（可再生噪声先让位）");
+    assert.equal(kept.some((r) => r.outcome === "written"), true, "written 比更新的 skipped 更该留（旧口径会把它裁掉）");
+    assert.equal(kept.some((r) => r.outcome === "failed" && r.reason === "llm-error"), true, "更早的失败行留盘（未被较新的 skipped 挤出）");
+    assert.equal(kept.some((r) => r.outcome === "abandoned"), true, "abandoned 永久留痕语义不动");
+    assert.equal(kept.length, 4, "可裁窗口恒为 keepOnRotate（2）+ 强制保留（2）");
+    // 行序仍是原相对顺序（重放靠顺序判定区间是否被补上，乱序会误判）
+    const ats = kept.map((r) => Date.parse(r.at));
+    assert.deepEqual(ats, [...ats].sort((a, b) => a - b), "保留行维持原行序（只裁不排）");
+    // 重启重放：失败区间与放弃区间都还在（gate-off 长时间不丢失败/放弃留痕）
+    const again = createJournal({ storageRoot: root, rotateAt: 6, keepOnRotate: 2 });
+    assert.deepEqual(again.getUnrecovered().map((u) => [u.sessionId, u.from, u.to]), [["s1", 10, 20]], "重启后未恢复失败区间仍可见");
+    assert.equal(again.snapshot().abandonedCount, 1, "重启后放弃计数不丢");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：裁剪优先级内 skipped→zero-ops→written/failed（同窗口下先牺牲可再生行）", async () => {
+  // 可裁窗口 2 行：1 条 written + 1 条 failed + 1 条 zero-ops + 1 条 skipped 竞争，
+  // 结果必须是 skipped 与 zero-ops 被裁，written/failed 两条留下（跨重启补提优先）。
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, rotateAt: 4, keepOnRotate: 2, ringMax: 30 });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 1, cursorAfter: 1, outcome: "written", at: 1700000000000 });
+    // failed 但 cursor 已推进（非未恢复区间 → 不进强制保留桶），才参与本例的优先级竞争
+    await journal.recordRun({ sessionId: "s1", from: 1, to: 5, cursorAfter: 5, outcome: "failed", reason: "boom", at: 1700000001000 });
+    await journal.recordRun({ sessionId: "s1", from: 5, to: 6, cursorAfter: 6, outcome: "zero-ops", at: 1700000002000 });
+    await journal.recordRun({ sessionId: "s1", from: 6, to: 7, cursorAfter: 7, outcome: "skipped", at: 1700000003000 });
+    const kept = lines(root).map((l) => JSON.parse(l));
+    assert.deepEqual(kept.map((r) => r.outcome), ["written", "failed"], "written/failed 留存，zero-ops/skipped 被裁");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

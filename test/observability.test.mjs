@@ -135,9 +135,9 @@ test("metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷贝"
 
 test("metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ 缺省入参按 0", () => {
   __resetMetricsForTest();
-  // 空态：字段恒在（缺失=旧版判据），值全零
+  // 空态：字段恒在（缺失=旧版判据），值全零（throttled/superseded 为 0.5.0 同源替换两计数）
   assert.deepEqual(injectionSnapshot(), {
-    count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, renderFailures: 0, lastAt: null,
+    count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, throttled: 0, superseded: 0, renderFailures: 0, lastAt: null,
   });
   recordInjection({ chars: 120 });
   recordInjection({ chars: 80, dropped: ["globalIndex", "persona"], resend: true });

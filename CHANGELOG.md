@@ -4,6 +4,21 @@
 
 ## [未发布]
 
+## [0.5.0] - 2026-10-17
+
+安全与成本收敛：密钥类内容默认脱敏；失败区间自动补提收口；注入加 token 预算；提取触发加打分门、空闲延迟与每会话上限。四项全部默认开启，各有独立回滚开关；测试全部通过。
+
+### 新增
+- **内容脱敏（默认开，`redactionEnabled`）**：两道位置拦截密钥类内容——①提取提示词之前，会话摘录在用户消息 / 助手回复 / 工具调用 / 工具结果四处渲染时先脱敏后截断（防截断把密钥切半导致漏检）；②落盘之前，提取产出的写入/删除操作再过一道脱敏（纵深防御，只动内容字段，不动文件名 / 路径 / 条目标识 / 操作类型）。内置 **7 类固定模式**：私钥块、Authorization 头凭据、独立 Bearer/Basic 令牌、常见厂商密钥形态（`sk-`、GitHub PAT、AWS Access Key、Slack 令牌、Google API Key、JWT）、URL 内嵌凭据、敏感键值赋值（`password` / `secret` / `token` / `api_key` / `private_key` / `credentials` 等）、内网 IPv4（`10.x` / `172.16-31.x` / `192.168.x`）。命中共计进提取运行日志行的 `redacted` 字段（>0 才写）。占位符 `[redacted]`，重复执行幂等；模式清单固定、不支持用户自定义正则（防正则回溯）。`redactionEnabled: false` 完全关闭、回旧行为。
+- **失败区间自动补提收口（默认开，`autoRecoverEnabled`）**：手动补提按钮之外，三个时机自动补提未恢复的失败区间——会话关闭（`session/disposed`，限该会话）、轮次完成（`turn/end`，全局清扫）、插件装载后数秒（启动清扫，跨重启续提闭环）。只补 kind=failed，已显式放弃（abandoned）的区间绝不自动重试；同一区间两次尝试之间有冷却间隔（`autoRecoverCooldownMs`，默认 300000 毫秒）；与手动按钮共用单飞锁，互斥不并发；宿主无会话持久化时静默不跑（能力缺失不是故障）。`/state.recover` 增 `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger` 四键。
+- **注入 token 预算（默认 16000，`injectMaxTokens`，0=关）**：注入总预算在字符口径（`injectMaxChars`，默认 30000）之外增加 CJK 感知 token 口径，双上限同时生效取更严者；召回块计入总预算、主块为召回块让位（召回块自身不做裁剪，与字符口径语义一致）；`0 = 关闭 token 预算`，行为与字符口径逐字节一致。token 估算是码点级近似（CJK/全角字 ≈1.5 token/字，其余 ≈0.25 token/字），非精确分词。`/state` 顶层增 `injectMaxTokens`，`injection` 增 `lastTokens` / `totalTokens`；面板健康卡注入摘要显示「最近 ≈X tokens / 上限 Y」（0 时退回字符展示）。
+- **提取触发门槛（默认开，`extractGateEnabled`）**：提取前对区间打分——`分数 = 用户词数 + 2×工具种类数 + 2×真人轮次数`，低于阈值（`extractGateMinScore`，默认 6）不调模型、记 `skipped/thin-evidence`，进度照常推进、运行日志留痕。配套两道成本闸：**空闲延迟**（`extractIdleDelayMs`，默认 3000 毫秒，0=立即；轮次完成后延迟起跑、合并突发轮次为一次提取，定时为固定时刻不滑动，会话关闭 / 插件退出时挂起提取立即收口不丢）；**每会话上限**（`extractMaxRunsPerSession`，默认 50，0=不限；到顶后记 `skipped/session-cap` 并推进进度，不再调模型，只约束自动链路、手动补提不受限）。`/state.extractionConfig` 增 `gateEnabled` / `gateMinScore` / `idleDelayMs` / `maxRunsPerSession` / `redactionEnabled` 五键。
+
+### 变更
+- `cordis.patch.yml` 样例 `injectMaxChars` 由 60000 改为 30000，修复样例与代码及文档默认值的漂移（代码默认本就是 30000，本版只改样例；校验语义不变）。
+- 注入块预算从单字符口径变为字符 + token 双口径（默认值变化：CJK 长块会被裁得比以前短——这是修复挤爆上下文的隐患）；其余注入行为（丢弃顺序 / 取代声明 / 节流 / 兜底截断）不变。
+- 配置校验新增非负整数校验器（`injectMaxTokens` / `extractIdleDelayMs` / `extractMaxRunsPerSession` 允许 0）；`autoRecoverCooldownMs` / `extractIdleDelayMs` 受定时器最大延迟上限约束，超限启动即抛。
+
 ## [0.4.2] - 2026-10-17
 
 注入面收敛与运维补齐：宿主历史只能追加、旧注入块撤不回，本版给注入补上「同源替换」三件套（取代声明 + 变更节流 + 观测计数）；把跨重启补提从「看得见」推进到「补得上」；面板新增记忆整理建议；并把「机器来源」判据泛化到任意插件。
@@ -148,7 +163,8 @@
 ### 修复
 - `enabled` 缺省关（fail-closed）；索引缓存键加项目维度；Windows 保留设备名段防穿越；截断保最新；直写判定按结果成败校验；CJK 词数折算；关停 drain 纪律；debug 日志口。
 
-[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.4.2...HEAD
+[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.4.1
 [0.4.0]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.4.0

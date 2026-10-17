@@ -9,7 +9,7 @@
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.4.2（以 `package.json` 为准；变更记录见 [CHANGELOG.md](CHANGELOG.md)）
+- **插件版本**：0.5.0（以 `package.json` 为准；变更记录见 [CHANGELOG.md](CHANGELOG.md)）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）；`package.json` 声明了 DSH peer 范围，安装/启动时宿主会做版本兼容检查，不匹配会让用户显式确认后才装
 - **分发**：GitHub 仓库 tag tarball 渠道（+ 本地 clone 作开发）；升级方式见[「升级」](#升级)（DSH 插件不支持自动更新）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
@@ -23,7 +23,7 @@
 > 上图为界面示意（使用示例数据渲染）。最快上手（完整步骤见[快速开始](#快速开始)）：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.5.0.tar.gz
 ```
 
 ## 目录
@@ -31,10 +31,12 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
 - [这是什么](#这是什么)
 - [功能介绍](#功能介绍)
   - [自动记忆：会话结束自动提炼，下次对话自动带上](#自动记忆会话结束自动提炼下次对话自动带上)
+  - [内容脱敏：密钥类内容进不了记忆与提示词](#内容脱敏密钥类内容进不了记忆与提示词)
   - [语义召回（可选）](#语义召回可选)
   - [记忆管理面板](#记忆管理面板)
   - [管道健康卡与「立即重试提取」](#管道健康卡与立即重试提取)
   - [提取运行日志与跨重启续提](#提取运行日志与跨重启续提)
+  - [提取触发门槛：打分门、空闲延迟与每会话上限](#提取触发门槛打分门空闲延迟与每会话上限)
   - [会话补提：跨重启把失败区间读回来重提](#会话补提跨重启把失败区间读回来重提)
   - [记忆整理：重复、陈旧与索引对账建议](#记忆整理重复陈旧与索引对账建议)
   - [失败韧性：重试、分类、落盘留痕](#失败韧性重试分类落盘留痕)
@@ -76,7 +78,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **无需手动操作**：每一轮对话正常结束（`turn/end` 且 `reason.kind === "completed"`）后自动触发一次提取判断；纯寒暄、命令式短句（不足 3 个词的用户散文）这类没内容可记的轮次自动跳过，不白花 token。
 - **增量提取**：插件为每个会话维护提取进度（cursor），只提炼新完成的轮次；提取失败时进度不推进，下一轮自动连本带利重提（自动补提），不会漏记也不会重复记。
 - **提取走会话路由**：默认复用你当前对话所用的模型路由（与 session-title 同款捕获策略），不单独配置也能跑；也可以在 `cordis.patch.yml` 显式指定更稳的 `provider` / `model`。
-- **跨会话四段注入**：之后每轮对话，插件把记忆作为一条**插件自有的用户消息**注入会话（默认走 durable 消息通道，对所有预设——包括 `complete:true` 的极简预设——都生效，这是 v0.2.0 对旧版"极简模式静默失忆"的根治点；`injectChannel: "section"` 可回退到旧的系统提示词注入）。这条消息由四段组成，模型据此"记得"你：
+- **跨会话四段注入**：之后每轮对话，插件把记忆作为一条**插件自有的用户消息**注入会话（默认走 durable 消息通道，对所有预设——包括 `complete:true` 的极简预设——都生效，这是 v0.2.0 对旧版"极简模式静默失忆"的根治点；`injectChannel: "section"` 可回退到旧的系统提示词注入）。注入受**双预算**约束：字符口径 `injectMaxChars`（默认 30000）与 token 口径 `injectMaxTokens`（默认 **16000**，CJK 感知估算；0 = 关闭 token 预算、只用字符口径）——超限按优先级整段丢弃，两个上限同时生效。这条消息由四段组成，模型据此"记得"你：
 
 | 注入段 | 模型看到什么 | 预算 |
 |---|---|---|
@@ -94,6 +96,25 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 全局自动提取 | 不再自动写全局记忆；已有的全局条目照常注入 |
 
 - **防自反馈（按「机器来源」排除）**：注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记；提取侧按统一的机器来源判据，把**任意插件**（不限本插件）注入的消息、以及 instruction / summary / tool 等系统性消息，都从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。真人消息（含无来源、steer / followup）永远算数；语义召回的查询文本同样只取真人消息。
+
+### 内容脱敏：密钥类内容进不了记忆与提示词
+
+对话里偶尔会出现密钥、令牌、内网地址这类不该被记下来的内容。脱敏默认开启（`redactionEnabled`，默认 **true**），在两道位置拦截：
+
+- **第一道（进提取提示词之前）**：会话摘录渲染时（用户消息 / 助手回复 / 工具调用 / 工具结果四处）先脱敏再截断——顺序刻意为先脱敏后截断，防止截断把密钥切成两半导致漏检。模型看到与提取用的摘录都是脱敏后的文本；
+- **第二道（落盘之前）**：提取产出的写入/删除操作在写记忆文件前再过一道脱敏（纵深防御），只处理条目正文的字符串内容字段，不动文件名、路径、条目标识与操作类型。命中数计入提取运行日志的 `redacted` 字段（有命中才写），面板「最近提取记录」可查。
+
+内置 **7 类固定模式**（清单固定、不做用户自定义正则——防正则回溯拖垮宿主进程）：
+
+1. 私钥块：`-----BEGIN ... PRIVATE KEY-----` 到 `-----END ... PRIVATE KEY-----` 整块；
+2. Authorization / Proxy-Authorization 头里的 Bearer / Basic / Token 凭据；
+3. 独立出现的 Bearer / Basic 令牌（16 字符以上）；
+4. 常见厂商密钥形态：`sk-` 前缀、GitHub PAT（`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` / `github_pat_`）、AWS Access Key（`AKIA`）、Slack 令牌（`xox`）、Google API Key（`AIza`）、JWT（`eyJ` 三段式）；
+5. URL 内嵌凭据：`协议://用户:密码@主机` 保留协议与主机、凭据部分换占位符；
+6. 敏感键值赋值：`password` / `secret` / `token` / `api_key` / `private_key` / `credentials` 等键名后跟 `:` 或 `=` 的值；
+7. 内网 IPv4 地址：`10.x.x.x` / `172.16-31.x.x` / `192.168.x.x`。
+
+命中的内容替换为占位符 `[redacted]`；对已脱敏文本重复执行不再变化（幂等）。不想用时可配 `redactionEnabled: false` 完全关闭，回到不脱敏的旧行为。局限见[「已知限制」](#已知限制)。
 
 ### 语义召回（可选）
 
@@ -139,6 +160,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **最近 5 条失败详情**：时间 / 原因 / 模型 / 错误摘要，配合失败日志路径（`<storageRoot>/extraction-errors.log`）排障。
 - **错过区间提示**：「第 X 轮对话之后的内容尚未记录，恢复后自动补提」——告诉你哪些对话可能漏记了；配套「补提」区可逐条重跑（见[「会话补提」](#会话补提跨重启把失败区间读回来重提)）。
 - **「立即重试提取」按钮**：对仍有未提取区间的会话真的发起一次 LLM 提取（有确认弹窗，明示消耗少量 token）；点击后按钮进入 busy 态，面板每 2 秒轮询状态最多 60 秒，恢复即提示「提取已恢复」。10 秒最小间隔，提取在途时返回 409。
+- **注入预算占用**：健康卡的注入摘要显示 token 口径占用「最近 ≈X tokens / 上限 Y」（`injectMaxTokens` 为 0 时不显 token 段、退回字符展示）；数据源是 `/state.injection` 的 `lastTokens` / `totalTokens`。
 - **「复制诊断信息」按钮**：一键复制当前状态摘要，可直接粘贴到 issue。
 - **提取模型卡**：如实展示提取路由（显式配置的 `provider`/`model`，或「未指定（跟随会话路由）」）、fallback 换道配置、最近一次提取用车（路由 + 相对时间）、嵌入模型（语义召回所用；未配置时显示为未启用）。
 
@@ -150,14 +172,27 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **面板「最近提取记录」**：设置页健康卡新增折叠清单（时间 + seq 范围 + 结果标签），每轮"为什么没记"有据可查。"未恢复区间"红条改双源——重启后回落盘侧未恢复清单，不再隐身；结构性失败被显式放弃的区间也会在盘上留痕（面板「已放弃 N 段」提示）。
 - **跨重启续提**：每会话提取覆盖边界（cursor）随运行日志持久化，DSH 重启后重开旧会话**从上次边界续提**，失败区间不再因重启永久丢失。**取舍**：从没提取过的会话仍不回扫历史——插件的提取由"会话继续产生新轮次"驱动，对一段从未提取过的历史不会主动回补，需该会话继续对话才会接着提。
 
+### 提取触发门槛：打分门、空闲延迟与每会话上限
+
+提取要消耗 token，触发侧有三道成本闸门（全部默认开启，各有独立回滚开关）：
+
+- **打分门**（`extractGateEnabled`，默认开；阈值 `extractGateMinScore`，默认 **6**）：提取前对这批轮次打分——`分数 = 用户词数 + 2×工具种类数 + 2×真人轮次数`，分数低于阈值就不调模型、直接记 `skipped/thin-evidence`（运行日志留痕、进度照常推进）。用户词数沿用既有散文口径（空格词数 + 中文按每 2 字折 1 词）；带工具调用或多轮真人发言的会话轻松过门，纯寒暄薄轮不再白花一次 LLM 调用。
+- **空闲延迟**（`extractIdleDelayMs`，默认 **3000** 毫秒；0 = 立即提取）：一轮结束后不立刻起跑，等 3 秒空闲再跑——期间新完成的轮次合并进同一批，突发连续对话只触发一次提取。定时是固定时刻而非滑动窗口，持续对话中也会到期；会话关闭/插件退出时挂起中的提取**立即收口执行**（进既有有界 drain），不丢最后一轮。
+- **每会话上限**（`extractMaxRunsPerSession`，默认 **50**；0 = 不限）：单个会话的自动提取次数到顶后，后续触发记 `skipped/session-cap` 并推进进度，不再调模型——病态循环轮（模型反复空转）不会无限烧钱。只约束自动链路，面板手动补提不受限。
+
 ### 会话补提：跨重启把失败区间读回来重提
 
 v0.4.1 让失败区间跨重启**看得见**（运行日志持久留痕），v0.4.2 把它推进到**补得上**：
 
 - **面板「补提」区**：设置页健康卡内嵌补提清单，列出未恢复 / 已放弃的提取区间（时间 + seq 范围 + 结果标签），逐条可点「补提」重跑；清单来自提取运行日志，跨重启可见。
+- **自动收口**（`autoRecoverEnabled`，默认开）：除手动按钮外，插件还会在三个时机自动补提失败区间——① 会话关闭时（`session/disposed`，只补该会话）；② 每轮对话完成后（`turn/end`，全局清扫）；③ 插件装载后数秒（启动清扫，跨重启续提闭环）。规则：
+  - 只自动补**未恢复的失败区间**（kind=failed）；已显式放弃的区间（kind=abandoned）绝不自动重试——"放弃"就是放弃；
+  - 同一区间两次自动补提之间有冷却间隔（`autoRecoverCooldownMs`，默认 **300000** 毫秒 = 5 分钟），防止宿主读不回的区间被每个触发面反复白读；
+  - 自动补提与手动按钮共用同一把单飞锁（同一时刻只有一次补提），手动与自动天然互斥、绝不并发双跑；
+  - 宿主未提供会话持久化服务时自动补提静默不跑（能力缺失不是故障；手动按钮此时如实返回 503）。
 - **前提与如实降级**：补提要能读回会话内容，依赖宿主提供会话持久化服务（本机宿主 0.2.0-rc.2 起内置）；旧版宿主没有该服务时，面板如实提示"本机补不了"，接口返回 503（`E_HOST_UNSUPPORTED`）——不假装补过。
 - **范围纪律**：补提区间必须**整体落在会话可读范围内**；超出可读范围（含超大会话读回截断后的尾部）的区间显式拒绝、继续留在清单里，绝不把没读到的部分按已补提记账、静默丢记忆。
-- **异步与观测**：`POST /api/sessions/recover` 即回 202、后台执行（同一时刻只有一次补提，在途再点返回 409），结果经 `/state.recover`（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`）观测；清单数据面是 `GET /api/sessions/pending`。
+- **异步与观测**：`POST /api/sessions/recover` 即回 202、后台执行（同一时刻只有一次补提，在途再点返回 409），结果经 `/state.recover`（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId` / `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger`）观测；清单数据面是 `GET /api/sessions/pending`。
 
 ### 记忆整理：重复、陈旧与索引对账建议
 
@@ -223,7 +258,7 @@ v0.4.1 让失败区间跨重启**看得见**（运行日志持久留痕），v0.
 **① GitHub tag tarball（推荐）** —— 从仓库 tag 直接安装，钉死版本：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.5.0.tar.gz
 # profile 可选 web / headless / desktop
 ```
 
@@ -271,10 +306,18 @@ cordis entry config（见 `cordis.patch.yml`）：
 |---|---|---|
 | `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
 | `injectChannel` | **`"message"`** | 注入通道：`"message"`=durable 用户消息通道（默认，全预设生效）；`"section"`=旧四段 systemPrompt 注入（一键回滚） |
-| `injectMaxChars` | 30000 | 消息通道注入**总**预算（字符）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING。v0.4.2 起默认由 60000 下调（块首取代声明 / 免责两行固定开销 + 节流收敛，见[「工作原理」](#工作原理)）；需要更大预算时显式配置即可覆盖 |
+| `injectMaxChars` | 30000 | 消息通道注入**总**预算（字符口径）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING。v0.4.2 起默认由 60000 下调（块首取代声明 / 免责两行固定开销 + 节流收敛，见[「工作原理」](#工作原理)）；需要更大预算时显式配置即可覆盖 |
+| `injectMaxTokens` | 16000 | 消息通道注入总预算的 **token 口径**（CJK 感知估算；含召回块，主块让位；与 `injectMaxChars` 双上限同时生效，取更严者）。**0 = 关闭 token 预算**，退回纯字符口径。token 估算是近似值（CJK 字 ≈1.5 token/字、其余 ≈0.25 token/字），非精确分词 |
+| `redactionEnabled` | **true** | 内容脱敏总开关（见[「内容脱敏」](#内容脱敏密钥类内容进不了记忆与提示词)）：提取提示词与落盘写入两道位置的密钥类内容替换为 `[redacted]`；**false = 完全不脱敏**，回旧行为 |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
 | `provider` / `model` | 空（跟随会话路由） | 提取调用的模型路由；成对出现，否则报错。缺省时自动捕获本会话路由（`request/header` 优先，`assistant/message` 的 `source` 兜底，同 session-title 策略） |
 | `minUserWords` | 3 | skip 条件的散文词数下限 |
+| `extractGateEnabled` | **true** | 提取触发打分门开关（见[「提取触发门槛」](#提取触发门槛打分门空闲延迟与每会话上限)）；**false = 关门**，过薄轮次也会照旧调模型提取（旧行为） |
+| `extractGateMinScore` | 6 | 打分门阈值：`分数 = 用户词数 + 2×工具种类数 + 2×真人轮次数`，低于该值记 `skipped/thin-evidence` 跳过提取（不调模型、进度照常推进） |
+| `extractIdleDelayMs` | 3000 | 提取空闲延迟（毫秒）：轮次结束后延迟等待、合并突发轮次为一次提取；**0 = 立即提取**（旧行为）。上限受定时器最大延迟约束，超限启动即抛 |
+| `extractMaxRunsPerSession` | 50 | 每会话自动提取次数上限：到顶后后续触发记 `skipped/session-cap` 并推进进度（不调模型）；**0 = 不限**。只约束自动链路，手动补提不受限 |
+| `autoRecoverEnabled` | **true** | 自动补提开关（见[「会话补提」](#会话补提跨重启把失败区间读回来重提)的「自动收口」）：会话关闭 / 轮次完成 / 启动清扫三个时机自动补提未恢复的失败区间；**false = 关闭自动补提**，只保留面板手动按钮。宿主无会话持久化时自动链路静默不跑 |
+| `autoRecoverCooldownMs` | 300000 | 同一失败区间两次自动补提尝试的最小间隔（毫秒），防宿主读不回的区间被反复白读；上限受定时器最大延迟约束 |
 | `timeoutMs` | 120000 | 单次提取调用超时 |
 | `maxOutputTokens` | 4096 | 提取输出上限 |
 | `maxIndexLines` / `maxIndexChars` | 200 / 25000 | 注入截断预算 |
@@ -377,12 +420,13 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 内核机制视角（实现语义，供二次开发/排障参考）：
 
-- **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并：running 期间新触发只留最新边界）。
-- **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
+- **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并：running 期间新触发只留最新边界）。轮次完成后先过空闲延迟定时（`extractIdleDelayMs`，固定时刻合并突发），到点起跑前再过打分门（`extractGateEnabled` / `extractGateMinScore`）与每会话上限（`extractMaxRunsPerSession`），任一闸门不过都记 `skipped`（`thin-evidence` / `session-cap`）并推进 cursor，不调模型。
+- **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。摘录渲染与落盘写入两道位置都先过内容脱敏（`redactionEnabled`，见[「内容脱敏」](#内容脱敏密钥类内容进不了记忆与提示词)）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
-- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首两行：先取代声明——本块是最新记忆快照、作废此前的同类块、多块只认最新；后免责/署名——记忆是参考上下文、非任务指令；subagent 会话不注入）。发送与否经三态裁决：与视野内上次那块规范化后相同则跳过；变化太小（字符 bigram 相似度 ≥0.98，或字符差 ≤ max(200, 全长 1%)）被节流、先攒着不发，等下次大变更或 compaction/rewind 把旧块挤出视野后随全量块补发；相似度 <0.5 的整块改写直接放行。总预算 `injectMaxChars`（召回块计入其中，主块先为召回块让位）。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
+- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首两行：先取代声明——本块是最新记忆快照、作废此前的同类块、多块只认最新；后免责/署名——记忆是参考上下文、非任务指令；subagent 会话不注入）。发送与否经三态裁决：与视野内上次那块规范化后相同则跳过；变化太小（字符 bigram 相似度 ≥0.98，或字符差 ≤ max(200, 全长 1%)）被节流、先攒着不发，等下次大变更或 compaction/rewind 把旧块挤出视野后随全量块补发；相似度 <0.5 的整块改写直接放行。总预算双口径：字符 `injectMaxChars` 与 token `injectMaxTokens`（CJK 感知估算：CJK 字按 1.5 token/字、其余按 0.25 token/字）同时生效、取更严者，召回块计入其中且主块先为召回块让位（召回块自身不做裁剪）；`injectMaxTokens: 0` 退回纯字符口径（旧行为逐字节一致）。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
 - **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
-- **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
+- **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。此外还有三道成本闸门（打分门 / 空闲延迟合并 / 每会话上限，见[「提取触发门槛」](#提取触发门槛打分门空闲延迟与每会话上限)），不过闸的区间同样记 skip 并推进 cursor。
+- **模块清单**：`lib/redact.js`（脱敏纯函数，7 类固定模式，线性正则防回溯）、`lib/extract-gate.js`（打分门纯函数：`score = userWords + 2*toolKinds + 2*turns`）、`lib/tokens.js`（CJK 感知 token 估算）。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 随提取运行日志持久化（每次结算落一行，重启时同步重放重建），DSH 重启后重开旧会话从上次边界**续提**；但插件中途挂载的新会话或从没提取过的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
 - **六条规格边界**：① 去抖合并+cursor 推进 → `lib/state.js`；② 写入边界（仅 .md、包含性强制、模型永不直接碰盘）→ `lib/extract.js`；③ 文件名安全 → `lib/filename.js`；④ 注入预算 → `lib/manifest.js`；⑤ 触发门槛 → `lib/transcript.js`；⑥ 防自反馈（提取 request-only + 机器来源判据：任意插件的注入与 instruction/summary/tool 等系统性消息都不算用户话）→ `lib/index.js` / `lib/transcript.js`。
@@ -390,11 +434,11 @@ cordis entry config（见 `cordis.patch.yml`）：
 ## 可观测与运维
 
 - **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
-- **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（嵌入召回配置，含生效的 `baseUrl`）；面板设置页有「管道健康卡」承载以上全部。
-- **提取运行日志面（v0.4.1）**：`/state` 的 `extractionLog` 字段——`runs`（最近 30 条结算记录）/ `unrecovered`（失败且未被后续补上的区间）/ `abandoned` 与 `abandonedCount`（结构性失败被显式放弃、不再重试的区间数与清单）；数据源即 `<storageRoot>/extraction-journal.jsonl`。`settings.corrupt`（开关文件解析失败标记）、`recentKeepDays`（近期动态保留天数）、`extractionTimeoutMs`（单次提取超时）也在 `/state` 里可观测。
-- **会话补提面（v0.4.2）**：`GET /dsh-keepsake/api/sessions/pending`（`hostSupported` + `items[]`，每条带 `sessionId` / `from` / `to` / `at` / `reason` / `kind`（failed / abandoned）/ `sessionAvailable`）；`POST /dsh-keepsake/api/sessions/recover`（202 异步，409 单飞 / 404 会话不在 / 503 宿主未提供会话持久化）；`/state` 的 `recover` 字段（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`）观测执行进度。
+- **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback；另有打分门与脱敏的生效口径五键——`gateEnabled` / `gateMinScore` / `idleDelayMs` / `maxRunsPerSession` / `redactionEnabled`）与顶层 `injectMaxChars` / `injectMaxTokens`（注入双预算）/ `embeddingConfig`（嵌入召回配置，含生效的 `baseUrl`）；面板设置页有「管道健康卡」承载以上全部。
+- **提取运行日志面（v0.4.1）**：`/state` 的 `extractionLog` 字段——`runs`（最近 30 条结算记录）/ `unrecovered`（失败且未被后续补上的区间）/ `abandoned` 与 `abandonedCount`（结构性失败被显式放弃、不再重试的区间数与清单）；数据源即 `<storageRoot>/extraction-journal.jsonl`，结算行含脱敏命中数 `redacted`（有命中才写）。`settings.corrupt`（开关文件解析失败标记）、`recentKeepDays`（近期动态保留天数）、`extractionTimeoutMs`（单次提取超时）也在 `/state` 里可观测。
+- **会话补提面（v0.4.2）**：`GET /dsh-keepsake/api/sessions/pending`（`hostSupported` + `items[]`，每条带 `sessionId` / `from` / `to` / `at` / `reason` / `kind`（failed / abandoned）/ `sessionAvailable`）；`POST /dsh-keepsake/api/sessions/recover`（202 异步，409 单飞 / 404 会话不在 / 503 宿主未提供会话持久化）；`/state` 的 `recover` 字段（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`，v0.5.0 增自动补提四键 `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger`——`lastAutoTrigger` 记录触发面 `disposed` / `turn/end` / `startup` / `manual`）观测执行进度。
 - **记忆整理面（v0.4.2）**：`GET /dsh-keepsake/api/maintenance/suggestions`（`duplicates` / `stale` / `indexHealth`（`dangling` / `orphans` / `emptyCategories`）/ `counts` / `generatedAt`）；`POST /dsh-keepsake/api/maintenance/repair-index`（`fixed` 已应用动作明细数组 / `fixedCount` / `unchanged`）。
-- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败 / 变更节流 / 取代）。渲染失败显式计入 `renderFailures`（不静默丢）。
+- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；v0.5.0 新增 token 口径两计数——`lastTokens`（最近一次注入 token 估算）/ `totalTokens`（累计，CJK 感知口径，见 `lib/tokens.js`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败 / 变更节流 / 取代 / token 预算占用「最近 ≈X tokens / 上限 Y」，`injectMaxTokens` 为 0 时退回字符展示）。渲染失败显式计入 `renderFailures`（不静默丢）。
 - **写入安全面（v0.4.0）**：`/state` 的 `safety` 字段共十个：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行摘要，「快照」「回收站」两页可查可恢复。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
@@ -423,7 +467,7 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **API 冒烟**：`tools/api-walkthrough.sh` 对一次性测试实例把全部 REST 端点走一遍（默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`；会清空目标实例的记忆数据）。
 - **参与贡献**：开发环境、提交约定与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本变更记录见 [CHANGELOG.md](CHANGELOG.md)；后续方向与「有意不做」清单见 [ROADMAP.md](ROADMAP.md)。
 
-模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入）、`lib/inject-channel.js`（注入块拼装/预算裁剪/来源判据）、`lib/state.js`（提取状态机）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
+模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入/自动补提）、`lib/inject-channel.js`（注入块拼装/双预算裁剪/来源判据）、`lib/state.js`（提取状态机：单飞/空闲延迟/每会话上限）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip，含第一道脱敏）、`lib/redact.js`（脱敏纯函数）、`lib/extract-gate.js`（打分门纯函数）、`lib/tokens.js`（CJK 感知 token 估算）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
 
 ## 已知限制
 
@@ -436,8 +480,11 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **人设/称呼无逐次编辑历史；条目保存与删除有后悔药**：PUT persona / PUT addressing 仍是直接替换旧文——粘贴错内容保存即丢旧文（仅损坏档覆盖前会备份 `*.corrupt-<ts>`），覆盖前请自行先导出兜底；而 **PUT entry（保存条目）覆盖前会先把旧文留档到快照**（成功响应带 `preSaveSnapshotId`，可在「快照」页找回），**DELETE entry（删除条目）会移入回收站**（默认保留 30 天，可在「回收站」页找回）。批量破坏路径（reset/import/restore）另有自动全量备份。
 - **提取只处理存活期间新完成的轮次，不回扫历史**（有意保留）：插件中途挂载或从没提取过的会话不会主动回补历史轮次——需该会话继续产生新轮次才接着（跨重启续提只覆盖"曾提取过、边界已落盘"的会话）。
 - **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 22 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
-- **注入块在会话内可能累积**：记忆内容大幅变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；v0.4.2 起块首取代声明让模型只认最新一块、变更节流也压低了补发频率，但历史块仍占上下文。单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。
-- **`injectMaxChars` 是注入总预算（含召回块）**：开启召回时主块为召回块让位，两段合计不超过该值；可见截断提示行也计入预算（仅当预算小到连包裹与提示行都装不下时才允许轻微越界）。
+- **注入块在会话内可能累积**：记忆内容大幅变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；v0.4.2 起块首取代声明让模型只认最新一块、变更节流也压低了补发频率，但历史块仍占上下文。单块受 `injectMaxChars` 与 `injectMaxTokens` 双预算约束，`/state.injection.resends` 可观测累积速度。
+- **`injectMaxChars` 是注入总预算（含召回块）**：开启召回时主块为召回块让位，两段合计不超过该值；可见截断提示行也计入预算（仅当预算小到连包裹与提示行都装不下时才允许轻微越界）。token 口径（`injectMaxTokens`）语义相同：召回块计入总预算、主块让位，且**召回块自身不做裁剪**——召回块超出剩余总预算时会被整块发出、只压主块（与字符口径既有语义一致）。
+- **token 估算是 CJK 感知的近似值，非精确分词**：`injectMaxTokens` 与召回块预算用的是码点级估算（CJK/全角字 ≈1.5 token/字，其余 ≈0.25 token/字，向上取整），不同模型分词器差异会带来偏差——预算是防挤爆上下文的护栏，不是精确计费。
+- **脱敏是正则尽力而为**：内置 7 类固定模式覆盖常见密钥形态，但不保证穷尽——非标准形态的密钥、拆散在多行的凭据、或被截断切开的令牌都可能漏检（脱敏在截断之前执行已降低此类概率，但不为零）；同时正则替换可能误伤正文语义，典型是**内网 IPv4 一律替换**：正文里以 `10.0.0.5` / `192.168.1.1` 这类地址作为讨论对象（如网络排障记录）会被换成 `[redacted]`。另有两处已知偏差：「键值赋值」形态只替换值的首个空白片段（含空格的未加引号值会被部分保留，引号包裹的值整段替换）；URL userinfo 里的密码若含 @ 只按首个 @ 截断。模式清单固定、不支持自定义正则（防正则回溯风险），见[「内容脱敏」](#内容脱敏密钥类内容进不了记忆与提示词)。
+- **脱敏与硬事实守护的交互噪声**：记忆文件里已落盘的旧密钥（脱敏功能开启前写入的）与新提取的 `[redacted]` 占位符比对时，硬事实守护会把「十六进制标识消失」记为一次 hardfact 丢失告警（`warn` 模式下只是日志与计数噪声，不改数据；`block` 模式可能回滚该 op）。这类噪声随旧密钥条目被正常更新而消失。
 - **防自食判据的边界（有意从窄）**：提取侧按 `source.kind` 排除两类：任意插件的注入（`plugin:*`）与已知系统性消息（inject / instruction / summary / tool 等）；其余来源（含来源缺失、`plugin`、`steer` / `followup`）一律按真人内容对待——判据故意从窄，因为假阴性（机器话当真人）最多多跑一轮提取，假阳性（真人话当机器）会丢记忆。
 - **同源替换的节流取舍**：记忆内容的小幅变化（相似度 ≥0.98 或字符差很小）先攒着不注入，等下次大变更或上下文压缩后随全量块补发——**等长的小幅改写（如改个错别字）可能一段时间内不进模型视野**；这是 append-only 历史下"少发"的代价，`/state.injection.throttled` 可观测节流频率。另一个取舍：注入块开头靠取代声明作废旧块，宿主历史里旧块本身撤不回，视野内多块时依赖模型遵循"只认最新"的声明。
 - **会话补提的范围限制**：补提区间必须整体落在会话可读范围内——超大会话读回有事件数上限（超限截断保留前段），被截断的**尾部**区间显式拒绝补提、留在待补清单里（不会假装补过）；宿主未提供会话持久化服务时补提整体不可用（如实提示）。

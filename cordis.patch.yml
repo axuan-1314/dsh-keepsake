@@ -13,7 +13,23 @@
         # 注入通道（v0.2.0）：message=durable 用户消息通道（默认，全 preset 生效，
         # 根治 minimal 预设 complete:true 静默丢注入）；section=旧四段 systemPrompt 注入（一键回滚）。
         injectChannel: message
-        injectMaxChars: 60000
+        injectMaxChars: 30000
+        # 注入总预算的 token 口径（CJK 感知估算，含召回块、主块让位，与 injectMaxChars 双上限取严者）。
+        # 0 = 关闭 token 预算，退回纯字符口径。
+        injectMaxTokens: 16000
+        # 内容脱敏总开关（默认开）：提取提示词与落盘写入两道位置把密钥类内容替换为 [redacted]。
+        # false = 完全不脱敏（回旧行为）。模式为内置 7 类固定清单，不支持自定义正则（防回溯）。
+        redactionEnabled: true
+        # 失败区间自动补提（默认开）：会话关闭 / 轮次完成 / 启动清扫三个时机自动补提未恢复区间。
+        # 只补 failed，已放弃（abandoned）的区间不自动重试；与面板手动按钮单飞互斥。
+        autoRecoverEnabled: true
+        autoRecoverCooldownMs: 300000   # 同一区间两次自动补提尝试的最小间隔（毫秒）
+        # 提取触发门槛（默认开）：打分门（用户词数 + 2×工具种类 + 2×真人轮次 < 阈值不调模型，
+        # 记 skipped/thin-evidence）+ 空闲延迟（合并突发轮次；0=立即）+ 每会话提取次数上限（0=不限）。
+        extractGateEnabled: true
+        extractGateMinScore: 6
+        extractIdleDelayMs: 3000
+        extractMaxRunsPerSession: 50
         # 语义召回（可选，默认关）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦检索。
         # 自带模型：配 embeddingBaseUrl + embeddingModel（任意 OpenAI 兼容嵌入服务，本地/远程均可）即可；
         # 缺一启动即抛（fail loud）。不配置则不产生任何外部调用（记忆文本不出本机）。

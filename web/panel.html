@@ -1178,7 +1178,12 @@ function buildPipeHealthCard(data) {
   const safetyLine = L.safetySummaryText(data.safety);
   if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
   const injectionLine = L.injectionSummary(data.injection);
-  if (injectionLine) parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}</div>`);
+  if (injectionLine) {
+    // 预算占用段：token 预算 >0 且服务端带 lastTokens 时附「最近 ≈X tokens / 上限 Y」；
+    // 否则空串（0=禁用 token 预算档/旧服务端）——维持纯字符展示，不印"上限 0"。
+    const budgetText = L.injectionBudgetText(data.injection, data.injectMaxTokens);
+    parts.push(`<div class="meta" style="margin:4px 0 0">注入：${esc(injectionLine)}${budgetText ? ` · ${esc(budgetText)}` : ""}</div>`);
+  }
   // 最近提取记录（runs 空/缺 extractionLog = 旧版宿主或尚无提取，整块不渲染）
   const logBlock = pipeExtractionLogHtml(data);
   if (logBlock) parts.push(logBlock);

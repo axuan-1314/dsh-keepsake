@@ -31,6 +31,7 @@ import {
   healthPriorityLevel,
   healthPriorityWord,
   INDEX_HEALTH_COLUMNS,
+  injectionBudgetText,
   injectionExtraText,
   injectionSummary,
   importTitleOf,
@@ -950,6 +951,35 @@ test("injectionSummary：附加 throttled/superseded 两计数（既有输出零
   assert.equal(injectionSummary({ count: 0, renderFailures: 2 }), "注入异常 渲染失败 2 次");
   assert.equal(injectionSummary(null), null);
   assert.equal(injectionSummary({ count: 0 }), null);
+});
+
+// ---- 注入预算占用（token 口径；上限 0/缺失=退纯字符展示） ----
+
+test("injectionBudgetText：`最近 ≈X tokens / 上限 Y`；Y=0/上限缺失/无 lastTokens → 空串（维持纯字符展示）", () => {
+  // 正常：最近一次注入估算 token + 上限（取整防脏数据小数）
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, 16000), "最近 ≈812 tokens / 上限 16000");
+  assert.equal(injectionBudgetText({ count: 1, lastTokens: 0 }, 4096), "最近 ≈0 tokens / 上限 4096", "空块也如实报 0");
+  assert.equal(injectionBudgetText({ count: 2, lastTokens: 100.7 }, 4096.9), "最近 ≈100 tokens / 上限 4096", "小数向下取整");
+  // Y=0 = 禁用 token 预算（回滚档）：不显 token 段，不印"上限 0"
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, 0), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, "0"), "");
+  // 旧数据/缺字段容错：旧服务端无 lastTokens / 无上限 / 尚未注入 → 空串，绝不抛
+  assert.equal(injectionBudgetText({ count: 3 }, 16000), "", "无 lastTokens（旧服务端）→ 空串");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, void 0), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, null), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, -5), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: 812 }, "x"), "");
+  assert.equal(injectionBudgetText({ count: 0, lastTokens: 812 }, 16000), "", "尚未注入与 injectionSummary 同口径不装样子");
+  assert.equal(injectionBudgetText({ count: "x", lastTokens: 812 }, 16000), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: "x" }, 16000), "");
+  assert.equal(injectionBudgetText({ count: 3, lastTokens: -1 }, 16000), "");
+  // 畸形 injection（旧宿主/脏数据）→ 空串，绝不抛
+  assert.equal(injectionBudgetText(null, 16000), "");
+  assert.equal(injectionBudgetText(void 0, 16000), "");
+  assert.equal(injectionBudgetText("x", 16000), "");
+  assert.equal(injectionBudgetText([], 16000), "");
+  // 面板实际调用形态：maxTokens 来自 /state.injectMaxTokens（旧宿主为 null）
+  assert.equal(injectionBudgetText({ count: 1, lastTokens: 500 }, null), "");
 });
 
 // ---- 列表分页（分类页/长期记忆列表共用） ----

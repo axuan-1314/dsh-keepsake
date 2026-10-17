@@ -12,6 +12,7 @@ import {
   extractionNoticeText,
   extractionRangeText,
   extractionStreakOf,
+  injectionBudgetText,
   injectionSummary,
   formatNoticeText,
   ladderNoteOf,
@@ -491,6 +492,39 @@ test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱
   // 兜底侧的节流/取代文案模板锚（任一边改模板立刻红）
   assert.ok(clientSrc.includes("`变更节流 ${throttled} 次`"));
   assert.ok(clientSrc.includes("`取代 ${superseded} 次`"));
+});
+
+test("防漂移：注入预算兜底 injectionBudgetTextFallback 与实现表驱动一致（Y=0/缺字段→空串）", () => {
+  const fn = extractFactoryFn(clientSrc, "injectionBudgetTextFallback", "injection, maxTokens");
+  const cases = [
+    // 正常：最近 tokens + 上限（含小数取整）
+    [{ count: 3, lastTokens: 812 }, 16000],
+    [{ count: 1, lastTokens: 0 }, 4096],
+    [{ count: 2, lastTokens: 100.7 }, 4096.9],
+    // Y=0 = 禁用 token 预算（回滚档）：不显 token 段
+    [{ count: 3, lastTokens: 812 }, 0],
+    [{ count: 3, lastTokens: 812 }, "0"],
+    // 旧数据/缺字段容错：空串而非半截文案
+    [{ count: 3 }, 16000],
+    [{ count: 3, lastTokens: 812 }, void 0],
+    [{ count: 3, lastTokens: 812 }, null],
+    [{ count: 3, lastTokens: 812 }, -5],
+    [{ count: 3, lastTokens: 812 }, "x"],
+    [{ count: 0, lastTokens: 812 }, 16000],
+    [{ count: "x", lastTokens: 812 }, 16000],
+    [{ count: 3, lastTokens: "x" }, 16000],
+    [{ count: 3, lastTokens: -1 }, 16000],
+    // 畸形 injection
+    [null, 16000], [void 0, 16000], ["x", 16000], [[], 16000],
+  ];
+  for (const [inj, max] of cases) {
+    assert.equal(fn(inj, max), injectionBudgetText(inj, max), `兜底与实现输出不一致：injection=${JSON.stringify(inj)} maxTokens=${String(max)}`);
+  }
+  assert.match(clientSrc, /LOGIC \? LOGIC\.injectionBudgetText/, "注入预算文案必须经 panel-logic 优先分发");
+  assert.match(clientSrc, /injectionBudgetText\(state\.injection, state\.injectMaxTokens\)/, "门牌消费锚：上限取 /state.injectMaxTokens");
+  assert.match(panelSrc, /L\.injectionBudgetText\(data\.injection, data\.injectMaxTokens\)/, "健康卡消费锚：上限取 /state.injectMaxTokens");
+  // 兜底侧的模板锚（任一边改模板立刻红）
+  assert.ok(clientSrc.includes("`最近 ≈${Math.floor(last)} tokens / 上限 ${Math.floor(limit)}`"), "兜底模板锚必须逐字在位");
 });
 
 // ---- 存储格式只读告警防漂移 ----

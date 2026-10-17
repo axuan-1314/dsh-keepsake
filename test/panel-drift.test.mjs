@@ -56,12 +56,12 @@ test("面板漂移：safety 六函数在场且容错（旧宿主无 /state.safet
 //   面板消费的每个新纯函数必须在 panel-logic 在场且容错（旧宿主字段缺失不炸）；
 //   同时在 panel.html 有对应的消费锚（不接线=纯函数白做）。
 
-test("面板漂移：新纯函数全部在场（补提/整理/优先级/删除/健康/注入/分页/焦点）", () => {
+test("面板漂移：新纯函数全部在场（补提/整理/优先级/删除/健康/注入/预算/分页/焦点）", () => {
   for (const name of [
     "pendingItemLabel", "pendingHostNote",
     "duplicateScorePct", "staleDaysText", "maintenanceSuggestionsEmpty", "repairIndexResultText", "maintenanceCountsText",
     "healthPriorityLevel", "healthPriorityWord", "canShowNoFailureLine",
-    "deleteOutcomeOf", "settingsCoercionNote", "injectionExtraText",
+    "deleteOutcomeOf", "settingsCoercionNote", "injectionExtraText", "injectionBudgetText",
     "paginateOf", "paginationText", "trapFocus",
   ]) {
     assert.equal(typeof L[name], "function", `缺 ${name}`);
@@ -92,9 +92,11 @@ test("面板漂移：新纯函数旧宿主容错（字段缺失返回安全值�
   assert.equal(L.canShowNoFailureLine("green"), true);
   // 删除三态容错（无 existed 字段按失败，不谎报成功）
   assert.equal(L.deleteOutcomeOf(null).kind, "failed");
-  // 设置健康 / 注入计数容错
+  // 设置健康 / 注入计数 / 注入预算容错
   assert.equal(L.settingsCoercionNote(null), "");
   assert.equal(L.injectionExtraText(null), "");
+  assert.equal(L.injectionBudgetText(null, 16000), "");
+  assert.equal(L.injectionBudgetText({ count: 1, lastTokens: 10 }, void 0), "", "上限缺失 → 空串（旧宿主）");
   // 分页 / 焦点陷阱在场且是函数
   assert.equal(L.paginateOf(0, 0).pageCount, 0);
   // trapFocus 依赖 document 全局：此处给最小桩，验证它返回卸载函数（Node 无 DOM）
@@ -113,6 +115,7 @@ test("面板漂移：新面板消费锚全部接线（L.* 调用在位防白做�
     "L.maintenanceSuggestionsEmpty(", "L.duplicateScorePct(", "L.staleDaysText(", "L.repairIndexResultText(", "L.maintenanceCountsText(", "L.MAINTENANCE_EMPTY_TEXT", "L.INDEX_HEALTH_COLUMNS",
     "L.healthPriorityLevel(", "L.healthPriorityWord(", "L.canShowNoFailureLine(",
     "L.deleteOutcomeOf(", "L.settingsCoercionNote(",
+    "L.injectionBudgetText(",
     "L.paginateOf(", "L.paginationText(", "L.trapFocus(",
   ]) {
     assert.ok(panelHtml.includes(anchor), `panel.html 未接线 ${anchor}（纯函数白做）`);
@@ -121,4 +124,6 @@ test("面板漂移：新面板消费锚全部接线（L.* 调用在位防白做�
   // 面板不直接调 injectionExtraText——所以钉「共享函数已含两计数」而非直连调用）
   assert.ok(panelHtml.includes("L.injectionSummary("), "面板必须消费共享 injectionSummary（含 throttled/superseded 段）");
   assert.match(L.injectionSummary({ count: 3, lastChars: 100, throttled: 2, superseded: 1 }) ?? "", /变更节流 2 次 \/ 取代 1 次/, "共享摘要必须含两计数人话文案");
+  // 注入预算占用：消费锚 + 上限取自 /state.injectMaxTokens（数据源不对=白做）
+  assert.ok(panelHtml.includes("L.injectionBudgetText(data.injection, data.injectMaxTokens)"), "面板注入行必须消费 injectionBudgetText 且上限取 /state.injectMaxTokens");
 });

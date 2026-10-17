@@ -320,7 +320,7 @@ test("结构钉：设置页保留策略三输入 + 正整数预检 + PUT /settin
 test("结构钉：近期动态过期天数传 recentKeepDays + 分类页搜索 + query 保留", () => {
   assert.match(panelSrc, /L\.recentExpireDays\(e\.timestamp, keepDays\)/, "过期天数按保留策略传参（非写死 30）");
   assert.match(panelSrc, /function recentKeepDaysOf\(st\)/, "保留天数 tolerant 取值");
-  assert.match(panelSrc, /async function renderCategoryPage\(cat, title, query = "", page = 0\)/, "分类页带检索词与页码参数");
+  assert.match(panelSrc, /async function renderCategoryPage\(cat, title, query = "", pageIndex = 0\)/, "分类页带检索词与页码参数（参数名 pageIndex，不得遮蔽页面容器）");
   assert.match(panelSrc, /\$q\.value = query; \/\/ reload 后保留并回填检索词/, "长/分类页 reload 回填 query");
   assert.match(panelSrc, /没有匹配「\$\{esc\(q\)\}」的条目/, "搜索无命中回显 query");
 });
@@ -578,4 +578,14 @@ test("结构钉：记忆整理卡锚点（data-maintenance）+ 设置页装配",
   assert.match(panelSrc, /page\.querySelector\("\[data-maintenance\]"\)\.replaceWith\(buildMaintenanceCard\(\)\)/, "设置页装配记忆整理卡");
   assert.match(panelSrc, /id = "data-pending-recover"/, "补提卡锚点在场");
   assert.match(panelSrc, /data-pendingRecover/, "健康卡内补提占位锚在场");
+});
+
+test("结构钉：页面容器不得被参数遮蔽（页码参数名固定 pageIndex）", () => {
+  // 病史：分页改造把列表页的页码参数命名为 page，遮蔽模块级 const page = $("page")（页面容器），
+  // page.innerHTML 打在数字上，两个列表页整页渲染当场抛死。签名与容器绑定分开钉住。
+  assert.match(panelSrc, /const page = \$\("page"\)/, "页面容器绑定在场");
+  assert.match(panelSrc, /renderCategoryPage\(cat, title, query = "", pageIndex = 0\)/, "分类页页码参数名 pageIndex");
+  assert.match(panelSrc, /renderLongTermPage\(query = "", pageIndex = 0\)/, "长期记忆页页码参数名 pageIndex");
+  const shadowing = panelSrc.match(/function\s+[A-Za-z0-9_$]+\s*\([^)]*\bpage\s*=/g) || [];
+  assert.deepEqual(shadowing, [], "不得出现名为 page 的函数参数（会遮蔽页面容器）");
 });

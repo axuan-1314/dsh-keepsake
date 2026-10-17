@@ -685,7 +685,7 @@ function pagerHtml(pg) {
       <span class="meta" data-pagerText>${L.paginationText(pg)}</span>
     </div>`;
 }
-async function renderCategoryPage(cat, title, query = "", page = 0) {
+async function renderCategoryPage(cat, title, query = "", pageIndex = 0) {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = title;
   pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天，可在设置页调整）" : "";
@@ -706,7 +706,7 @@ async function renderCategoryPage(cat, title, query = "", page = 0) {
   if (seq !== pageRenderSeq) return; // 旧渲染丢弃：用户已切到别的路由
   const all = data.entries ?? [];
   let current = query;
-  let currentPage = page;
+  let currentPage = pageIndex;
   // reload 后保留检索词与页码（翻页不丢上下文）
   const reload = () => { renderCategoryPage(cat, title, current, currentPage); refreshCounts(); };
   page.innerHTML = `
@@ -768,7 +768,7 @@ async function renderCategoryPage(cat, title, query = "", page = 0) {
 }
 
 // ============ 页面：长期记忆（检索增强 + 分页） ============
-async function renderLongTermPage(query = "", page = 0) {
+async function renderLongTermPage(query = "", pageIndex = 0) {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = "长期记忆";
   pageSub.textContent = "跨会话保存的重要信息与结论，不会过期";
@@ -784,7 +784,7 @@ async function renderLongTermPage(query = "", page = 0) {
   if (seq !== pageRenderSeq) return;
   const all = data.entries ?? [];
   let current = query;
-  let currentPage = page;
+  let currentPage = pageIndex;
   const reload = () => { renderLongTermPage(current, currentPage); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">

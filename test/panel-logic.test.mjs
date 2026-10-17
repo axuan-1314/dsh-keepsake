@@ -5,14 +5,22 @@ import { test } from "node:test";
 import {
   EXTRACTION_BUCKET_KEYS,
   EXTRACTION_REASON_LABELS,
+  MAINTENANCE_EMPTY_TEXT,
+  PAGE_SIZE,
   PERSONA_PRESETS,
+  PENDING_EMPTY_TEXT,
+  PENDING_RECOVERING_TEXT,
+  PENDING_UNAVAILABLE_NOTE,
   abandonedNoticeText,
   applyThemeVars,
   buildImportRequest,
+  canShowNoFailureLine,
   collectThemeVarsFromDoc,
   decideLadderTier,
+  deleteOutcomeOf,
   detectImportFormat,
   diagnosticTextOf,
+  duplicateScorePct,
   embeddingClearActionVisible,
   extractionNoticeText,
   extractionRangeText,
@@ -20,22 +28,36 @@ import {
   extractionRunLines,
   extractionStreakOf,
   filterEntries,
+  healthPriorityLevel,
+  healthPriorityWord,
+  INDEX_HEALTH_COLUMNS,
+  injectionExtraText,
   injectionSummary,
   importTitleOf,
   ladderFallbackOf,
   ladderNoteOf,
+  maintenanceCountsText,
+  maintenanceSuggestionsEmpty,
   modelShortName,
+  paginateOf,
+  paginationText,
   panelBackAction,
   parseSourceText,
+  pendingHostNote,
+  pendingItemLabel,
   pipeHealthLevel,
   previewRowsOf,
   reasonLabelOf,
   recentAgeOf,
   recentExpireDays,
   relativeTimeOf,
+  repairIndexResultText,
   safetyLocationText,
   safetySummaryText,
   serializeEntries,
+  settingsCoercionNote,
+  staleDaysText,
+  trapFocus,
   utf8Length,
   unrecoveredTextFromLog,
   validateEmbeddingDraft,
@@ -683,4 +705,382 @@ test("safetySummaryText：hardfactBlocks>0 显示「硬事实拦截 N」（与 v
   assert.equal(safetySummaryText(null), null);
   assert.equal(safetySummaryText(void 0), null);
   assert.equal(safetySummaryText("x"), null);
+});
+
+// ---- 会话补提清单（/sessions/pending 契约行模型） ----
+
+test("pendingItemLabel：未恢复/已放弃人话标签 + 区间不露 seq + reason 走共享映射 + 相对时间", () => {
+  const now = 1730000000000;
+  const failed = pendingItemLabel({
+    sessionId: "session-abc", from: 473, to: 478,
+    at: new Date(now - 300000).toISOString(), reason: "llm-error", kind: "failed",
+    sessionAvailable: true,
+  }, now);
+  assert.equal(failed, "未恢复区间 · 第 473 轮对话之后的内容 · 5 分钟前 · LLM 调用失败");
+  // abandoned 换标签（结论不同：不再自动重试），reason 同样中文化
+  assert.match(
+    pendingItemLabel({ sessionId: "s", from: 10, at: now, reason: "no-cwd", kind: "abandoned" }, now),
+    /^已放弃区间 · 第 10 轮对话之后的内容 · 刚刚 · 会话无工作区$/,
+  );
+  // 未收录 reason 走兜底美化（连字符转空格），不糊 token
+  assert.match(
+    pendingItemLabel({ sessionId: "s", from: 1, at: now, reason: "quota-exceeded", kind: "failed" }, now),
+    /quota exceeded$/,
+  );
+  // 无 reason → "—"（不留空）
+  assert.match(pendingItemLabel({ sessionId: "s", from: 1, at: now, kind: "failed" }, now), /· —$/);
+  // from 非法不编造轮次；kind 缺失按「待补提」如实降级
+  assert.match(pendingItemLabel({ sessionId: "s", at: now, kind: "weird" }, now), /^待补提区间 · 一段对话内容/);
+  assert.doesNotMatch(pendingItemLabel({ sessionId: "s", at: now, kind: "failed" }, now), /seq/, "面板文案不露 seq 内部术语");
+  // 坏行 → null（调用方跳过，不渲染空行）
+  assert.equal(pendingItemLabel(null), null);
+  assert.equal(pendingItemLabel(void 0), null);
+  assert.equal(pendingItemLabel("x"), null);
+  assert.equal(pendingItemLabel(42), null);
+});
+
+test("补提清单常量：空态/忙碌/不可读说明文案在位（不空承诺）", () => {
+  assert.equal(PENDING_EMPTY_TEXT, "没有待补的区间");
+  assert.equal(PENDING_RECOVERING_TEXT, "补提中…");
+  assert.equal(PENDING_UNAVAILABLE_NOTE, "该会话当前不可读，重开会话后可自动续提");
+  // hostSupported=false 才出说明；true/缺失（旧宿主）不渲染
+  assert.match(pendingHostNote(false), /不支持读取历史会话/);
+  assert.equal(pendingHostNote(true), "");
+  assert.equal(pendingHostNote(void 0), "");
+});
+
+// ---- 记忆整理建议（/maintenance/suggestions 契约） ----
+
+test("duplicateScorePct：0..1 → 整数百分比；非法与负值按 0（不印 NaN）", () => {
+  assert.equal(duplicateScorePct(0.98), 98);
+  assert.equal(duplicateScorePct(0.9), 90);
+  assert.equal(duplicateScorePct(0.5), 50);
+  assert.equal(duplicateScorePct(1), 100);
+  assert.equal(duplicateScorePct(1.5), 100, "超 1 夹到 100，不印 150%");
+  assert.equal(duplicateScorePct(0), 0);
+  assert.equal(duplicateScorePct(-1), 0);
+  assert.equal(duplicateScorePct("x"), 0);
+  assert.equal(duplicateScorePct(null), 0);
+  assert.equal(duplicateScorePct(void 0), 0);
+});
+
+test("staleDaysText：stale 报 N 天未更新；unknown-age 与坏值如实说「年龄不可知」", () => {
+  assert.equal(staleDaysText({ name: "a.md", kind: "stale", days: 137 }), "137 天未更新");
+  assert.equal(staleDaysText({ name: "a.md", kind: "unknown-age", lastModifiedAt: null, days: null }), "年龄不可知");
+  // days 缺失/非法（旧宿主或脏数据）：不拿 0 冒充「0 天未更新」
+  assert.equal(staleDaysText({ name: "a.md", kind: "stale" }), "年龄不可知");
+  assert.equal(staleDaysText({ name: "a.md", kind: "stale", days: "x" }), "年龄不可知");
+  assert.equal(staleDaysText({ name: "a.md", kind: "stale", days: -5 }), "年龄不可知");
+  assert.equal(staleDaysText(null), "年龄不可知");
+  assert.equal(staleDaysText("x"), "年龄不可知");
+});
+
+test("maintenanceSuggestionsEmpty：三组全空才空态；任一组有内容即非空；畸形容错", () => {
+  assert.equal(maintenanceSuggestionsEmpty(null), true);
+  assert.equal(maintenanceSuggestionsEmpty({}), true);
+  assert.equal(maintenanceSuggestionsEmpty({ duplicates: [], stale: [], indexHealth: { dangling: [], orphans: [], emptyCategories: [] } }), true);
+  assert.equal(maintenanceSuggestionsEmpty({ duplicates: [{ a: "x", b: "y", score: 0.9, why: "w" }] }), false);
+  assert.equal(maintenanceSuggestionsEmpty({ stale: [{ name: "a", kind: "stale", days: 100 }] }), false);
+  assert.equal(maintenanceSuggestionsEmpty({ indexHealth: { dangling: [{ category: "c", line: "l", name: "n" }] } }), false);
+  assert.equal(maintenanceSuggestionsEmpty({ indexHealth: { orphans: [{ category: "c", name: "n" }] } }), false);
+  assert.equal(maintenanceSuggestionsEmpty({ indexHealth: { emptyCategories: ["c"] } }), false);
+  // 非数组脏值不当内容（不炸，按空算）
+  assert.equal(maintenanceSuggestionsEmpty({ duplicates: "x", stale: 3, indexHealth: "y" }), true);
+  assert.equal(MAINTENANCE_EMPTY_TEXT, "暂无建议");
+});
+
+test("INDEX_HEALTH_COLUMNS：三列（悬挂行/漏登记/空分类）标题与口径说明", () => {
+  assert.deepEqual(INDEX_HEALTH_COLUMNS.map((c) => c.key), ["dangling", "orphans", "emptyCategories"]);
+  assert.deepEqual(INDEX_HEALTH_COLUMNS.map((c) => c.label), ["悬挂行", "漏登记", "空分类"]);
+});
+
+test("repairIndexResultText：数组列明细 / 数字报数 / 空与 unchanged → 无需修复 / 形状不明如实说", () => {
+  // 服务端最终契约：fixed=已应用动作明细数组 + fixedCount + unchanged
+  assert.equal(
+    repairIndexResultText({ ok: true, fixed: [{ type: "remove-line", category: "long-term", line: "- [x](g.md)" }, { type: "add-line", category: "work-profile", name: "n.md" }], fixedCount: 2, unchanged: false }),
+    "已修复 2 处：删悬挂行（long-term）、补登记（work-profile）",
+  );
+  // 真路由形状（服务端真发这三字段）：断言回显含「已修复 1 处」
+  assert.equal(
+    repairIndexResultText({ ok: true, fixed: [{ type: "remove-line", category: "legacy", line: "- [x](gone.md)" }], fixedCount: 1, unchanged: false }),
+    "已修复 1 处：删悬挂行（legacy）",
+  );
+  assert.equal(repairIndexResultText({ ok: true, fixed: [], fixedCount: 0, unchanged: true }), "无需修复：索引与磁盘已经对上账");
+  assert.equal(repairIndexResultText({ ok: true, fixed: [], fixedCount: 0 }), "无需修复：索引与磁盘已经对上账");
+  // 未知 type 原样报（不吞）——后端新增动作类型时面板不装懂
+  assert.match(repairIndexResultText({ fixed: [{ type: "reorder-line", category: "c" }] }), /reorder-line（c）/);
+  // 数字形态（旧服务端 fixed 为条数）：0 → 无需修复；N → 已修复 N 处
+  assert.equal(repairIndexResultText({ ok: true, fixed: 0, unchanged: false }), "无需修复：索引与磁盘已经对上账");
+  assert.equal(repairIndexResultText({ ok: true, fixed: 3 }), "已修复 3 处");
+  // 形状不明（缺字段/非对象）：如实「修复结果未知」，绝不冒充「无需修复」
+  assert.equal(repairIndexResultText({ ok: true }), "修复结果未知");
+  assert.equal(repairIndexResultText(null), "修复结果未知");
+  assert.equal(repairIndexResultText({ fixed: "x" }), "修复结果未知");
+});
+
+test("maintenanceCountsText：计数字段人话化 + truncated 补一行提示（不裸布尔）", () => {
+  assert.equal(
+    maintenanceCountsText({ entries: 12, entryTotal: 12, indexes: 8, indexTotal: 8, truncated: false }),
+    "计数：条目 12/12 · 索引 8/8",
+  );
+  // 截断：补一行人话（含「前 500 条」），不裸印 truncated true
+  assert.equal(
+    maintenanceCountsText({ entries: 500, entryTotal: 900, indexes: 8, indexTotal: 8, truncated: true }),
+    "计数：条目 500/900 · 索引 8/8。条目过多，建议基于部分数据（前 500 条）",
+  );
+  // 只有半数字段时如实显示
+  assert.equal(maintenanceCountsText({ entries: 5 }), "计数：条目 5");
+  assert.equal(maintenanceCountsText({ entryTotal: 5 }), "计数：条目总数 5");
+  // 空/脏值/非对象：容错不炸，报「暂不可用」
+  assert.equal(maintenanceCountsText(null), "计数暂不可用");
+  assert.equal(maintenanceCountsText({}), "计数暂不可用");
+  assert.equal(maintenanceCountsText({ entries: "x" }), "计数暂不可用");
+  // truncated 为 true 但无计数字段：仍如实报不可用（不裸布尔）
+  assert.equal(maintenanceCountsText({ truncated: true }), "计数暂不可用");
+});
+
+// ---- 健康卡状态优先级（绿红并置修正） ----
+
+test("healthPriorityLevel：数据损坏/只读 > 未恢复区间 > 已放弃 > 绿行（显式优先级）", () => {
+  // 最高优先级：数据损坏/只读（压过一切，哪怕同时有未恢复区间）
+  assert.equal(healthPriorityLevel({ corrupt: true, extractionLog: { unrecovered: [{ from: 1 }] } }), "corrupt");
+  assert.equal(healthPriorityLevel({ addressingCorrupt: true }), "corrupt");
+  assert.equal(healthPriorityLevel({ personaCorrupt: true }), "corrupt");
+  assert.equal(healthPriorityLevel({ format: { writable: false } }), "corrupt");
+  // 未恢复区间压过已放弃（failed 是承诺过要补的）
+  assert.equal(healthPriorityLevel({ extractionLog: { unrecovered: [{ from: 473 }], abandoned: [{ from: 10 }] } }), "unrecovered");
+  assert.equal(healthPriorityLevel({ extractionLog: { unrecovered: [{ from: 473 }] } }), "unrecovered");
+  // 只有已放弃 → abandoned
+  assert.equal(healthPriorityLevel({ extractionLog: { abandoned: [{ from: 10 }] } }), "abandoned");
+  // 一切正常（含旧宿主无 extractionLog）
+  assert.equal(healthPriorityLevel({}), "green");
+  assert.equal(healthPriorityLevel(null), "green");
+  assert.equal(healthPriorityLevel({ extractionLog: { unrecovered: [], abandoned: [] } }), "green");
+  assert.equal(healthPriorityLevel({ format: { writable: true } }), "green");
+  // 空数组不当有内容（旧宿主空形）
+  assert.equal(healthPriorityLevel({ extractionLog: "x" }), "green", "extractionLog 非对象按无（旧宿主/脏值）");
+});
+
+test("healthPriorityWord + canShowNoFailureLine：状态词第二编码；有未恢复/已放弃时绿行禁显", () => {
+  assert.equal(healthPriorityWord("corrupt"), "需处理");
+  assert.equal(healthPriorityWord("unrecovered"), "待补提");
+  assert.equal(healthPriorityWord("abandoned"), "有放弃");
+  assert.equal(healthPriorityWord("green"), "正常");
+  assert.equal(healthPriorityWord("bogus"), "正常", "未知级别回落正常（不崩）");
+  // 核心修正：只有 green 允许显示「最近无失败」
+  assert.equal(canShowNoFailureLine("green"), true);
+  assert.equal(canShowNoFailureLine("unrecovered"), false, "有未恢复区间 → 禁显绿行（并置自相矛盾）");
+  assert.equal(canShowNoFailureLine("abandoned"), false, "有已放弃区间 → 禁显绿行");
+  assert.equal(canShowNoFailureLine("corrupt"), false);
+});
+
+// ---- 删除三态判读（DELETE /entry 契约） ----
+
+test("deleteOutcomeOf：三态互不混同（不存在/已移入回收站/删除失败不抹列表）", () => {
+  // 态①：不存在 → 提示 + 刷新
+  assert.deepEqual(deleteOutcomeOf({ ok: true, existed: false, trashed: false }), {
+    kind: "missing", toast: "条目不存在（可能已被删除）", reload: true,
+  });
+  // 态②：已移入回收站 → 成功提示 + 刷新
+  assert.deepEqual(deleteOutcomeOf({ ok: true, existed: true, trashed: true, trashId: "t1" }), {
+    kind: "trashed", toast: "已移入回收站（可在回收站找回）", reload: true,
+  });
+  // 态③：删除失败（409 E_ENTRY_UNREADABLE / 500 E_ENTRY_DELETE_FAILED）→ 错误提示 + **不**刷新
+  const failed = deleteOutcomeOf({ existed: true, trashed: false, code: "E_ENTRY_DELETE_FAILED" });
+  assert.equal(failed.kind, "failed");
+  assert.equal(failed.toast, "未能删除，条目仍在原位");
+  assert.equal(failed.reload, false, "失败时不得刷新列表——原件还在，抹掉就是静默消失");
+  // 旧宿主无 existed 字段 → 按失败处理（不谎报成功）
+  assert.equal(deleteOutcomeOf({}).kind, "failed");
+  assert.equal(deleteOutcomeOf(null).kind, "failed");
+  // trashed 缺失（缺字段）不算成功：existed:true 但无 trashed:true
+  assert.equal(deleteOutcomeOf({ existed: true }).kind, "failed");
+});
+
+// ---- 设置健康提示（/state.settingsDiagnostics.coercedFields） ----
+
+test("settingsCoercionNote：N 项不合法已回默认（字段名）；空/缺失/非数组 → 空串不渲染", () => {
+  assert.equal(
+    settingsCoercionNote({ coercedFields: ["trashKeepDays", "recentKeepDays"] }),
+    "2 项设置值不合法已回默认（trashKeepDays、recentKeepDays），重存设置可修正",
+  );
+  // 超过 5 个字段：列前 5 个 + 总量（不无限铺开）
+  const many = settingsCoercionNote({ coercedFields: ["a", "b", "c", "d", "e", "f", "g"] });
+  assert.match(many, /7 项设置值不合法已回默认（a、b、c、d、e 等 7 项）/);
+  // 非字符串条目过滤掉（脏数据不出现在文案里）
+  assert.equal(settingsCoercionNote({ coercedFields: ["ok", null, 3, ""] }), "1 项设置值不合法已回默认（ok），重存设置可修正");
+  // 空/缺失/畸形 → ""（不渲染黄条）
+  assert.equal(settingsCoercionNote({}), "");
+  assert.equal(settingsCoercionNote({ coercedFields: [] }), "");
+  assert.equal(settingsCoercionNote(null), "");
+  assert.equal(settingsCoercionNote(void 0), "");
+  assert.equal(settingsCoercionNote("x"), "");
+  assert.equal(settingsCoercionNote({ coercedFields: [null, 3] }), "");
+});
+
+// ---- 注入面节流/取代计数（/state.injection.throttled/superseded） ----
+
+test("injectionExtraText：「变更节流 N 次 / 取代 N 次」；缺失或全零 → 空串不显示", () => {
+  assert.equal(injectionExtraText({ throttled: 3, superseded: 1 }), "变更节流 3 次 / 取代 1 次");
+  assert.equal(injectionExtraText({ throttled: 2 }), "变更节流 2 次");
+  assert.equal(injectionExtraText({ superseded: 5 }), "取代 5 次");
+  // 字段缺失（旧宿主）/ 零值 / 非数字 → 不渲染（不印 0 装饰）
+  assert.equal(injectionExtraText({}), "");
+  assert.equal(injectionExtraText({ throttled: 0, superseded: 0 }), "");
+  assert.equal(injectionExtraText({ throttled: "x" }), "");
+  assert.equal(injectionExtraText(null), "");
+  assert.equal(injectionExtraText("x"), "");
+  // 负数按 0（不出现「变更节流 -1 次」）
+  assert.equal(injectionExtraText({ throttled: -2 }), "");
+});
+
+test("injectionSummary：附加 throttled/superseded 两计数（既有输出零回归）", () => {
+  // 新计数进场，追加在丢段/渲染失败之后（顺序稳定）
+  assert.equal(
+    injectionSummary({ count: 3, lastChars: 1200, throttled: 2, superseded: 1 }),
+    "已注入 3 次 · 最近 1200 字符 · 变更节流 2 次 / 取代 1 次",
+  );
+  assert.equal(
+    injectionSummary({ count: 3, lastChars: 100, droppedSegments: 2, throttled: 1, superseded: 4 }),
+    "已注入 3 次 · 最近 100 字符 · 丢段 2 · 变更节流 1 次 / 取代 4 次",
+  );
+  // 零回归：无新计数字段时输出与旧版逐字一致
+  assert.equal(injectionSummary({ count: 3, lastChars: 1200 }), "已注入 3 次 · 最近 1200 字符");
+  assert.equal(injectionSummary({ count: 2, lastChars: 400, droppedSegments: 3, renderFailures: 1 }), "已注入 2 次 · 最近 400 字符 · 丢段 3 · 渲染失败 1");
+  assert.equal(injectionSummary({ count: 0, renderFailures: 2 }), "注入异常 渲染失败 2 次");
+  assert.equal(injectionSummary(null), null);
+  assert.equal(injectionSummary({ count: 0 }), null);
+});
+
+// ---- 列表分页（分类页/长期记忆列表共用） ----
+
+test("paginateOf：每页 50；越界回落末页；空列表 0 页；脏值不炸", () => {
+  assert.equal(PAGE_SIZE, 50);
+  // 53 条 → 2 页；第 1 页 50 条，第 2 页 3 条
+  const p0 = paginateOf(53, 0);
+  assert.deepEqual(p0, { total: 53, pageSize: 50, pageCount: 2, page: 0, start: 0, end: 50, hasPrev: false, hasNext: true });
+  const p1 = paginateOf(53, 1);
+  assert.equal(p1.start, 50);
+  assert.equal(p1.end, 53);
+  assert.equal(p1.hasPrev, true);
+  assert.equal(p1.hasNext, false);
+  // 恰好一页：无上一页/下一页
+  const one = paginateOf(50, 0);
+  assert.equal(one.pageCount, 1);
+  assert.equal(one.hasPrev, false);
+  assert.equal(one.hasNext, false);
+  // 空列表：0 页、区间空
+  const empty = paginateOf(0, 0);
+  assert.equal(empty.pageCount, 0);
+  assert.equal(empty.start, 0);
+  assert.equal(empty.end, 0);
+  assert.equal(empty.hasPrev, false);
+  assert.equal(empty.hasNext, false);
+  // 越界页码（删条目后旧页号还在）→ 末页，不是空页
+  assert.equal(paginateOf(53, 99).page, 1);
+  assert.equal(paginateOf(53, 99).end, 53);
+  assert.equal(paginateOf(53, -1).page, 0, "负数页回第 1 页");
+  assert.equal(paginateOf(53, 1.7).page, 1, "小数页向下取整");
+  assert.equal(paginateOf(53, "x").page, 0, "非数字页回第 1 页");
+  // total/pageSize 脏值防御
+  assert.equal(paginateOf(-5, 0).total, 0);
+  assert.equal(paginateOf("x", 0).total, 0);
+  assert.equal(paginateOf(53, 0, 0).pageSize, PAGE_SIZE, "非法 pageSize 回落默认");
+  assert.equal(paginateOf(10, 0, 3).pageCount, 4);
+});
+
+test("paginationText：「第 N/M 页 · 共 X 条」（M=0 时第 1/0 页不崩）", () => {
+  assert.equal(paginationText(paginateOf(53, 1)), "第 2/2 页 · 共 53 条");
+  assert.equal(paginationText(paginateOf(53, 0)), "第 1/2 页 · 共 53 条");
+  assert.equal(paginationText(paginateOf(0, 0)), "第 1/0 页 · 共 0 条");
+  assert.equal(paginationText(null), "第 1/0 页 · 共 0 条", "空输入不炸");
+});
+
+// ---- 弹窗焦点陷阱（四处弹窗复用） ----
+
+test("trapFocus：Tab 循环（首尾回卷）+ 焦点外拉回 + Esc 关闭；卸载后不再拦", () => {
+  // 模拟 DOM：容器 + 3 个可聚焦按钮，document.activeElement 全局可写
+  const handlers = [];
+  const els = ["a", "b", "c"].map((id) => ({ id, offsetParent: {}, focus() { doc.activeElement = this; } }));
+  const container = { contains: (el) => els.includes(el), querySelectorAll: () => els };
+  const doc = { activeElement: null, addEventListener: (_t, fn) => handlers.push(fn), removeEventListener: (_t, fn) => {
+    const i = handlers.indexOf(fn);
+    if (i >= 0) handlers.splice(i, 1);
+  } };
+  const realDoc = globalThis.document;
+  globalThis.document = doc;
+  let closed = 0;
+  try {
+    const off = trapFocus(container, () => { closed += 1; });
+    // 注意：合成事件的 key 必须显式 key: keyName——简写 { key } 会解析到外层同名绑定
+    const press = (keyName, shiftKey = false) => handlers[handlers.length - 1]({ key: keyName, shiftKey, preventDefault() {} });
+    doc.activeElement = els[2]; // 焦点在末元素
+    press("Tab");               // 末元素 Tab → 回卷首元素
+    assert.equal(doc.activeElement, els[0], "末元素 Tab 回卷到首元素");
+    press("Tab", true);         // 首元素 Shift+Tab → 回卷末元素
+    assert.equal(doc.activeElement, els[2], "首元素 Shift+Tab 回卷到末元素");
+    press("Tab");               // 首元素 Tab：不拦（非边界，焦点推进交给浏览器，陷阱不越权）
+    assert.equal(doc.activeElement, els[0], "非边界 Tab 不拦（本模拟 DOM 无默认推进，焦点停在首元素）");
+    doc.activeElement = null;   // 焦点逃到 body
+    press("Tab");
+    assert.equal(doc.activeElement, els[0], "容器外 Tab 拉回首元素");
+    press("Escape");
+    assert.equal(closed, 1, "Esc 关闭");
+    press("x");                 // 非 Tab/Esc 键不拦（不炸）
+    off();
+    assert.equal(handlers.length, 0, "卸载后监听摘除（弹窗关闭必须调 off，否则泄漏到后台页）");
+    const before = doc.activeElement;
+    // 卸载后再触发：无监听即无副作用
+    assert.equal(handlers.length, 0);
+    assert.equal(doc.activeElement, before);
+  } finally {
+    globalThis.document = realDoc;
+  }
+});
+
+test("trapFocus：卸载时把焦点还原到打开前的触发元素（无障碍；脱挂则跳过）", () => {
+  const handlers = [];
+  const prev = { id: "trigger", isConnected: true, focus() { doc.activeElement = this; } };
+  const inside = { id: "ok", isConnected: true, focus() { doc.activeElement = this; } };
+  const container = { contains: (el) => el === inside, querySelectorAll: () => [inside] };
+  const doc = { activeElement: prev, addEventListener: (_t, fn) => handlers.push(fn), removeEventListener: (_t, fn) => {
+    const i = handlers.indexOf(fn);
+    if (i >= 0) handlers.splice(i, 1);
+  } };
+  const realDoc = globalThis.document;
+  globalThis.document = doc;
+  try {
+    // 打开时焦点在触发元素上 → 卸载后应还原回去
+    const off = trapFocus(container, () => {});
+    doc.activeElement = inside; // 焦点已移进弹窗
+    off();
+    assert.equal(doc.activeElement, prev, "卸载后焦点还原到打开前的触发元素");
+    // 触发元素已脱挂（isConnected===false）→ 不硬拉，焦点留在原处
+    doc.activeElement = prev;
+    prev.isConnected = false;
+    const off2 = trapFocus(container, () => {});
+    doc.activeElement = inside;
+    off2();
+    assert.equal(doc.activeElement, inside, "触发元素脱挂时不硬拉焦点");
+  } finally {
+    globalThis.document = realDoc;
+  }
+});
+
+test("trapFocus：容器内暂无可聚焦元素时不拦（空态弹窗不卡键盘）", () => {
+  const handlers = [];
+  const container = { contains: () => false, querySelectorAll: () => [] };
+  const doc = { activeElement: null, addEventListener: (_t, fn) => handlers.push(fn), removeEventListener: () => {} };
+  const realDoc = globalThis.document;
+  globalThis.document = doc;
+  try {
+    let closed = 0;
+    trapFocus(container, () => { closed += 1; });
+    handlers[handlers.length - 1]({ key: "Tab", preventDefault() { throw new Error("不应拦截"); } });
+    // Esc 仍生效（关闭不依赖容器内元素）
+    handlers[handlers.length - 1]({ key: "Escape", preventDefault() {} });
+    assert.equal(closed, 1);
+  } finally {
+    globalThis.document = realDoc;
+  }
 });

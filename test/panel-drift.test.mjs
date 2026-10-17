@@ -51,3 +51,74 @@ test("面板漂移：safety 六函数在场且容错（旧宿主无 /state.safet
   assert.equal(L.safetyLocationText({ rootKey: "projects/demo-a1b2c3d4e5f6a7b/memory" }), "项目 demo");
   assert.equal(L.safetyLocationText({ rootKey: "" }), "项目记忆");
 });
+
+// ---- 新面板面（补提 / 记忆整理 / 状态优先级 / 删除三态 / 设置健康 / 注入计数）防漂移 ----
+//   面板消费的每个新纯函数必须在 panel-logic 在场且容错（旧宿主字段缺失不炸）；
+//   同时在 panel.html 有对应的消费锚（不接线=纯函数白做）。
+
+test("面板漂移：新纯函数全部在场（补提/整理/优先级/删除/健康/注入/分页/焦点）", () => {
+  for (const name of [
+    "pendingItemLabel", "pendingHostNote",
+    "duplicateScorePct", "staleDaysText", "maintenanceSuggestionsEmpty", "repairIndexResultText", "maintenanceCountsText",
+    "healthPriorityLevel", "healthPriorityWord", "canShowNoFailureLine",
+    "deleteOutcomeOf", "settingsCoercionNote", "injectionExtraText",
+    "paginateOf", "paginationText", "trapFocus",
+  ]) {
+    assert.equal(typeof L[name], "function", `缺 ${name}`);
+  }
+  for (const c of ["PENDING_EMPTY_TEXT", "PENDING_RECOVERING_TEXT", "PENDING_UNAVAILABLE_NOTE", "MAINTENANCE_EMPTY_TEXT", "PAGE_SIZE", "INDEX_HEALTH_COLUMNS"]) {
+    assert.ok(L[c] !== undefined, `缺常量 ${c}`);
+  }
+});
+
+test("面板漂移：新纯函数旧宿主容错（字段缺失返回安全值，绝不抛）", () => {
+  // 补提行：坏行 → null
+  assert.equal(L.pendingItemLabel(null), null);
+  assert.equal(L.pendingItemLabel("x"), null);
+  assert.equal(L.pendingHostNote(false).length > 0, true);
+  assert.equal(L.pendingHostNote(true), "");
+  // 整理建议容错
+  assert.equal(L.duplicateScorePct(null), 0);
+  assert.equal(L.staleDaysText(null), "年龄不可知");
+  assert.equal(L.maintenanceSuggestionsEmpty(null), true);
+  assert.equal(L.repairIndexResultText(null) === "修复结果未知", true);
+  // 数字形态容错（旧服务端 fixed 为条数）：0 → 无需修复，N → 已修复 N 处
+  assert.equal(L.repairIndexResultText({ fixed: 0 }), "无需修复：索引与磁盘已经对上账");
+  assert.equal(L.repairIndexResultText({ fixed: 2 }), "已修复 2 处");
+  // 状态优先级容错（旧宿主无 extractionLog → 绿）
+  assert.equal(L.healthPriorityLevel(null), "green");
+  assert.equal(L.healthPriorityLevel({}), "green");
+  assert.equal(L.healthPriorityWord("bogus"), "正常");
+  assert.equal(L.canShowNoFailureLine("green"), true);
+  // 删除三态容错（无 existed 字段按失败，不谎报成功）
+  assert.equal(L.deleteOutcomeOf(null).kind, "failed");
+  // 设置健康 / 注入计数容错
+  assert.equal(L.settingsCoercionNote(null), "");
+  assert.equal(L.injectionExtraText(null), "");
+  // 分页 / 焦点陷阱在场且是函数
+  assert.equal(L.paginateOf(0, 0).pageCount, 0);
+  // trapFocus 依赖 document 全局：此处给最小桩，验证它返回卸载函数（Node 无 DOM）
+  const realDoc = globalThis.document;
+  globalThis.document = { addEventListener: () => {}, removeEventListener: () => {}, activeElement: null };
+  try {
+    assert.equal(typeof L.trapFocus({ querySelectorAll: () => [] }, () => {}), "function");
+  } finally {
+    globalThis.document = realDoc;
+  }
+});
+
+test("面板漂移：新面板消费锚全部接线（L.* 调用在位防白做）", () => {
+  for (const anchor of [
+    "L.pendingItemLabel(", "L.pendingHostNote(", "L.PENDING_UNAVAILABLE_NOTE", "L.PENDING_EMPTY_TEXT", "L.PENDING_RECOVERING_TEXT",
+    "L.maintenanceSuggestionsEmpty(", "L.duplicateScorePct(", "L.staleDaysText(", "L.repairIndexResultText(", "L.maintenanceCountsText(", "L.MAINTENANCE_EMPTY_TEXT", "L.INDEX_HEALTH_COLUMNS",
+    "L.healthPriorityLevel(", "L.healthPriorityWord(", "L.canShowNoFailureLine(",
+    "L.deleteOutcomeOf(", "L.settingsCoercionNote(",
+    "L.paginateOf(", "L.paginationText(", "L.trapFocus(",
+  ]) {
+    assert.ok(panelHtml.includes(anchor), `panel.html 未接线 ${anchor}（纯函数白做）`);
+  }
+  // 注入面节流/取代：面板经共享 injectionSummary 消费（extra 段落在 panel-logic 内拼接，
+  // 面板不直接调 injectionExtraText——所以钉「共享函数已含两计数」而非直连调用）
+  assert.ok(panelHtml.includes("L.injectionSummary("), "面板必须消费共享 injectionSummary（含 throttled/superseded 段）");
+  assert.match(L.injectionSummary({ count: 3, lastChars: 100, throttled: 2, superseded: 1 }) ?? "", /变更节流 2 次 \/ 取代 1 次/, "共享摘要必须含两计数人话文案");
+});

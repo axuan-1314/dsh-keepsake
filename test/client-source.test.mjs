@@ -22,12 +22,24 @@ const clientSrc = readFileSync(path.join(root, "lib", "client.js"), "utf8");
 const panelSrc = readFileSync(path.join(root, "web", "panel.html"), "utf8");
 
 /** 从 client.js factory（4 空格缩进）提取指定内联兜底函数体并求值。
- *  锚定「行首恰好 4 空格的 }」为函数结束（体内 if 块为 6 空格缩进，不会误配）。 */
-function extractFactoryFn(src, name, params) {
+ *  锚定「行首恰好 4 空格的 }」为函数结束（体内 if 块为 6 空格缩进，不会误配）。
+ *  deps：被提函数体内引用的同厂内联 helper 名（如 injectionSummaryFallback 调
+ *  injectionExtraFallback）——一并提取后按名注入为外层绑定，缺了它们会 ReferenceError。 */
+function extractFactoryFn(src, name, params, deps = []) {
   const re = new RegExp(`^ {4}function ${name}\\(${params}\\) \\{([\\s\\S]*?)\\n {4}\\}$`, "m");
   const m = src.match(re);
   assert.ok(m, `client.js 必须保留内联兜底 ${name}（动态 import 失败的退路）`);
-  return new Function(...params.split(",").map((p) => p.trim().split("=")[0].trim()), m[1]);
+  const argNames = params.split(",").map((p) => p.trim().split("=")[0].trim());
+  const depFns = deps.map((dep) => {
+    const dm = src.match(new RegExp(`^ {4}function ${dep}\\(([^)]*)\\) \\{([\\s\\S]*?)\\n {4}\\}`, "m"));
+    assert.ok(dm, `client.js 必须保留被 ${name} 引用的内联兜底 ${dep}`);
+    const depParams = dm[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter((p) => p.length > 0);
+    return new Function(...depParams, dm[2]);
+  });
+  if (deps.length === 0) return new Function(...argNames, m[1]);
+  // 有依赖：外层包一层工厂，把 dep 绑进闭包，再返回真正的目标函数
+  const factory = new Function(...deps, `return function(${argNames.join(", ")}) {${m[1]}};`);
+  return factory(...depFns);
 }
 
 // ---- 单一事实源与内联兜底 ----
@@ -308,9 +320,26 @@ test("结构钉：设置页保留策略三输入 + 正整数预检 + PUT /settin
 test("结构钉：近期动态过期天数传 recentKeepDays + 分类页搜索 + query 保留", () => {
   assert.match(panelSrc, /L\.recentExpireDays\(e\.timestamp, keepDays\)/, "过期天数按保留策略传参（非写死 30）");
   assert.match(panelSrc, /function recentKeepDaysOf\(st\)/, "保留天数 tolerant 取值");
-  assert.match(panelSrc, /async function renderCategoryPage\(cat, title, query = ""\)/, "分类页带检索词参数");
+  assert.match(panelSrc, /async function renderCategoryPage\(cat, title, query = "", page = 0\)/, "分类页带检索词与页码参数");
   assert.match(panelSrc, /\$q\.value = query; \/\/ reload 后保留并回填检索词/, "长/分类页 reload 回填 query");
   assert.match(panelSrc, /没有匹配「\$\{esc\(q\)\}」的条目/, "搜索无命中回显 query");
+});
+
+test("结构钉：列表分页（pageSize 50 + 越界回落 + 检索词/页码保留 + seq 竞态守卫）", () => {
+  assert.match(panelSrc, /const PAGE_SIZE = L\.PAGE_SIZE;/, "每页条数走 panel-logic 单一常量（双端同值）");
+  assert.match(panelSrc, /L\.paginateOf\(entries\.length, currentPage\)/, "分页计算走纯函数（越界回落末页）");
+  assert.match(panelSrc, /data-prev/, "上一页按钮锚点");
+  assert.match(panelSrc, /data-next/, "下一页按钮锚点");
+  assert.match(panelSrc, /L\.paginationText\(pg\)/, "分页底栏文案走纯函数");
+  // 翻页保留检索词与页码（reload 后不丢上下文）
+  assert.match(panelSrc, /renderCategoryPage\(cat, title, current, currentPage\)/, "分类页 reload 保留检索词与页码");
+  assert.match(panelSrc, /renderLongTermPage\(current, currentPage\)/, "长期页 reload 保留检索词与页码");
+  // 检索词变化时页码回落第 1 页（旧页号对新过滤结果可能越界）
+  assert.match(panelSrc, /current = ev\.target\.value; currentPage = 0;/, "检索变化页码回落");
+  // 竞态守卫沿用：翻页是异步渲染，连点时旧响应不得写入新页
+  assert.match(panelSrc, /const seq = \+\+pageRenderSeq;/, "页面渲染序号在场");
+  assert.match(panelSrc, /if \(seq !== pageRenderSeq\) return; \/\/ 旧渲染丢弃/, "分类页旧渲染丢弃");
+  assert.match(panelSrc, /if \(seq !== pageRenderSeq\) return;\r?\n  const all = data\.entries/, "长期页旧渲染丢弃");
 });
 
 test("结构钉：清空全部失败列明细 + 备份列表 createdAt/未显示提示", () => {
@@ -332,9 +361,28 @@ test("结构钉：无障碍（侧栏 href / Esc 关窗 / 聚焦首钮 / 状态�
   assert.match(panelSrc, /<a href="#\/category\/work-profile" data-route="category\/work-profile">/, "侧栏锚点带 href（键盘可达）");
   assert.match(panelSrc, /if \(e\.key === "Escape"\) close\(\);/, "确认弹窗 Esc 关闭");
   assert.match(panelSrc, /cancelBtn\.focus\(\)/, "弹窗打开聚焦首个按钮");
-  assert.match(panelSrc, /const statusWord = level === "green" \? "正常"/, "三态灯状态词在场");
+  assert.match(panelSrc, /const statusWord = level === "green"/, "三态灯状态词在场");
   assert.match(panelSrc, /aria-label="状态：\$\{statusWord\}"/, "三态灯 aria-label");
   assert.match(panelSrc, /设置文件已损坏，已按缺省运行/, "settings.corrupt 醒目标记");
+});
+
+test("结构钉：焦点陷阱抽工具四处复用 + 卸载必调（防 document 监听泄漏）", () => {
+  // 单一实现：trapFocus 在 panel-logic，四处弹窗都经 L.trapFocus 接入
+  assert.match(panelSrc, /L\.trapFocus\(/, "面板必须经 L.trapFocus 接入焦点陷阱（不复写第二份）");
+  const traps = panelSrc.match(/L\.trapFocus\(/g) ?? [];
+  assert.equal(traps.length, 4, "四处弹窗（确认/新增/源码/导入）必须全部接入焦点陷阱");
+  // 卸载纪律：每条 trapFocus 的返回值必须被某个 offFocus() 消费（弹窗关闭时摘监听）
+  const offs = panelSrc.match(/offFocus\(\)/g) ?? [];
+  assert.ok(offs.length >= 8, `每个 trapFocus 至少两处卸载点（取消/成功），当前 ${offs.length} 处`);
+  // Tab 回卷语义由 panel-logic 单侧保证（panel-logic.test.mjs 已钉），此处只钉接线存在
+  assert.match(panelSrc, /const offFocus = L\.trapFocus\(dialogHost/, "弹窗用 dialogHost 作容器接入");
+});
+
+test("结构钉：错误 toast role=alert（成功回落 status）+ aria-live 行为保持", () => {
+  assert.match(panelSrc, /el\.setAttribute\("role", isErr \? "alert" : "status"\)/, "错误类 role=alert、成功回落 role=status");
+  assert.match(panelSrc, /el\.setAttribute\("aria-live", isErr \? "assertive" : "polite"\)/, "aria-live 行为保持（错误 assertive、其余 polite）");
+  // 静态初始值仍是 status（toast() 首次调用前读屏不报警）
+  assert.match(panelSrc, /id="toast" role="status" aria-live="polite"/, "toast 静态初始 role=status");
 });
 
 test("结构钉：窄屏 @media + 文案统一 + fmtHint + 计数 0 显示 + 删除移入回收站", () => {
@@ -348,8 +396,20 @@ test("结构钉：窄屏 @media + 文案统一 + fmtHint + 计数 0 显示 + 删
   assert.match(panelSrc, /将移入回收站（可在回收站找回，保留天数见设置页保留策略）/, "删除确认文案对齐移入回收站（保留天数不写死，指向设置页保留策略）");
   const delConfirm = panelSrc.slice(panelSrc.indexOf('title: "删除条目"'), panelSrc.indexOf('title: "删除条目"') + 400);
   assert.doesNotMatch(delConfirm, /默认保留 30 天/, "删除确认不再写死「默认保留 30 天」（用户改 trashKeepDays 后误导）");
-  assert.match(panelSrc, /已移入回收站（可在回收站找回）/, "删除完成提示同步");
-  assert.match(panelSrc, /out\.existed === false\) toast\("条目不存在（可能已被删除）"\)/, "删除按 existed 分支：不存在时如实说，不无条件报已移入回收站");
+  // 侧栏品牌与分组措辞错开（「记忆」字不重复）
+  assert.match(panelSrc, /<div class="brand">记忆管理台<\/div>/, "品牌区措辞「记忆管理台」（与分组「记忆分类」错开）");
+});
+
+test("结构钉：删除三态判读（existed/trashed 三分支，失败不抹列表）", () => {
+  assert.match(panelSrc, /L\.deleteOutcomeOf\(out\)/, "删除结果走纯函数三态判读（不内联 if 链）");
+  assert.match(panelSrc, /const outcome = L\.deleteOutcomeOf\(out\);/, "三态结果先取值再分流");
+  assert.match(panelSrc, /toast\(outcome\.toast, outcome\.kind === "failed" \? "err" : "ok"\)/, "三态提示按 kind 分错误/成功语气");
+  assert.match(panelSrc, /if \(outcome\.reload\) reload\(\);/, "只有存在/成功态才刷新列表——失败态不抹条目");
+  assert.doesNotMatch(
+    panelSrc.slice(panelSrc.indexOf("data-del\"]"), panelSrc.indexOf("data-del\"]") + 700),
+    /else toast\("已移入回收站/,
+    "不得保留「非不存在即报成功」的旧二分支（会把删除失败谎报成成功）",
+  );
 });
 
 test("结构钉：健康卡 5s 本地轮询 + 路由切走清 timer", () => {
@@ -403,8 +463,8 @@ test("结构钉：细节——tableScroll 滚动容器双处在场 + 长期记�
 
 // ---- 注入面（消息通道）防漂移 ----
 
-test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱动一致（含纯失败告警）", () => {
-  const fn = extractFactoryFn(clientSrc, "injectionSummaryFallback", "injection");
+test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱动一致（含纯失败告警 + throttled/superseded）", () => {
+  const fn = extractFactoryFn(clientSrc, "injectionSummaryFallback", "injection", ["injectionExtraFallback"]);
   const cases = [
     null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
     { count: 0 }, // 未注入无异常：null
@@ -415,12 +475,22 @@ test("防漂移：注入面摘要兜底 injectionSummaryFallback 与实现表驱
     { count: 3, lastChars: 1200, droppedSegments: 2 },
     { count: 3, lastChars: 1200, renderFailures: 1, droppedSegments: 1 },
     { count: "5", lastChars: "900" }, // 字符串数字归一
+    // throttled / superseded 契约新增计数：零回归 + 新计数附加
+    { count: 3, lastChars: 1200, throttled: 0, superseded: 0 }, // 零值不渲染
+    { count: 3, lastChars: 1200, throttled: 2 },
+    { count: 3, lastChars: 1200, superseded: 1 },
+    { count: 3, lastChars: 1200, throttled: 2, superseded: 1 },
+    { count: 3, lastChars: 1200, droppedSegments: 2, throttled: 1, superseded: 4, renderFailures: 1 },
+    { count: 3, lastChars: 1200, throttled: "x", superseded: -1 }, // 脏值按 0
   ];
   for (const c of cases) {
     assert.equal(fn(c), injectionSummary(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
   }
   assert.match(clientSrc, /LOGIC \? LOGIC\.injectionSummary/, "注入摘要必须经 panel-logic 优先分发");
   assert.match(panelSrc, /L\.injectionSummary\(/, "健康卡注入摘要必须走共享纯函数（消费锚）");
+  // 兜底侧的节流/取代文案模板锚（任一边改模板立刻红）
+  assert.ok(clientSrc.includes("`变更节流 ${throttled} 次`"));
+  assert.ok(clientSrc.includes("`取代 ${superseded} 次`"));
 });
 
 // ---- 存储格式只读告警防漂移 ----
@@ -440,4 +510,72 @@ test("防漂移：存储格式只读兜底 formatNoticeFallback 与实现表驱�
   }
   assert.match(clientSrc, /LOGIC \? LOGIC\.formatNoticeText/, "只读告警必须经 panel-logic 优先分发");
   assert.match(panelSrc, /L\.formatNoticeText\(/, "健康卡只读告警必须走共享纯函数（消费锚）");
+});
+
+// ---- 面板新面接线锚（补提 / 记忆整理 / 设置健康 / 绿红优先级）----
+
+test("结构钉：补提 UI 接线（GET /sessions/pending + POST /sessions/recover + busy 三段式 + 轮询）", () => {
+  assert.match(panelSrc, /api\("sessions\/pending"\)/, "补提清单必须拉 pending 端点");
+  assert.match(panelSrc, /apiPost\("sessions\/recover"/, "补提动作必须 POST recover 端点");
+  assert.match(panelSrc, /L\.pendingItemLabel\(it\)/, "行文案走纯函数（不露 seq、人话标签）");
+  assert.match(panelSrc, /btn\.textContent = L\.PENDING_RECOVERING_TEXT/, "补提按钮 busy 文案走常量");
+  assert.match(panelSrc, /out2\.started === true/, "202 后必须确认 started 才进轮询（不空承诺）");
+  assert.match(panelSrc, /retryPollWindowMs\(state\)/, "轮询窗口复用提取超时口径（不硬编码）");
+  assert.match(panelSrc, /setTimeout\(poll, 2000\)/, "补提轮询 2s 节奏");
+  assert.match(panelSrc, /L\.PENDING_UNAVAILABLE_NOTE/, "会话不可读时如实说明（不空承诺重开后自动续提）");
+  assert.match(panelSrc, /const avail = it && it\.sessionAvailable === true;/, "仅 sessionAvailable 才渲染可点按钮");
+  assert.match(panelSrc, /L\.pendingHostNote\(/, "hostSupported=false 出整块说明");
+  assert.match(panelSrc, /stopPendingPoll\(\)/, "路由切走清补提轮询 timer");
+});
+
+test("结构钉：记忆整理 UI 接线（suggestions 三组 + repair-index busy + 回显）", () => {
+  assert.match(panelSrc, /api\("maintenance\/suggestions"\)/, "记忆整理必须拉 suggestions 端点");
+  assert.match(panelSrc, /apiPost\("maintenance\/repair-index"\)/, "修复索引必须 POST repair-index 端点");
+  assert.match(panelSrc, /L\.maintenanceSuggestionsEmpty\(suggestions\)/, "空态判定走纯函数（暂无建议）");
+  assert.match(panelSrc, /L\.duplicateScorePct\(d && d\.score\)/, "重复建议 score 百分比走纯函数");
+  assert.match(panelSrc, /L\.staleDaysText\(it\)/, "久未更新天数走纯函数（unknown-age 如实说）");
+  assert.match(panelSrc, /L\.INDEX_HEALTH_COLUMNS\.map/, "索引健康三列走常量表");
+  assert.match(panelSrc, /L\.repairIndexResultText\(out\)/, "修复回显走纯函数（fixed / 无需修复）");
+  assert.match(panelSrc, /btn\.textContent = "修复中…"/, "修复按钮 busy 文案");
+  assert.match(panelSrc, /data-retry/, "加载失败可重试");
+  assert.match(panelSrc, /重复项需要你自己决定留哪条——这里不自动合并/, "只提示不自动合并");
+});
+
+test("结构钉：记忆整理卡不可信内容渲染必须过 esc()（XSS 防线，删掉即红）", () => {
+  // innerHTML 拼接的字段（重复建议 d.why/d.a/d.b、久未更新 it.*、索引健康 it.*、
+  // 空分类字符串项、修复明细回显）皆不可信，缺任一 esc() 即为可注入缺口（本批补钉子）。
+  assert.match(panelSrc, /esc\(d && d\.why\)/, "重复建议判断依据必须 esc()");
+  assert.match(panelSrc, /esc\(d && d\.a\)/, "重复建议条目 a 必须 esc()");
+  assert.match(panelSrc, /esc\(d && d\.b\)/, "重复建议条目 b 必须 esc()");
+  assert.match(panelSrc, /esc\(it && it\.name\)/, "久未更新/索引健康条目名必须 esc()");
+  assert.match(panelSrc, /esc\(it && it\.category\)/, "久未更新/索引健康分类必须 esc()");
+  assert.match(panelSrc, /esc\(it\.line\)/, "索引健康悬挂行原文必须 esc()");
+  // 空分类是分类 id 字符串数组：字符串项按 esc(it) 渲染（删掉即红）
+  assert.match(panelSrc, /typeof it === "string"[\s\S]{0,80}esc\(it\)/, "空分类字符串项必须 esc()");
+  // 修复明细回显含分类名：必须过 esc()
+  assert.match(panelSrc, /result\.innerHTML = esc\(text\)/, "修复明细回显必须 esc()");
+});
+
+test("结构钉：设置健康黄条接线（coercedFields 非空渲染 / 空摘除）", () => {
+  assert.match(panelSrc, /L\.settingsCoercionNote\(data && data\.settingsDiagnostics\)/, "coercedFields 消费走纯函数");
+  assert.match(panelSrc, /id = "data-settings-health"/, "设置健康黄条锚点");
+  assert.match(panelSrc, /if \(healthCard\) healthHost\.replaceWith\(healthCard\);/, "非空才渲染黄条");
+  assert.match(panelSrc, /else healthHost\.remove\(\);/, "空则整块摘除（不留空位）");
+  assert.match(panelSrc, /data-settingsHealth/, "设置健康占位锚在场");
+});
+
+test("结构钉：健康卡状态优先级（绿红并置修正——有未恢复/已放弃禁显绿行）", () => {
+  assert.match(panelSrc, /const priority = L\.healthPriorityLevel\(data\);/, "优先级判定走纯函数");
+  assert.match(panelSrc, /const allowGreenLine = L\.canShowNoFailureLine\(priority\);/, "绿行许可走纯函数");
+  assert.match(panelSrc, /if \(level === "green" && allowGreenLine\) \{/, "绿行仅在允许时渲染（并置修正）");
+  assert.match(panelSrc, /allowGreenLine \? "正常" : L\.healthPriorityWord\(priority\)/, "状态词随优先级改口");
+  assert.match(panelSrc, /const statusCls = level === "green" && !allowGreenLine \? "yellow" : dotCls;/, "灯色随优先级降级（颜色第二编码）");
+  assert.doesNotMatch(panelSrc, /重启以来无失败/, "旧「重启以来无失败」让步文案已删除（改真优先级）");
+});
+
+test("结构钉：记忆整理卡锚点（data-maintenance）+ 设置页装配", () => {
+  assert.match(panelSrc, /id = "data-maintenance"/, "记忆整理卡锚点在场");
+  assert.match(panelSrc, /page\.querySelector\("\[data-maintenance\]"\)\.replaceWith\(buildMaintenanceCard\(\)\)/, "设置页装配记忆整理卡");
+  assert.match(panelSrc, /id = "data-pending-recover"/, "补提卡锚点在场");
+  assert.match(panelSrc, /data-pendingRecover/, "健康卡内补提占位锚在场");
 });

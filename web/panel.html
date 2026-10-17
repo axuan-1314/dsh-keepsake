@@ -114,7 +114,7 @@
 </head>
 <body>
   <aside id="nav">
-    <div class="brand">记忆管理</div>
+    <div class="brand">记忆管理台</div>
     <div class="group">记忆分类</div>
     <a href="#/category/work-profile" data-route="category/work-profile">工作背景 <span class="cnt" data-cnt="work-profile"></span></a>
     <a href="#/category/user-profile" data-route="category/user-profile">用户个人背景 <span class="cnt" data-cnt="user-profile"></span></a>
@@ -139,8 +139,7 @@
       </div>
     </div>
     <div class="notice" id="bridgeNotice">未能跟随应用主题，请手动选择深浅色——右上角可切换。</div>
-    <div class="notice" id="toast" role="status" aria-live="polite"></div>
-    <div class="meta" id="countsStatus" hidden style="margin:6px 20px 0"></div>
+    <div class="notice" id="toast" role="status" aria-live="polite"></div>    <div class="meta" id="countsStatus" hidden style="margin:6px 20px 0"></div>
     <details id="recentErrors" hidden>
       <summary class="meta">最近错误（保留最近 5 条）</summary>
       <div data-errList></div>
@@ -269,6 +268,9 @@ function toast(text, kind = "ok") {
   const el = $("toast");
   const isErr = kind === "err";
   el.className = "notice show " + kind;
+  // 无障碍角色分流：错误类 role=alert（读屏立即抢念， assertive 由下方 aria-live 保持），
+  // 成功回落 role=status——两者互斥，不得同时挂着（同一节点两个 role 语义互相抵消）
+  el.setAttribute("role", isErr ? "alert" : "status");
   // 错误类：写进「最近错误」回看区（时间取本地时刻），并延长提示条停留时间（8 秒）
   if (isErr) {
     recentErrors.unshift({ text, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) });
@@ -319,6 +321,8 @@ function mdRender(text) {
 }
 
 // ============ 确认弹窗（栈式：确认层不再覆写下层对话框——源码模式取消不丢编辑） ============
+// 焦点陷阱走 L.trapFocus（四处弹窗复用的单一实现：Tab 循环 + 首尾回卷 + Esc 关闭），
+// 关闭时必须调 off()——监听挂在 document 上，不摘会泄漏到背景页拦用户的键。
 function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
   const layer = document.createElement("div"); // 独立层 append：下层对话框 DOM 原样保留
   layer.innerHTML = `
@@ -334,11 +338,13 @@ function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
     </div>`;
   dialogHost.appendChild(layer);
   const close = () => { // 只摘本层，下层（若有）恢复可见、编辑内容无损
+    offFocus();
     document.removeEventListener("keydown", onKey);
     layer.remove();
   };
   const onKey = (e) => { if (e.key === "Escape") close(); }; // Esc = 取消（键盘可达）
   document.addEventListener("keydown", onKey);
+  const offFocus = L.trapFocus(layer, close); // Tab 回卷 + Esc（trapFocus 自带 Esc，onKey 兼容旧路径）
   const cancelBtn = layer.querySelector("[data-x]");
   cancelBtn.addEventListener("click", close);
   layer.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) close(); });
@@ -374,10 +380,12 @@ function entryCard(cat, e, reload, keepDays) {
       dangerText: "移入回收站",
       onConfirm: async () => {
         try {
+          // 三态判读走纯函数（deleteOutcomeOf）：不存在 / 已移入回收站 / 删除失败互不混同。
+          // 关键：失败态**不**刷新列表——原件还在盘上，抹掉就是静默消失（比报错更糟）。
           const out = await apiDel("entry", { category: cat, name: e.name });
-          if (out && out.existed === false) toast("条目不存在（可能已被删除）");
-          else toast("已移入回收站（可在回收站找回）");
-          reload();
+          const outcome = L.deleteOutcomeOf(out);
+          toast(outcome.toast, outcome.kind === "failed" ? "err" : "ok");
+          if (outcome.reload) reload();
         } catch (err) { toast("删除失败：" + err.message, "err"); }
       },
     });
@@ -429,6 +437,7 @@ function entryCard(cat, e, reload, keepDays) {
 }
 
 // ============ 新增条目弹窗 ============
+// 焦点陷阱（L.trapFocus）：Tab 在弹窗内循环，Esc 走「取消」同款流程；关闭时必须 off()。
 function newEntryDialog(cat, reload) {
   dialogHost.innerHTML = `
     <div class="mask">
@@ -443,6 +452,8 @@ function newEntryDialog(cat, reload) {
         </div>
       </div>
     </div>`;
+  const dialog = dialogHost.querySelector(".dialog");
+  const offFocus = L.trapFocus(dialogHost, () => dialogHost.querySelector("[data-x]").click());
   const $c = dialogHost.querySelector("[data-c]");
   const $cnt = dialogHost.querySelector("[data-cnt]");
   const $t = dialogHost.querySelector("[data-t]");
@@ -455,16 +466,17 @@ function newEntryDialog(cat, reload) {
   $t.addEventListener("input", updTitleCnt);
   $d.addEventListener("input", updDescCnt);
   // 取消：内容非空时先确认，防止误点丢草稿
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => {
+  const cancelNew = () => {
     const dirty = $t.value.trim().length > 0 || $d.value.trim().length > 0 || $c.value.trim().length > 0;
-    if (!dirty) { dialogHost.innerHTML = ""; return; }
+    if (!dirty) { offFocus(); dialogHost.innerHTML = ""; return; }
     confirmDialog({
       title: "放弃未保存内容？",
       body: "当前新增内容尚未保存，取消将丢弃。确定要放弃吗？",
       dangerText: "放弃",
-      onConfirm: () => { dialogHost.innerHTML = ""; },
+      onConfirm: () => { offFocus(); dialogHost.innerHTML = ""; },
     });
-  });
+  };
+  dialogHost.querySelector("[data-x]").addEventListener("click", cancelNew);
   dialogHost.querySelector("[data-s]").addEventListener("click", async () => {
     const title = dialogHost.querySelector("[data-t]").value;
     const content = $c.value;
@@ -472,6 +484,7 @@ function newEntryDialog(cat, reload) {
     if (!v.ok) { toast(v.error, "err"); return; }
     try {
       await apiPost(`category/${cat}/entries`, { title, description: dialogHost.querySelector("[data-d]").value, content });
+      offFocus();
       dialogHost.innerHTML = "";
       toast("已新增");
       reload();
@@ -496,17 +509,20 @@ function sourceModeDialog(cat, entries, reload) {
         </div>
       </div>
     </div>`;
+  // 焦点陷阱（L.trapFocus）：Esc 等同取消（改过内容同样先确认，不静默丢草稿）
+  const offFocus = L.trapFocus(dialogHost, () => dialogHost.querySelector("[data-x]").click());
   // 取消：编辑过（与打开时内容不同）先确认，防止误点丢草稿
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => {
+  const cancelSource = () => {
     const changed = dialogHost.querySelector("[data-src]").value !== original;
-    if (!changed) { dialogHost.innerHTML = ""; return; }
+    if (!changed) { offFocus(); dialogHost.innerHTML = ""; return; }
     confirmDialog({
       title: "放弃未保存内容？",
       body: "源码模式已改动但尚未保存，取消将丢弃这些改动。确定要放弃吗？",
       dangerText: "放弃",
-      onConfirm: () => { dialogHost.innerHTML = ""; },
+      onConfirm: () => { offFocus(); dialogHost.innerHTML = ""; },
     });
-  });
+  };
+  dialogHost.querySelector("[data-x]").addEventListener("click", cancelSource);
   dialogHost.querySelector("[data-s]").addEventListener("click", () => {
     const parsed = L.parseSourceText(dialogHost.querySelector("[data-src]").value);
     confirmDialog({
@@ -521,6 +537,7 @@ function sourceModeDialog(cat, entries, reload) {
           if (parsed.length > 0) {
             await apiPost("import", { category: cat, format: "json", payload: { entries: parsed } });
           }
+          offFocus();
           dialogHost.innerHTML = ""; // 栈式确认层只摘自己，成功才撤源对话框
           toast(`整类已替换（${parsed.length} 条，已自动备份）`);
           reload();
@@ -536,6 +553,7 @@ function sourceModeDialog(cat, entries, reload) {
 }
 
 // ============ 导入向导（上传/粘贴 → 格式 → dryRun 冲突标红 → 确认） ============
+// 焦点陷阱（L.trapFocus）：Esc = 取消（关闭即撤，无草稿保留语义——导入内容以文本框现值重新取）。
 function importDialog(cat, reload) {
   dialogHost.innerHTML = `
     <div class="mask">
@@ -579,7 +597,9 @@ function importDialog(cat, reload) {
   };
   const updFmtHint = () => { $fmtHint.textContent = FMT_HINTS[$fmt.value] ?? ""; };
   updFmtHint();
-  dialogHost.querySelector("[data-x]").addEventListener("click", () => { dialogHost.innerHTML = ""; });
+  const offFocus = L.trapFocus(dialogHost, () => dialogHost.querySelector("[data-x]").click());
+  const closeImport = () => { offFocus(); dialogHost.innerHTML = ""; };
+  dialogHost.querySelector("[data-x]").addEventListener("click", closeImport);
   dialogHost.querySelector("[data-file]").addEventListener("change", (ev) => {
     const file = ev.target.files[0];
     if (!file) return;
@@ -623,6 +643,7 @@ function importDialog(cat, reload) {
     if (!req.ok) { toast(req.error, "err"); return; }
     try {
       const out = await apiPost("import", req.body);
+      offFocus();
       dialogHost.innerHTML = "";
       // 修复：HTTP 200 + ok:false（部分条目失败）也要可见，不静默报成功
       if (out.ok === false) {
@@ -650,7 +671,21 @@ function recentKeepDaysOf(st) {
 }
 
 // ============ 页面：四分类 / 长期记忆 ============
-async function renderCategoryPage(cat, title, query = "") {
+// 列表分页（pageSize 50）：翻页保留检索词与页码；pageRenderSeq 竞态守卫沿用
+// （旧渲染响应不得写入新页——翻页是异步渲染，连点「下一页」时靠它兜底）。
+const PAGE_SIZE = L.PAGE_SIZE;
+
+/** 分页底栏（上一页/下一页 · 第 N/M 页 · 共 X 条）。 */
+function pagerHtml(pg) {
+  if (pg.pageCount <= 1) return ""; // 一页以内不渲染底栏（不摆死键）
+  return `
+    <div class="toolbar" data-pager style="margin-top:10px;margin-bottom:0">
+      <button class="btn" data-prev ${pg.hasPrev ? "" : "disabled"}>上一页</button>
+      <button class="btn" data-next ${pg.hasNext ? "" : "disabled"}>下一页</button>
+      <span class="meta" data-pagerText>${L.paginationText(pg)}</span>
+    </div>`;
+}
+async function renderCategoryPage(cat, title, query = "", page = 0) {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = title;
   pageSub.textContent = cat === "recent-activity" ? "自动滚动清理（默认保留 30 条 / 30 天，可在设置页调整）" : "";
@@ -671,7 +706,9 @@ async function renderCategoryPage(cat, title, query = "") {
   if (seq !== pageRenderSeq) return; // 旧渲染丢弃：用户已切到别的路由
   const all = data.entries ?? [];
   let current = query;
-  const reload = () => { renderCategoryPage(cat, title, current); refreshCounts(); };
+  let currentPage = page;
+  // reload 后保留检索词与页码（翻页不丢上下文）
+  const reload = () => { renderCategoryPage(cat, title, current, currentPage); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">
       <input class="inp search" data-q placeholder="检索：标题 / 描述 / 正文即时过滤">
@@ -681,8 +718,10 @@ async function renderCategoryPage(cat, title, query = "") {
       <span class="spacer"></span>
       <button class="btn primary" data-new>＋ 新增条目</button>
     </div>
-    <div data-list></div>`;
+    <div data-list></div>
+    <div data-pagerHost></div>`;
   const list = page.querySelector("[data-list]");
+  const pagerHost = page.querySelector("[data-pagerHost]");
   const $q = page.querySelector("[data-q]");
   $q.value = query;
   // 空态拆两态——库空（引导语）vs 搜索无命中（回显 query，区别于库空）
@@ -692,12 +731,22 @@ async function renderCategoryPage(cat, title, query = "") {
       list.innerHTML = all.length === 0
         ? '<div class="empty">暂无条目。对话中聊到相关信息后，DSH 会自动归类到这里；也可以手动新增或导入。</div>'
         : `<div class="empty">没有匹配「${esc(q)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
+      pagerHost.innerHTML = "";
       return;
     }
-    for (const e of entries) list.appendChild(entryCard(cat, e, reload, keepDays));
+    // 分页：检索变化时页码回落第 1 页（旧页号对着新过滤结果可能越界）
+    const pg = L.paginateOf(entries.length, currentPage);
+    currentPage = pg.page;
+    const slice = entries.slice(pg.start, pg.end);
+    for (const e of slice) list.appendChild(entryCard(cat, e, reload, keepDays));
+    pagerHost.innerHTML = pagerHtml(pg);
+    const prev = pagerHost.querySelector("[data-prev]");
+    const next = pagerHost.querySelector("[data-next]");
+    if (prev) prev.addEventListener("click", () => { currentPage = pg.page - 1; renderList(entries, q); });
+    if (next) next.addEventListener("click", () => { currentPage = pg.page + 1; renderList(entries, q); });
   };
   renderList(L.filterEntries(all, query), query);
-  $q.addEventListener("input", (ev) => { current = ev.target.value; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
+  $q.addEventListener("input", (ev) => { current = ev.target.value; currentPage = 0; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
   page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog(cat, reload));
   page.querySelector("[data-import]").addEventListener("click", () => importDialog(cat, reload));
   // 源码模式改的是整类（不随检索框过滤）——恒用全量，避免只写回命中的那几条
@@ -718,8 +767,8 @@ async function renderCategoryPage(cat, title, query = "") {
   });
 }
 
-// ============ 页面：长期记忆（检索增强） ============
-async function renderLongTermPage(query = "") {
+// ============ 页面：长期记忆（检索增强 + 分页） ============
+async function renderLongTermPage(query = "", page = 0) {
   const seq = ++pageRenderSeq;
   pageTitle.textContent = "长期记忆";
   pageSub.textContent = "跨会话保存的重要信息与结论，不会过期";
@@ -735,7 +784,8 @@ async function renderLongTermPage(query = "") {
   if (seq !== pageRenderSeq) return;
   const all = data.entries ?? [];
   let current = query;
-  const reload = () => { renderLongTermPage(current); refreshCounts(); };
+  let currentPage = page;
+  const reload = () => { renderLongTermPage(current, currentPage); refreshCounts(); };
   page.innerHTML = `
     <div class="toolbar">
       <input class="inp search" data-q placeholder="检索：标题 / 描述 / 正文即时过滤">
@@ -745,8 +795,10 @@ async function renderLongTermPage(query = "") {
       <span class="spacer"></span>
       <button class="btn primary" data-new>＋ 新增条目</button>
     </div>
-    <div data-list></div>`;
+    <div data-list></div>
+    <div data-pagerHost></div>`;
   const list = page.querySelector("[data-list]");
+  const pagerHost = page.querySelector("[data-pagerHost]");
   const $q = page.querySelector("[data-q]");
   $q.value = query; // reload 后保留并回填检索词（不再被重置）
   // 空态拆两态——库空（引导语）vs 搜索无命中（回显 query，区别于库空）
@@ -756,12 +808,20 @@ async function renderLongTermPage(query = "") {
       list.innerHTML = all.length === 0
         ? '<div class="empty">暂无长期记忆。对话中沉淀出跨会话有价值的结论后，DSH 会自动归档；也可以手动新增或导入。</div>'
         : `<div class="empty">没有匹配「${esc(q)}」的条目——换个关键词，或清空检索框查看全部 ${all.length} 条。</div>`;
+      pagerHost.innerHTML = "";
       return;
     }
-    for (const e of entries) list.appendChild(entryCard("long-term", e, reload));
+    const pg = L.paginateOf(entries.length, currentPage);
+    currentPage = pg.page;
+    for (const e of entries.slice(pg.start, pg.end)) list.appendChild(entryCard("long-term", e, reload));
+    pagerHost.innerHTML = pagerHtml(pg);
+    const prev = pagerHost.querySelector("[data-prev]");
+    const next = pagerHost.querySelector("[data-next]");
+    if (prev) prev.addEventListener("click", () => { currentPage = pg.page - 1; renderList(entries, q); });
+    if (next) next.addEventListener("click", () => { currentPage = pg.page + 1; renderList(entries, q); });
   };
   renderList(L.filterEntries(all, query), query);
-  $q.addEventListener("input", (ev) => { current = ev.target.value; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
+  $q.addEventListener("input", (ev) => { current = ev.target.value; currentPage = 0; renderList(L.filterEntries(all, ev.target.value), ev.target.value); });
   page.querySelector("[data-new]").addEventListener("click", () => newEntryDialog("long-term", reload));
   page.querySelector("[data-import]").addEventListener("click", () => importDialog("long-term", reload));
   page.querySelector("[data-source]").addEventListener("click", () => sourceModeDialog("long-term", all, reload));
@@ -1033,7 +1093,11 @@ function retryPollWindowMs(st) {
 }
 
 /** 管道健康卡：三态灯 + 分桶 + 最近 5 条详情 + 错过区间 + 失败日志 + 重试/诊断按钮。
- *  绿态折叠一行摘要；红/黄/在途展开病灶。 */
+ *  绿态折叠一行摘要；红/黄/在途展开病灶。
+ *  状态优先级（绿红并置修正）：数据损坏/只读 > 未恢复区间 > 已放弃 > 「最近无失败」绿行。
+ *  老逻辑里绿灯只看 streak/inFlight，出现「最近无失败」与「有区间没提取上」红条并置——
+ *  两条都真但并置读不通。现在优先级走 L.healthPriorityLevel 显式判定，有未恢复/已放弃
+ *  区间时绿行让位（canShowNoFailureLine 为假），状态词同步改口。 */
 function buildPipeHealthCard(data) {
   const efRaw = data.extractionFailures;
   const ef = efRaw && typeof efRaw === "object" ? efRaw : null;
@@ -1041,8 +1105,15 @@ function buildPipeHealthCard(data) {
   const inFlight = data.extractionInFlight === true;
   const level = L.pipeHealthLevel(efRaw, { inFlight });
   const dotCls = level === "green" ? "green" : level === "yellow" ? "yellow" : level === "red" ? "red" : "grey";
-  // 状态词：颜色之外的第二编码（色弱/灰度屏也能读），与灯同 aria 标注
-  const statusWord = level === "green" ? "正常" : level === "yellow" ? "告警" : level === "red" ? "失败" : "进行中";
+  // 状态优先级（显式）：有未恢复/已放弃区间时不许显示「最近无失败」绿行（并置自相矛盾）
+  const priority = L.healthPriorityLevel(data);
+  const allowGreenLine = L.canShowNoFailureLine(priority);
+  // 状态词：颜色之外的第二编码（色弱/灰度屏也能读），与灯同 aria 标注。
+  // 绿灯但优先级非绿（有未恢复/已放弃区间）→ 改用优先级词，灯仍按 streak 三态。
+  const statusWord = level === "green"
+    ? (allowGreenLine ? "正常" : L.healthPriorityWord(priority))
+    : level === "yellow" ? "告警" : level === "red" ? "失败" : "进行中";
+  const statusCls = level === "green" && !allowGreenLine ? "yellow" : dotCls; // 灯色随优先级降级
   const hasDetail = ef !== null && Array.isArray(ef.recent); // recent 缺失=旧服务端
   // 未恢复区间双源（提前算，绿态摘要文案要用）：内存态 lastFailedRange 在场照旧
   // （extractionRangeText 自带 streak≥1 门），否则回落盘侧 extractionLog.unrecovered——
@@ -1050,13 +1121,13 @@ function buildPipeHealthCard(data) {
   const memRangeText = L.extractionRangeText(efRaw, data.lastFailedRange);
   const diskRangeText = memRangeText ? "" : L.unrecoveredTextFromLog(data.extractionLog && data.extractionLog.unrecovered);
   const parts = [];
-  if (level === "green") {
+  if (level === "green" && allowGreenLine) {
     // 绿态折叠：健康时只占一行；notice ok 复用三态色板。
-    // 有盘侧未恢复区间时改口"重启以来"——那是重启前的存量缺口，
-    // 这时还说"最近无失败"会和下方红条自相矛盾（两条都真，但并置读不通）。
+    // 有未恢复/已放弃区间时（allowGreenLine=false）整段不渲染——让位给下方红条，
+    // 不再出现「最近无失败」与「有区间没提取上」并置（两条都真，但并置读不通）。
     const at = data.lastAttemptAt ? ` · 上次尝试 ${L.relativeTimeOf(data.lastAttemptAt)}` : "";
-    parts.push(`<div class="notice show ok" style="margin:6px 0 0">${diskRangeText ? "重启以来无失败" : "最近无失败"}${at}</div>`);
-  } else {
+    parts.push(`<div class="notice show ok" style="margin:6px 0 0">最近无失败${at}</div>`);
+  } else if (level !== "green") {
     if (level === "red") {
       const notice = L.extractionNoticeText(efRaw); // 与门牌红条同文案（双端一致）
       if (notice) parts.push(`<div class="notice show err" style="margin:6px 0 0">${esc(notice)}</div>`);
@@ -1117,14 +1188,19 @@ function buildPipeHealthCard(data) {
   const card = document.createElement("div");
   card.className = "card";
   card.id = "data-pipe-health"; // 门牌「详情」深链滚动锚点
+  // 留一份最近 /state 供补提卡刷新时取（pending 端点只要会话探测，轮询窗口要 state 的提取超时口径）
+  window.__dshLastState = data;
   card.innerHTML = `
-    <h3><span class="dot ${dotCls}" role="img" aria-label="状态：${statusWord}"></span><span class="statusWord ${dotCls}" title="自动提取管道状态">${statusWord}</span>自动提取管道${inFlight ? '<span class="badge">提取中…</span>' : ""}
+    <h3><span class="dot ${statusCls}" role="img" aria-label="状态：${statusWord}"></span><span class="statusWord ${statusCls}" title="自动提取管道状态">${statusWord}</span>自动提取管道${inFlight ? '<span class="badge">提取中…</span>' : ""}
       <span class="ops">
         <button class="btn sm" data-retryExtract>立即重试提取</button>
         <button class="btn sm" data-copyDiag>复制诊断信息</button>
       </span>
     </h3>
+    <div data-pendingRecover></div>
     ${parts.join("")}`;
+  // 补提清单块（异步拉取；失败就地显示可读说明，不影响健康卡其余部分）
+  card.querySelector("[data-pendingRecover]").replaceWith(buildPendingCard(data));
   card.querySelector("[data-copyDiag]").addEventListener("click", async () => {
     let text;
     try {
@@ -1189,6 +1265,108 @@ function buildPipeHealthCard(data) {
     });
   });
   return card;
+}
+
+// ============ 未恢复/已放弃区间（补提 UI：GET /sessions/pending + POST /sessions/recover） ============
+// 契约（后端定死）：items 按 at 降序；kind: failed=未恢复 / abandoned=已放弃；
+//   sessionAvailable=false → 不空承诺（如实说明要重开会话）；hostSupported=false → 整块说明。
+// 节奏：点击「补提」→ busy 三段式 → 202 后按提取超时口径轮询 pending（retryPollWindowMs 推导）
+//   → 该行消失（从清单移除）即成功；窗口内没消失 → 如实说可能仍在跑，提示可回看。
+let pendingPollTimer = null;
+
+function stopPendingPoll() {
+  if (pendingPollTimer) { clearTimeout(pendingPollTimer); pendingPollTimer = null; }
+}
+
+/** 补提清单卡（管道健康卡内嵌块）：hostSupported=false / 空 / 行列表三态。 */
+function buildPendingCard(state) {
+  const host = document.createElement("div");
+  host.id = "data-pending-recover";
+  host.innerHTML = '<div class="meta" style="margin:6px 0 0">正在读取待补提区间…</div>';
+  // 异步拉取：pending 端点失败（旧宿主/路由未注册）→ 就地显示可重试，不炸健康卡
+  api("sessions/pending")
+    .then((out) => {
+      const items = Array.isArray(out && out.items) ? out.items : [];
+      if (items.length === 0) {
+        host.innerHTML = `<div class="meta" style="margin:6px 0 0">${esc(L.PENDING_EMPTY_TEXT)}</div>`;
+        return;
+      }
+      const hostNote = L.pendingHostNote(out && out.hostSupported);
+      host.innerHTML = `
+        <div class="meta" style="margin:8px 0 2px">待补提区间（${items.length} 段）：重开对应会话后点「补提」即可续上；只提示，不自动合并。</div>
+        ${hostNote ? `<div class="notice show" style="margin:4px 0">${esc(hostNote)}</div>` : ""}
+        <div class="tableScroll"><table class="preview" data-pendingTable>
+          <tr><th style="width:130px">状态</th><th>区间与原因</th><th style="width:88px"></th></tr>
+          ${items.map((it, i) => {
+            const label = L.pendingItemLabel(it);
+            const avail = it && it.sessionAvailable === true;
+            const note = avail ? "" : `<div class="meta">${esc(L.PENDING_UNAVAILABLE_NOTE)}</div>`;
+            return `<tr data-prow="${i}"><td>${esc(String(it && it.kind) === "abandoned" ? "已放弃" : "未恢复")}</td><td>${esc(label || "—")}${note}</td><td>${avail ? `<button class="btn sm" data-recover="${i}">补提</button>` : '<span class="meta">不可补提</span>'}</td></tr>`;
+          }).join("")}
+        </table></div>`;
+      // 逐行「补提」：202 → busy → 轮询 pending 至该行消失；409 忙 / 404 会话不在 / 503 不支持 → 如实提示
+      for (const btn of Array.from(host.querySelectorAll("[data-recover]"))) {
+        btn.addEventListener("click", async () => {
+          const i = Number(btn.getAttribute("data-recover"));
+          const it = items[i];
+          btn.disabled = true; btn.textContent = L.PENDING_RECOVERING_TEXT; // 三段式 busy
+          let started = false;
+          try {
+            const out2 = await apiPost("sessions/recover", { sessionId: it.sessionId, from: it.from, to: it.to });
+            started = out2 && out2.started === true;
+          } catch (err) {
+            btn.disabled = false; btn.textContent = "补提";
+            toast("补提发起失败：" + err.message, "err");
+            return;
+          }
+          if (!started) {
+            btn.disabled = false; btn.textContent = "补提";
+            toast("补提未能启动（服务端未确认开始）", "err");
+            return;
+          }
+          // 轮询窗口按提取超时口径推导（与「立即重试提取」同一把尺：timeoutMs × attempts 夹 [60s,10min]）
+          const deadline = Date.now() + retryPollWindowMs(state);
+          const poll = async () => {
+            let snap = null;
+            try { snap = await api("sessions/pending"); } catch { /* 单次拉取失败：继续轮 */ }
+            const gone = snap && Array.isArray(snap.items)
+              && !snap.items.some((x) => x && String(x.sessionId) === String(it.sessionId) && Number(x.from) === Number(it.from));
+            if (gone) {
+              stopPendingPoll();
+              toast("补提已结束，该区间已从待补列表移除");
+              refreshPendingCard();
+              return;
+            }
+            if (Date.now() >= deadline) {
+              stopPendingPoll();
+              // 超时如实说：没等到行消失，但提取可能仍在进行（不是失败）
+              toast("等待超时：该区间仍在待补列表，补提可能仍在进行——可稍后回来查看", "err");
+              btn.disabled = false; btn.textContent = "补提";
+              return;
+            }
+            pendingPollTimer = setTimeout(poll, 2000);
+          };
+          stopPendingPoll();
+          setTimeout(poll, 2000);
+        });
+      }
+    })
+    .catch((err) => {
+      // 端点不可达（旧宿主未注册该路由）：整块隐藏而非报错——pending 是增益面，不是主干
+      host.innerHTML = `<div class="meta" style="margin:6px 0 0">待补提区间暂不可读（${esc(err.message)}）</div>`;
+    });
+  return host;
+}
+
+/** 就地刷新补提卡（补提流程结束 / 健康卡刷新时顺路）。 */
+function refreshPendingCard() {
+  const host = document.getElementById("data-pending-recover");
+  if (!host) return;
+  const health = document.getElementById("data-pipe-health");
+  if (!health) return;
+  // 重建：直接替换 DOM（buildPendingCard 自带拉取），按钮 busy 态随重建复位
+  const fresh = buildPendingCard(window.__dshLastState ?? {});
+  host.replaceWith(fresh);
 }
 
 /** 提取模型卡（两个诚实字段 + 嵌入召回配置）：config 如实展示，
@@ -1465,6 +1643,124 @@ async function renderSnapshotsPage() {
     });
   }
 }
+// ============ 设置健康提示（/state.settingsDiagnostics.coercedFields；缺失=旧宿主不渲染） ============
+/** 黄条：N 项设置值不合法已回默认（字段名），重存设置可修正。
+ *  空/缺失/非数组 → 返回 null（调用方不渲染，不留空位）。 */
+function buildSettingsHealthCard(data) {
+  const note = L.settingsCoercionNote(data && data.settingsDiagnostics);
+  if (!note) return null;
+  const host = document.createElement("div");
+  host.id = "data-settings-health";
+  host.innerHTML = `<div class="notice show" style="margin:0 0 10px">${esc(note)}</div>`;
+  return host;
+}
+
+// ============ 记忆整理（GET /maintenance/suggestions + POST /maintenance/repair-index） ============
+// 三组卡片：①重复建议（只提示不自动合并）②久未更新 ③索引健康（悬挂行/漏登记/空分类三列）
+// +「修复索引」按钮（busy 三段式 → 回显 fixed 清单或「无需修复」）。
+// 空态「暂无建议」；加载失败可重试（重试 = 重新拉取，不缓存坏状态）。
+function buildMaintenanceCard() {
+  const host = document.createElement("div");
+  host.id = "data-maintenance";
+  host.innerHTML = '<div class="card"><h3>记忆整理</h3><div class="meta">正在生成整理建议…</div></div>';
+  const render = (suggestions) => {
+    if (L.maintenanceSuggestionsEmpty(suggestions)) {
+      host.innerHTML = `<div class="card"><h3>记忆整理</h3><div class="meta">${esc(L.MAINTENANCE_EMPTY_TEXT)}——没有发现重复、久未更新或索引不一致。</div>
+        <div class="kv"><b>操作</b><button class="btn" data-repair>修复索引</button></div></div>`;
+      wireRepair(host, suggestions);
+      return;
+    }
+    const s = suggestions && typeof suggestions === "object" ? suggestions : {};
+    const dup = Array.isArray(s.duplicates) ? s.duplicates : [];
+    const stale = Array.isArray(s.stale) ? s.stale : [];
+    const health = s.indexHealth && typeof s.indexHealth === "object" ? s.indexHealth : {};
+    const counts = s.counts && typeof s.counts === "object" ? s.counts : {};
+    const genAt = s.generatedAt ? ` · 生成于 ${esc(L.relativeTimeOf(s.generatedAt))}` : "";
+    host.innerHTML = `
+      <div class="card"><h3>记忆整理<span class="meta" style="font-weight:400">（只提示，不自动改动${genAt}）</span></h3>
+        <div class="split">
+          <div class="card" style="margin:0"><h3>重复建议（${dup.length}）</h3>
+            ${dup.length === 0 ? '<div class="meta">没有发现重复条目。</div>' : `
+            <div class="tableScroll"><table class="preview">
+              <tr><th style="width:70px">相似度</th><th>条目对</th><th style="width:44%">判断依据</th></tr>
+              ${dup.map((d) => `<tr><td>${L.duplicateScorePct(d && d.score)}%</td><td><code class="k">${esc(d && d.a)}</code> ↔ <code class="k">${esc(d && d.b)}</code></td><td class="meta">${esc(d && d.why)}</td></tr>`).join("")}
+            </table></div>
+            <div class="meta">重复项需要你自己决定留哪条——这里不自动合并。</div>`}
+          </div>
+          <div class="card" style="margin:0"><h3>久未更新（${stale.length}）</h3>
+            ${stale.length === 0 ? '<div class="meta">没有久未更新的条目。</div>' : `
+            <div class="tableScroll"><table class="preview">
+              <tr><th>条目</th><th>分类</th><th style="width:110px">年龄</th></tr>
+              ${stale.map((it) => `<tr><td><code class="k">${esc(it && it.name)}</code></td><td class="meta">${esc(it && it.category)}</td><td class="meta">${esc(L.staleDaysText(it))}</td></tr>`).join("")}
+            </table></div>
+            <div class="meta">年龄不可知的条目（修改时间缺失）也如实列出，不拿 0 天冒充。</div>`}
+          </div>
+        </div>
+        <div class="card" style="margin:10px 0 0"><h3>索引健康<span class="ops"><button class="btn sm" data-repair>修复索引</button></span></h3>
+          <div class="split">
+            ${L.INDEX_HEALTH_COLUMNS.map((c) => {
+              const list = Array.isArray(health[c.key]) ? health[c.key] : [];
+              const rows = list.map((it) => {
+                // 空分类列是分类 id 字符串数组（不是对象）：按字符串渲染；其余列仍是对象取字段
+                if (typeof it === "string") return `<tr><td><code class="k">${esc(it)}</code></td><td></td></tr>`;
+                const main = it && it.name != null ? `<code class="k">${esc(it.name)}</code>` : (it && it.line != null ? esc(it.line) : "—");
+                const cat = it && it.category != null ? `<span class="meta">${esc(it.category)}</span>` : "";
+                return `<tr><td>${main}</td><td>${cat}</td></tr>`;
+              }).join("");
+              return `<div><div class="meta" title="${esc(c.hint)}">${esc(c.label)}（${list.length}）</div>
+                ${list.length === 0 ? '<div class="meta">无</div>' : `<div class="tableScroll"><table class="preview">${rows}</table></div>`}</div>`;
+            }).join("")}
+          </div>
+          <div class="meta" data-repairResult></div>
+        </div>
+        <div class="meta">${esc(L.maintenanceCountsText(counts))}</div>
+      </div>`;
+    wireRepair(host, suggestions);
+  };
+  const load = () => {
+    host.innerHTML = '<div class="card"><h3>记忆整理</h3><div class="meta">正在生成整理建议…</div></div>';
+    api("maintenance/suggestions")
+      .then((out) => render(out))
+      .catch((err) => {
+        host.innerHTML = `<div class="card"><h3>记忆整理</h3>
+          <div class="empty">整理建议加载失败：${esc(err.message)}</div>
+          <div class="kv"><b>操作</b><button class="btn" data-retry>重试</button></div></div>`;
+        const retry = host.querySelector("[data-retry]");
+        if (retry) retry.addEventListener("click", load);
+      });
+  };
+  load();
+  return host;
+}
+
+/** 「修复索引」按钮：busy 三段式 → POST repair-index → 回显 fixed 清单或「无需修复」。 */
+function wireRepair(host, suggestions) {
+  const btn = host.querySelector("[data-repair]");
+  if (!btn) return;
+  const result = host.querySelector("[data-repairResult]");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "修复中…"; // 三段式 busy
+    try {
+      const out = await apiPost("maintenance/repair-index");
+      const text = L.repairIndexResultText(out);
+      // 回显含分类名等不可信内容——走 esc 再进 innerHTML（与记忆整理其余渲染点同一道 XSS 防线）
+      if (result) result.innerHTML = esc(text);
+      // 按回显内容定语气：无需修复/已修复 = 正常；「修复结果未知」按错误语气提示（如实，不粉饰）
+      toast(text, text.startsWith("修复结果未知") ? "err" : "ok");
+      // 修复后建议可能变化：静默重拉一次（不打断用户阅读，失败就留旧面板）
+      api("maintenance/suggestions").then((fresh) => {
+        // 只在用户还停在设置页时更新（路由切走后 host 已脱挂，replaceWith 无害但会误闪）
+        if (document.getElementById("data-maintenance")) host.replaceWith(buildMaintenanceCard());
+      }).catch(() => { /* 重拉失败：保留当前面板与修复回显 */ });
+    } catch (err) {
+      if (result) result.textContent = "修复失败：" + err.message;
+      toast("索引修复失败：" + err.message, "err");
+    } finally {
+      btn.disabled = false; btn.textContent = "修复索引";
+    }
+  });
+}
+
 // ============ 页面：设置（三开关 + 导出全部 + 清空全部 + 备份恢复） ============
 async function renderSettingsPage() {
   const seq = ++pageRenderSeq;
@@ -1543,10 +1839,12 @@ async function renderSettingsPage() {
         <button class="btn primary" id="keepSave">保存保留策略</button></div>
     </div>
     ${corruptBits.length > 0 ? `<div class="card" style="border-color:rgba(221,85,85,.5)">解析失败（已按缺省运行）：${corruptBits.map(esc).join("、")}——点任意开关 / 重新保存对应内容即可重写修复。</div>` : ""}
+    <div data-settingsHealth></div>
     <div class="card"><h3>数据</h3>
       <div class="kv"><b>导出</b><button class="btn" data-export>导出全部（JSON）</button></div>
       <div class="kv"><b>清空</b><button class="btn danger" data-clearAll>清空全部记忆（逐类自动备份）</button></div>
     </div>
+    <div data-maintenance></div>
     <div class="card"><h3>备份（重置/导入/恢复前自动留档）</h3>
       ${backups.length === 0 ? '<div class="meta">暂无备份。</div>' : shownBackups.map((b) => `
         <div class="kv"><b><code class="k">${esc(b.id)}</code></b>
@@ -1558,6 +1856,13 @@ async function renderSettingsPage() {
   // 管道健康卡 + 提取模型卡（元素卡：重试与轮询只重渲染这两张，不打扰开关/备份区）
   page.querySelector("[data-pipeHealth]").replaceWith(buildPipeHealthCard(data));
   page.querySelector("[data-pipeModel]").replaceWith(buildPipeModelCard(data));
+  // 设置健康黄条（coercedFields 非空才渲染；空则整块摘除，不留空位）
+  const healthHost = page.querySelector("[data-settingsHealth]");
+  const healthCard = buildSettingsHealthCard(data);
+  if (healthCard) healthHost.replaceWith(healthCard);
+  else healthHost.remove();
+  // 记忆整理卡（异步拉取建议；失败块内可重试）
+  page.querySelector("[data-maintenance]").replaceWith(buildMaintenanceCard());
   schedulePipePoll(data); // streak>0 期间 5s 本地轮询（render 切路由统一清）
   // 门牌「详情」深链落地——面板初载即 #/settings 时滚到健康卡；
   // 内部导航（backDepth>0）不强制滚动，避免每次进设置页都被拽到中段
@@ -1791,6 +2096,7 @@ function currentRoute() {
 }
 function render() {
   stopPipePoll(); // 路由切走必须清健康卡轮询 timer（设置页重进时再按 streak 重建）
+  stopPendingPoll(); // 补提轮询同理：切走路由后不得再打 pending 端点
   const route = currentRoute();
   const cfg = ROUTES[route];
   document.querySelectorAll("aside a").forEach((a) => a.classList.toggle("on", a.getAttribute("data-route") === route));

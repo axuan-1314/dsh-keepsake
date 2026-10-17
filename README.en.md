@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.4.1 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.4.2 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -23,7 +23,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 > Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
 ```
 
 ## Contents
@@ -35,6 +35,8 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
   - [Memory management panel](#memory-management-panel)
   - [Pipeline health card and "retry extraction now"](#pipeline-health-card-and-retry-extraction-now)
   - [Extraction run log and cross-restart resume](#extraction-run-log-and-cross-restart-resume)
+  - [Session backfill: recover failed ranges across restarts](#session-backfill-recover-failed-ranges-across-restarts)
+  - [Memory upkeep: duplicate, stale and index-audit suggestions](#memory-upkeep-duplicate-stale-and-index-audit-suggestions)
   - [Failure resilience: retry, classification, on-disk trail](#failure-resilience-retry-classification-on-disk-trail)
   - [Automatic backups](#automatic-backups)
   - [Write reversibility: snapshots and trash](#write-reversibility-snapshots-and-trash)
@@ -91,7 +93,7 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 | Project memory | project notes/index are no longer injected, project-class writes are filtered (count visible) |
 | Global auto-extraction | no new global entries; existing ones still inject |
 
-- **Anti-feedback**: injected messages carry `source.kind = "plugin:dsh-keepsake"`; the extraction side excludes them from "user prose", so the model never re-records injected memory into memory.
+- **Anti-feedback (machine-origin exclusion)**: injected messages carry `source.kind = "plugin:dsh-keepsake"`; the extraction side applies a unified machine-origin rule — messages injected by **any plugin** (not just this one), plus systematic messages such as instruction / summary / tool, are all excluded from "user prose" (they count neither toward the skip gate nor into the extraction input), so the model never re-records injected memory into memory. Genuine human messages (including those with no source, or `steer` / `followup` kinds) always count; the semantic-recall query text likewise takes only human messages.
 
 ### Semantic recall (optional)
 
@@ -115,7 +117,7 @@ Entry point: DSH settings → **Memory** section (the Memory block on the DSH se
 The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 
 - **Four category pages + long-term page**: entry cards (title / description / filename / updated time / body) supporting —
-  - **browse & search**: instant filter on the long-term page (title / description / body); recent-activity entries carry an age badge;
+  - **browse & search**: every category page and the long-term page have instant search (title / description / body filtering, 50 entries per page); recent-activity entries carry an age badge;
   - **edit**: title (60 chars), description (60 chars), body (20000 chars); live char + UTF-8 byte counters;
   - **delete** (with confirmation) and **add entry**;
   - **source mode**: edit an entire category as one text blob (save = auto-backup then rebuild);
@@ -125,15 +127,15 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 - **Addressing page**: two inputs ("DSH's name" / "what to call me", 40 chars each), debounced auto-save, same data as the settings block.
 - **Project memory page** (read-only): per-project entry count and last update; per-project JSON export.
 - **Trash page / Snapshots page** (see [Write reversibility](#write-reversibility-snapshots-and-trash)): deleted entries and pre-batch archives, restorable per entry or per file.
-- **Settings page**: the three switches; pipeline health card and extraction-model card; a **retention policy** card (trash retention days / snapshot count / recent-activity retention days, effective next turn); data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
-- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt files are preserved as `*.corrupt-<ts>` before being overwritten. A corrupt `settings.json` is preserved (renamed to `settings.json.corrupt-<ts>`) and then recovered from the shadow file `settings.last-good.json` (refreshed on every successful write), restoring your switch choices — it only falls back to defaults when no shadow is available, not by discarding your settings outright.
+- **Settings page**: the three switches; pipeline health card (with the backfill area, see [Session backfill](#session-backfill-recover-failed-ranges-across-restarts)) and extraction-model card; the **Memory upkeep** card (see [Memory upkeep](#memory-upkeep-duplicate-stale-and-index-audit-suggestions)); a **retention policy** card (trash retention days / snapshot count / recent-activity retention days, effective next turn); data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
+- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt files are preserved as `*.corrupt-<ts>` before being overwritten. A corrupt `settings.json` is preserved (renamed to `settings.json.corrupt-<ts>`) and then recovered from the shadow file `settings.last-good.json` (refreshed on every successful write), restoring your switch choices — it only falls back to defaults when no shadow is available, not by discarding your settings outright. When individual settings values are invalid and coerced to defaults, a yellow bar lists the field names ("N settings values were invalid and reset to defaults", from `/state.settingsDiagnostics.coercedFields`); re-saving the settings fixes it.
 
 ### Pipeline health card and "retry extraction now"
 
 - **Three-state light**: green = no recent failure (collapsed to one line); yellow = recent failure but auto-recovered; red = currently failing (with same-reason streak); gray pulse = extracting. While a streak is active it polls every 5s; the sidebar "Settings" item shows a red streak badge.
 - **Failure buckets**: by reason (no-route / no-cwd / LLM call / parse / IO), showing only non-zero buckets.
 - **Last 5 failures**: time / reason / model / error summary, plus the failure log path (`<storageRoot>/extraction-errors.log`).
-- **Missed-range hint**: "content after turn X is not yet recorded; it will be backfilled on recovery".
+- **Missed-range hint**: "content after turn X is not yet recorded; it will be backfilled on recovery", with a backfill area to re-run ranges one by one (see [Session backfill](#session-backfill-recover-failed-ranges-across-restarts)).
 - **"Retry extraction now" button**: actually triggers one LLM extraction for sessions with un-extracted ranges (confirmation dialog notes the small token cost); 10s minimum interval, 409 while in flight.
 - **"Copy diagnostics" button**: copies a state summary for pasting into an issue.
 - **Extraction-model card**: honestly shows the extraction route (explicit `provider`/`model`, or "unspecified (follows session route)"), fallback config, the last route used, and the embedding model (for semantic recall).
@@ -145,6 +147,24 @@ The root cause behind "I chatted for a few turns but keepsake shows no feedback"
 - **Extraction run log (durable surface)**: each settled extraction appends a line to `<storageRoot>/extraction-journal.jsonl` — `written` (how many written / deleted) / `zero-ops` (nothing worth recording, or ops that could not land) / `skipped` (direct write into memory, no usable user prose, master switch off, format read-only) / `failed` (the same reason names as the failure buckets) / `abandoned` (the same structural cause failed too many times, the range was explicitly abandoned and the cursor advanced without further retry). Appends are serialized to avoid concurrent corruption; past 2000 lines the file rotates keeping the last 1000; a write failure only logs a warning and never blocks extraction. It is not a source of truth — deleting it loses no memory (only the observation history and the resume boundary). See [FORMAT.md](FORMAT.md) section 7.
 - **Panel "recent extraction records"**: the settings-page health card gains a collapsible list (time + seq range + result label), so "why wasn't that recorded" is answerable per turn. The "unrecovered range" red bar is now dual-sourced — after a restart it falls back to the on-disk unrecovered list instead of disappearing, and structurally abandoned ranges are also recorded on disk (the panel shows an "abandoned N ranges" hint).
 - **Cross-restart resume**: the per-session extraction cursor is persisted alongside the run log, so after a DSH restart a reopened session **resumes from the last boundary** and failed ranges are no longer lost to a restart. **Trade-off**: a session that was never extracted still does not back-scan its history — extraction is driven by the session continuing to produce new turns, so an un-extracted history is picked up only when that session keeps chatting.
+
+### Session backfill: recover failed ranges across restarts
+
+v0.4.1 made failed ranges **visible** across restarts (the run log persists them); v0.4.2 makes them **recoverable**:
+
+- **Panel "backfill" area**: the settings-page health card embeds a backfill list of unrecovered / abandoned extraction ranges (time + seq range + result label), each with a per-item "backfill" action. The list comes from the extraction run log and survives restarts.
+- **Prerequisite and honest degradation**: reading a session back requires the host to provide its session-persistence service (built into the local host since 0.2.0-rc.2). On older hosts without it, the panel says so plainly and the API returns 503 (`E_HOST_UNSUPPORTED`) — it never pretends a backfill happened.
+- **Range discipline**: a backfill range must lie **entirely within the readable range of the session**; anything beyond it (including the tail cut off by the per-session event cap on very large sessions) is explicitly refused and stays on the list — un-read content is never accounted as backfilled.
+- **Async and observable**: `POST /api/sessions/recover` returns 202 and runs in the background (one backfill at a time; 409 while one is in flight); progress is observable under `/state.recover` (`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`). The list itself is `GET /api/sessions/pending`.
+
+### Memory upkeep: duplicate, stale and index-audit suggestions
+
+The settings page gains a **Memory upkeep** card. It only suggests; it never changes your memory on its own:
+
+- **Duplicate suggestions**: pairs of entries with highly overlapping bodies, the same name across categories, or near-identical titles with overlapping bodies — each with a similarity score and the reason. Advisory only; which one to keep is your call, nothing is auto-merged.
+- **Stale reminders**: entries not updated for a default of 90 days. Entries whose modification time is missing are honestly listed as "age unknown", never faked as 0 days.
+- **Index health and "repair index"**: audits each `MEMORY.md` index against the disk (dangling lines pointing at missing files, unlisted entry files, empty categories). Repairing only adds/removes index lines and **never deletes entry files**; the index text is archived to a snapshot before any change (recoverable from the **Snapshots** page), and if that archive fails the repair is refused.
+- **Endpoints**: `GET /api/maintenance/suggestions` (the suggestion list) and `POST /api/maintenance/repair-index` (the response's `fixed` is the array of applied actions, with `fixedCount` and `unchanged`).
 
 ### Failure resilience: retry, classification, on-disk trail
 
@@ -199,7 +219,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
 # profile: web / headless / desktop
 ```
 
@@ -247,7 +267,7 @@ cordis entry config (see `cordis.patch.yml`):
 |---|---|---|
 | `enabled` | **false** (fail-closed) | Master switch; `cordis.patch.yml` sets `enabled: true`, so installing enables it visibly |
 | `injectChannel` | **`"message"`** | Injection channel: `"message"` = durable user-message channel (default, all presets); `"section"` = legacy four-segment system-prompt injection (rollback) |
-| `injectMaxChars` | 60000 | **Total** budget for message-channel injection (chars): the recall block and the main block share it, and the main block yields to the recall block; overflow drops whole segments by priority, with a visible WARNING |
+| `injectMaxChars` | 30000 | **Total** budget for message-channel injection (chars): the recall block and the main block share it, and the main block yields to the recall block; overflow drops whole segments by priority, with a visible WARNING. Lowered from 60000 in v0.4.2 (the supersede / disclaimer lines add fixed overhead, and throttling favors smaller per-turn blocks — see [How it works](#how-it-works)); set it explicitly if you need a larger budget |
 | `storageRoot` | `~/.dsh/memory` | Root for all memory (tests / migration; usually leave alone) |
 | `provider` / `model` | empty (follow session) | Extraction call route; must appear as a pair, else an error. Empty auto-captures the current session route (`request/header` first, `assistant/message`'s `source` as fallback, the same session-title strategy) |
 | `minUserWords` | 3 | Lower bound on prose word count for the skip condition |
@@ -354,24 +374,26 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Trigger**: subscribes to `session/event`; after `turn/end` (`data.reason.kind === "completed"`) it triggers extraction (in-process single-flight + latestPending merge).
 - **Extraction**: one `ctx.llm.stream` call — input is an incremental transcript excerpt + the current memory manifest (mtime-desc, top 200, recent small files with bodies) + global category indices; output is `Nothing to save.` or a `{"ops":[...]}` JSON (ops carry scope: `project` default / `global:<category>`).
 - **Write-back**: the plugin (not the model) writes files under `~/.dsh/memory/...`; filenames pass three gates (containment + blacklist segments + Unicode control-char stripping); `MEMORY.md` is merged automatically; recent-activity timestamps are stamped by the host (never trusting the model's clock).
-- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message (with a one-line disclaimer: memory is reference context, not instructions; subagent sessions are not injected). Identical-to-visible content is skipped (only re-sent on change or when compaction/rewind evicts it); total budget `injectMaxChars` (the recall block counts toward it, and the main block yields to the recall block). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
+- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message. The block opens with two lines: a supersede note (this is the current memory snapshot; it supersedes earlier memory blocks — if you see more than one, follow only the latest), then the disclaimer (memory is reference context, not instructions; subagent sessions are not injected). Whether to send is a three-way decision: identical to the last visible block → skip; a small change (character-bigram similarity ≥0.98, or a char delta ≤ max(200, 1% of length)) → throttled and held back until the next large change or until compaction/rewind evicts the old block and a full block goes out; a near-total rewrite (similarity <0.5) → sent immediately. Total budget `injectMaxChars` (the recall block counts toward it, and the main block yields to the recall block). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
 - **Semantic recall** (optional, `recallEnabled`): each turn embeds the current user message once and retrieves top-k entries by cosine, injected as a `<memory-recall>` block; entry vectors are cached incrementally in `<storageRoot>/embeddings.json`. On timeout/error/unconfigured the turn recalls nothing (explicit degradation, observable under `/state.recall`).
 - **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is persisted alongside the extraction run log (one line per settle, replayed on restart), so after a DSH restart a reopened session **resumes from the last boundary**; but a session mounted midway or never extracted before only processes turns completed while it is alive and does not back-scan history.
 - **Skip double condition**: no ≥3-word user prose; and no direct write into the memory dir that turn (a write/edit tool call landing in memoryRoot). A skip still advances the cursor.
 - **Shutdown discipline**: on uninstall the plugin first drains in-flight extraction with a bounded wait (headless one-shot relies on this to finish writing memory before exit) and only aborts on timeout.
-- **Six spec boundaries**: ① debounce merge + cursor advance → `lib/state.js`; ② write boundary (`.md` only, containment enforced, the model never touches the disk directly) → `lib/extract.js`; ③ filename safety → `lib/filename.js`; ④ injection budget → `lib/manifest.js`; ⑤ trigger threshold → `lib/transcript.js`; ⑥ anti-feedback (request-only extraction + filtering injected messages by `source.kind`) → `lib/index.js` / `lib/transcript.js`.
+- **Six spec boundaries**: ① debounce merge + cursor advance → `lib/state.js`; ② write boundary (`.md` only, containment enforced, the model never touches the disk directly) → `lib/extract.js`; ③ filename safety → `lib/filename.js`; ④ injection budget → `lib/manifest.js`; ⑤ trigger threshold → `lib/transcript.js`; ⑥ anti-feedback (request-only extraction + the machine-origin rule: injections from any plugin and systematic instruction/summary/tool messages never count as user prose) → `lib/index.js` / `lib/transcript.js`.
 
 ## Observability & operations
 
 - **Extraction failures**: `/dsh-keepsake/api/state` → `extractionFailures` (bucketed + same-reason streak + `retried` + `recent[5]`). Structural failures (no-route / no-cwd) give up after 5 consecutive failures.
 - **Observation surface**: `/state` also carries `lastFailedRange`, `extractionInFlight`, `lastAttemptAt`, `lastUsedRoute`, `extractionConfig`, `embeddingConfig` (with the effective `baseUrl`); the settings page's "pipeline health card" renders all of it.
 - **Extraction run-log surface (v0.4.1)**: `/state.extractionLog` — `runs` (latest 30 settled records) / `unrecovered` (failed ranges not later backfilled) / `abandoned` and `abandonedCount` (structurally failed ranges explicitly abandoned and no longer retried); its source is `<storageRoot>/extraction-journal.jsonl`. `settings.corrupt` (settings-file parse-failure marker), `recentKeepDays` (recent-activity retention days) and `extractionTimeoutMs` (per-extraction timeout) are observable in `/state` too.
-- **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); render failures are counted, never silently dropped.
+- **Session-backfill surface (v0.4.2)**: `GET /dsh-keepsake/api/sessions/pending` (`hostSupported` + `items[]`, each carrying `sessionId` / `from` / `to` / `at` / `reason` / `kind` (failed / abandoned) / `sessionAvailable`); `POST /dsh-keepsake/api/sessions/recover` (202 async; 409 single-flight, 404 session missing, 503 host without session persistence); `/state.recover` (`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`) observes progress.
+- **Memory-upkeep surface (v0.4.2)**: `GET /dsh-keepsake/api/maintenance/suggestions` (`duplicates` / `stale` / `indexHealth` with `dangling` / `orphans` / `emptyCategories` / `counts` / `generatedAt`); `POST /dsh-keepsake/api/maintenance/repair-index` (`fixed` array of applied actions / `fixedCount` / `unchanged`).
+- **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); v0.4.2 adds two same-source-replacement counters — `throttled` (changes held back this turn) and `superseded` (old blocks invalidated by the supersede note); the health card's injection summary shows them too. Render failures are counted, never silently dropped.
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
 - **Write-safety surface (v0.4.0)**: `/state.safety` carries ten fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) plus seven in-process counters (`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**); the pipeline health card gains a summary line, and the **Snapshots** / **Trash** pages let you inspect and restore.
 - **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_KEEPSAKE_DEBUG`.
 - **Manual backfill**: `POST /dsh-keepsake/api/extract/retry` (the "Retry extraction now" button) → 202 + observe via `/state`; 409 in flight; 10s minimum interval.
-- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, the plugin runs with defaults plus a `corrupt` marker and a red bar in the UI; a corrupt file is auto-backed-up as `*.corrupt-<ts>` before being overwritten.
+- **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, the plugin runs with defaults plus a `corrupt` marker and a red bar in the UI; a corrupt file is auto-backed-up as `*.corrupt-<ts>` before being overwritten. Coerced settings values are additionally exposed via `/state.settingsDiagnostics.coercedFields` (visible as the settings-page yellow bar).
 - **Debug log**: with `DSH_KEEPSAKE_DEBUG=1`, writes `<storageRoot>/debug.log` (>1MB rotates to `debug.log.1`) — the full diagnostic channel when the Electron host console is not forwarded.
 - **Backup policy**: a full backup to `backups/` is taken automatically before reset/import/restore, keeping the latest **20**; a half-written backup (no `complete` in its meta) is marked incomplete and refuses restore.
 
@@ -408,11 +430,13 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **No per-edit history for persona/addressing; entry saves and deletes do have an undo**: PUT persona / PUT addressing still replace the old text outright — a bad paste overwrites it (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo; but **PUT entry (saving an entry) snapshots the old text before overwriting** (the response carries `preSaveSnapshotId`, restorable from the **Snapshots** page), and **DELETE entry (deleting an entry) moves it to the trash** (kept 30 days by default, restorable from the **Trash** page). Batch destructive paths (reset/import/restore) also take a full auto-backup.
 - **Extraction only processes turns completed while it is alive; it does not back-scan history** (intentional): a session mounted midway or never extracted is not proactively backfilled — it needs to keep producing new turns (cross-restart resume only covers sessions that were extracted before and whose boundary was persisted).
 - **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (22-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
-- **Injection blocks can accumulate within a session**: on content change a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them; each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
+- **Injection blocks can accumulate within a session**: on large content changes a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them. Since v0.4.2 the supersede note makes the model follow only the latest block and change throttling reduces resend frequency, but the historical blocks still occupy context. Each block is bounded by `injectMaxChars`; observable via `/state.injection.resends`.
 - **`injectMaxChars` is the total injection budget (recall block included)**: with recall on, the main block yields to the recall block so the two together stay within it; the visible truncation notice is counted too (a slight overrun is possible only when the budget is too small to fit even the wrapper and notice).
-- **Anti-feedback covers only own injections**: the extraction side excludes only `plugin` / `plugin:*`; host-official injections (`agent-instructions`, `runtime-context`, …) are still treated as ordinary user content.
+- **Machine-origin rule is deliberately narrow**: the extraction side excludes two `source.kind` families — injections from any plugin (`plugin:*`) and known systematic kinds (inject / instruction / summary / tool); everything else (including a missing source, bare `plugin`, or `steer` / `followup`) is treated as ordinary human content. Deliberate: a false negative (machine text treated as human) costs at most one extra extraction, a false positive (human text treated as machine) loses memory.
+- **Throttling trade-off of same-source replacement**: small memory changes (similarity ≥0.98 or a tiny char delta) are held back and only go out with the next large change or after compaction — **an equal-length minor rewrite (e.g. a typo fix) may stay out of the model's view for a while**; that is the price of "sending less" under an append-only history, observable via `/state.injection.throttled`. A second trade-off: old blocks in host history cannot be retracted — the supersede note at the top of each block asks the model to follow only the latest one.
+- **Backfill range limits**: a backfill range must lie entirely within the readable range of the session — reads of very large sessions are capped (truncation keeps the earlier part), so ranges in the truncated **tail** are explicitly refused and stay pending (never falsely accounted as backfilled); without host session persistence, backfill is unavailable altogether (stated plainly).
 - **Echo suppression is tag-level**: the extraction input strips our own `<memory-context>` / `<memory-recall>` wrapper blocks; a "paraphrased" quote without the tags is not stripped — excluding the injected message itself relies on `source.kind`, but paraphrased text is indistinguishable.
 - **Recall embeds the query every turn**: with recall enabled, the current user message is embedded each turn (per-call timeout `recallTimeoutMs`, overall per-turn budget `recallTotalBudgetMs`); entry vectors are incrementally cached, but **the first enable embeds all entries at once**. Off by default; no calls without a configured endpoint.
-- **Recall blocks can accumulate within a session**: on recall changes a new block is sent and old blocks are not removed; only compaction converges them; observable via `/state.recall`. No supersede. The endpoint is circuit-broken for 60s after consecutive failures.
+- **Recall blocks can accumulate within a session**: on recall changes a new block is sent and old blocks are not removed; only compaction converges them; observable via `/state.recall`. Recall blocks have **no** same-source replacement (the supersede note / throttling cover the main memory block only; hit-set dedup is their only convergence). The endpoint is circuit-broken for 60s after consecutive failures.
 
 See [ROADMAP.md](ROADMAP.md) for direction.

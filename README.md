@@ -9,7 +9,7 @@
 
 > DSH（DeepSeek Harness）的跨会话记忆插件：对话里聊过的事自动记下来，下次对话自动带上——你不用每次重复交代背景。附带一个本地「记忆管理」面板，记了什么、删了什么、人设怎么设，全程可见可改。
 
-- **插件版本**：0.4.1（以 `package.json` 为准；变更记录见 [CHANGELOG.md](CHANGELOG.md)）
+- **插件版本**：0.4.2（以 `package.json` 为准；变更记录见 [CHANGELOG.md](CHANGELOG.md)）
 - **适配宿主**：DSH 0.2.0-rc.2（web / headless / desktop 三个 profile 均可安装）；`package.json` 声明了 DSH peer 范围，安装/启动时宿主会做版本兼容检查，不匹配会让用户显式确认后才装
 - **分发**：GitHub 仓库 tag tarball 渠道（+ 本地 clone 作开发）；升级方式见[「升级」](#升级)（DSH 插件不支持自动更新）
 - **数据位置**：全部在本地 `~/.dsh/memory/`，不上传任何远端；API 与面板仅本机（loopback）可访问
@@ -23,7 +23,7 @@
 > 上图为界面示意（使用示例数据渲染）。最快上手（完整步骤见[快速开始](#快速开始)）：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
 ```
 
 ## 目录
@@ -35,6 +35,8 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
   - [记忆管理面板](#记忆管理面板)
   - [管道健康卡与「立即重试提取」](#管道健康卡与立即重试提取)
   - [提取运行日志与跨重启续提](#提取运行日志与跨重启续提)
+  - [会话补提：跨重启把失败区间读回来重提](#会话补提跨重启把失败区间读回来重提)
+  - [记忆整理：重复、陈旧与索引对账建议](#记忆整理重复陈旧与索引对账建议)
   - [失败韧性：重试、分类、落盘留痕](#失败韧性重试分类落盘留痕)
   - [自动备份](#自动备份)
   - [写入可逆性：快照与回收站](#写入可逆性快照与回收站)
@@ -91,7 +93,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 | 项目记忆 | 项目使用说明/项目索引不再注入，项目类记忆写入被过滤（计数可见） |
 | 全局自动提取 | 不再自动写全局记忆；已有的全局条目照常注入 |
 
-- **防自反馈**：注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记；提取侧按此标识把自家注入的消息从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。
+- **防自反馈（按「机器来源」排除）**：注入的记忆消息带 `source.kind = "plugin:dsh-keepsake"` 标记；提取侧按统一的机器来源判据，把**任意插件**（不限本插件）注入的消息、以及 instruction / summary / tool 等系统性消息，都从「用户散文」里排除（既不计入 skip 门槛、也不进提取输入），不会出现"模型把注入的记忆又记回记忆"的自食循环。真人消息（含无来源、steer / followup）永远算数；语义召回的查询文本同样只取真人消息。
 
 ### 语义召回（可选）
 
@@ -115,7 +117,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 面板（`/dsh-keepsake/panel/`，仅本机可访问）包含：
 
 - **四个对话分类页 + 长期记忆页**：条目卡片流（标题 / 描述 / 文件名 / 更新时间 / 正文），支持——
-  - **浏览与检索**：长期记忆页有即时过滤（标题 / 描述 / 正文）；近期动态条目带年龄徽标；
+  - **浏览与检索**：每个分类页与长期记忆页都有即时检索（标题 / 描述 / 正文即时过滤，每页 50 条分页）；近期动态条目带年龄徽标；
   - **编辑**：标题（60 字）、描述（60 字）、正文（20000 字符上限），实时字符与 UTF-8 字节计数；
   - **删除**（确认弹窗）、**新增条目**；
   - **源码模式**：整类序列化成一个文本直接编辑，保存 = 先自动备份再整类重建；
@@ -125,8 +127,8 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **称呼页**：「DSH 的名字」「对我的称呼」两个输入框（各 40 字上限），防抖自动保存，与门牌输入框是同一份数据。
 - **项目记忆页**（只读概览）：按工作区列出各项目的条目数与最后更新时间；可单项目导出 JSON。项目记忆由对话自动维护，不提供手工编辑。
 - **回收站页 / 快照页**（见[「写入可逆性」](#写入可逆性快照与回收站)）：被删条目与批前留档的旧文，可按条或按单个文件恢复。
-- **设置页**：三层开关；管道健康卡与提取模型卡（见下节）；**保留策略**（回收站保留天数 / 快照保留份数 / 近期动态保留天数三个输入，下一轮对话生效）；数据卡（**导出全部** JSON / **清空全部记忆**——逐类自动备份，人设与称呼保留）；备份列表（最近 20 份，逐份可「恢复此备份」，恢复前还会先备份当前状态）。
-- **损坏可见**：`settings.json` / `addressing.json` / `persona.md` 解析失败时，门牌与面板显示红条「解析失败（已按缺省运行）」，点任意开关 / 重新保存对应内容即可重写修复；损坏档在覆盖写前自动备份 `*.corrupt-<ts>`，原数据不失访。`settings.json` 损坏时除了存证（改名 `settings.json.corrupt-<ts>`），还会从影子档 `settings.last-good.json`（每次成功写入同步刷新）恢复用户的开关，恢复不了才落默认——不是简单丢弃重写。
+- **设置页**：三层开关；管道健康卡（含「补提」区，见[「会话补提」](#会话补提跨重启把失败区间读回来重提)）与提取模型卡（见下节）；**记忆整理**卡（见[「记忆整理」](#记忆整理重复陈旧与索引对账建议)）；**保留策略**（回收站保留天数 / 快照保留份数 / 近期动态保留天数三个输入，下一轮对话生效）；数据卡（**导出全部** JSON / **清空全部记忆**——逐类自动备份，人设与称呼保留）；备份列表（最近 20 份，逐份可「恢复此备份」，恢复前还会先备份当前状态）。
+  - **损坏可见**：`settings.json` / `addressing.json` / `persona.md` 解析失败时，门牌与面板显示红条「解析失败（已按缺省运行）」，点任意开关 / 重新保存对应内容即可重写修复；损坏档在覆盖写前自动备份 `*.corrupt-<ts>`，原数据不失访。`settings.json` 损坏时除了保留原档（改名 `settings.json.corrupt-<ts>`），还会从影子档 `settings.last-good.json`（每次成功写入同步刷新）恢复用户的开关，恢复不了才落默认——不是简单丢弃重写。设置值不合法被纠正落默认时，设置页会出黄条「N 项设置值不合法已回默认」并列出字段名（`/state.settingsDiagnostics.coercedFields`），重存设置可修正。
 
 ### 管道健康卡与「立即重试提取」
 
@@ -135,7 +137,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **三态灯**：绿 = 最近无失败（折叠为一行摘要）；黄 = 近期有过失败但已自动恢复；红 = 当前连续失败（同因连击数）；灰闪 = 正在提取。连击 > 0 期间每 5 秒自动轮询刷新，侧栏「设置」项同步显示红色连击徽标。
 - **失败分桶计数**：按原因（无路由 / 无 cwd / LLM 调用 / 解析 / 落盘 IO）分桶，只显示非零桶。
 - **最近 5 条失败详情**：时间 / 原因 / 模型 / 错误摘要，配合失败日志路径（`<storageRoot>/extraction-errors.log`）排障。
-- **错过区间提示**：「第 X 轮对话之后的内容尚未记录，恢复后自动补提」——告诉你哪些对话可能漏记了。
+- **错过区间提示**：「第 X 轮对话之后的内容尚未记录，恢复后自动补提」——告诉你哪些对话可能漏记了；配套「补提」区可逐条重跑（见[「会话补提」](#会话补提跨重启把失败区间读回来重提)）。
 - **「立即重试提取」按钮**：对仍有未提取区间的会话真的发起一次 LLM 提取（有确认弹窗，明示消耗少量 token）；点击后按钮进入 busy 态，面板每 2 秒轮询状态最多 60 秒，恢复即提示「提取已恢复」。10 秒最小间隔，提取在途时返回 409。
 - **「复制诊断信息」按钮**：一键复制当前状态摘要，可直接粘贴到 issue。
 - **提取模型卡**：如实展示提取路由（显式配置的 `provider`/`model`，或「未指定（跟随会话路由）」）、fallback 换道配置、最近一次提取用车（路由 + 相对时间）、嵌入模型（语义召回所用；未配置时显示为未启用）。
@@ -147,6 +149,24 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **提取运行日志（durable 观测面）**：每次提取结算向 `<storageRoot>/extraction-journal.jsonl` 追加一行——`written`（写 / 删了几条）/ `zero-ops`（模型无可记、或有 op 无可落盘）/ `skipped`（直写记忆、无有效用户发言、总开关关、格式只读）/ `failed`（与失败分桶同名的病因）/ `abandoned`（同一结构性病因连续失败过多，显式放弃该区间、游标已推进不再重试）。追加串行化防并发写坏，行数超 2000 自动轮转留尾 1000；写日志失败只告警、不阻断提取。它不是记忆真源，删除不损失任何记忆（代价是丢掉观测历史与续提边界），见 [FORMAT.md](FORMAT.md) 第七节。
 - **面板「最近提取记录」**：设置页健康卡新增折叠清单（时间 + seq 范围 + 结果标签），每轮"为什么没记"有据可查。"未恢复区间"红条改双源——重启后回落盘侧未恢复清单，不再隐身；结构性失败被显式放弃的区间也会在盘上留痕（面板「已放弃 N 段」提示）。
 - **跨重启续提**：每会话提取覆盖边界（cursor）随运行日志持久化，DSH 重启后重开旧会话**从上次边界续提**，失败区间不再因重启永久丢失。**取舍**：从没提取过的会话仍不回扫历史——插件的提取由"会话继续产生新轮次"驱动，对一段从未提取过的历史不会主动回补，需该会话继续对话才会接着提。
+
+### 会话补提：跨重启把失败区间读回来重提
+
+v0.4.1 让失败区间跨重启**看得见**（运行日志持久留痕），v0.4.2 把它推进到**补得上**：
+
+- **面板「补提」区**：设置页健康卡内嵌补提清单，列出未恢复 / 已放弃的提取区间（时间 + seq 范围 + 结果标签），逐条可点「补提」重跑；清单来自提取运行日志，跨重启可见。
+- **前提与如实降级**：补提要能读回会话内容，依赖宿主提供会话持久化服务（本机宿主 0.2.0-rc.2 起内置）；旧版宿主没有该服务时，面板如实提示"本机补不了"，接口返回 503（`E_HOST_UNSUPPORTED`）——不假装补过。
+- **范围纪律**：补提区间必须**整体落在会话可读范围内**；超出可读范围（含超大会话读回截断后的尾部）的区间显式拒绝、继续留在清单里，绝不把没读到的部分按已补提记账、静默丢记忆。
+- **异步与观测**：`POST /api/sessions/recover` 即回 202、后台执行（同一时刻只有一次补提，在途再点返回 409），结果经 `/state.recover`（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`）观测；清单数据面是 `GET /api/sessions/pending`。
+
+### 记忆整理：重复、陈旧与索引对账建议
+
+设置页新增「记忆整理」卡，只出建议、不自动改动你的记忆：
+
+- **重复建议**：正文高度重叠、跨分类同名、标题相近且正文重叠的条目对，附相似度与判断依据——只提示，留哪条由你决定，不自动合并。
+- **久未更新提醒**：默认 90 天未更新的条目列表；修改时间缺失的条目如实标「年龄不可知」，不拿 0 天冒充。
+- **索引健康与「修复索引」**：把 `MEMORY.md` 索引与磁盘对账（悬挂行 = 索引指向已不存在的文件、漏登记 = 磁盘有条目但索引没这行、空分类），一键修复只增删索引行、**绝不删条目文件**；改动前先把索引原文存进快照（可在「快照」页找回），留档失败即拒绝本次修复。
+- **端点**：`GET /api/maintenance/suggestions`（建议清单）、`POST /api/maintenance/repair-index`（响应 `fixed` 为已应用动作明细数组、`fixedCount`、`unchanged`）。
 
 ### 失败韧性：重试、分类、落盘留痕
 
@@ -203,7 +223,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 **① GitHub tag tarball（推荐）** —— 从仓库 tag 直接安装，钉死版本：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.1.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.4.2.tar.gz
 # profile 可选 web / headless / desktop
 ```
 
@@ -251,7 +271,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 |---|---|---|
 | `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
 | `injectChannel` | **`"message"`** | 注入通道：`"message"`=durable 用户消息通道（默认，全预设生效）；`"section"`=旧四段 systemPrompt 注入（一键回滚） |
-| `injectMaxChars` | 60000 | 消息通道注入**总**预算（字符）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING |
+| `injectMaxChars` | 30000 | 消息通道注入**总**预算（字符）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING。v0.4.2 起默认由 60000 下调（块首取代声明 / 免责两行固定开销 + 节流收敛，见[「工作原理」](#工作原理)）；需要更大预算时显式配置即可覆盖 |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
 | `provider` / `model` | 空（跟随会话路由） | 提取调用的模型路由；成对出现，否则报错。缺省时自动捕获本会话路由（`request/header` 优先，`assistant/message` 的 `source` 兜底，同 session-title 策略） |
 | `minUserWords` | 3 | skip 条件的散文词数下限 |
@@ -296,7 +316,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ├── settings.json                          # 三层开关 + 保留策略（面板可改，每轮读取）
 ├── settings.last-good.json                # 开关影子档（每次成功写入同步刷新，settings.json 损坏时从它恢复）
 ├── settings.corrupt                       # 损坏标记（settings.json 解析失败时落，重新保存设置后清除；红条持久可见）
-├── settings.json.corrupt-<ts>             # settings.json 损坏时的存证档（改名保留，原内容不失访）
+├── settings.json.corrupt-<ts>             # settings.json 损坏时的保留原档（改名保留，原内容不失访）
 ├── extraction-errors.log                  # 提取失败日志（常开，>512KB 轮转两档）
 ├── debug.log                              # DSH_KEEPSAKE_DEBUG=1 时的诊断口
 ├── embeddings.json                        # 语义召回条目向量缓存（开启 recallEnabled 时生成）
@@ -360,24 +380,26 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **触发**：订阅 `session/event`，在 `turn/end`（`data.reason.kind === "completed"`）后触发提取（进程内单飞 + latestPending 合并：running 期间新触发只留最新边界）。
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
-- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首一行免责/署名：记忆是参考上下文、非任务指令；subagent 会话不注入）；与视野内已有注入内容相同则跳过（内容变化或 compaction/rewind 把旧注入挤出视野时才补发），总预算 `injectMaxChars`（召回块计入其中，主块先为召回块让位）。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
+- **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值四段（4990 人设 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首两行：先取代声明——本块是最新记忆快照、作废此前的同类块、多块只认最新；后免责/署名——记忆是参考上下文、非任务指令；subagent 会话不注入）。发送与否经三态裁决：与视野内上次那块规范化后相同则跳过；变化太小（字符 bigram 相似度 ≥0.98，或字符差 ≤ max(200, 全长 1%)）被节流、先攒着不发，等下次大变更或 compaction/rewind 把旧块挤出视野后随全量块补发；相似度 <0.5 的整块改写直接放行。总预算 `injectMaxChars`（召回块计入其中，主块先为召回块让位）。`injectChannel: "section"` 时回退为四段 `ctx.systemPrompt.section` 注入（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
 - **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 随提取运行日志持久化（每次结算落一行，重启时同步重放重建），DSH 重启后重开旧会话从上次边界**续提**；但插件中途挂载的新会话或从没提取过的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
-- **六条规格边界**：① 去抖合并+cursor 推进 → `lib/state.js`；② 写入边界（仅 .md、包含性强制、模型永不直接碰盘）→ `lib/extract.js`；③ 文件名安全 → `lib/filename.js`；④ 注入预算 → `lib/manifest.js`；⑤ 触发门槛 → `lib/transcript.js`；⑥ 防自反馈（提取 request-only + 注入消息按 `source.kind` 过滤）→ `lib/index.js` / `lib/transcript.js`。
+- **六条规格边界**：① 去抖合并+cursor 推进 → `lib/state.js`；② 写入边界（仅 .md、包含性强制、模型永不直接碰盘）→ `lib/extract.js`；③ 文件名安全 → `lib/filename.js`；④ 注入预算 → `lib/manifest.js`；⑤ 触发门槛 → `lib/transcript.js`；⑥ 防自反馈（提取 request-only + 机器来源判据：任意插件的注入与 instruction/summary/tool 等系统性消息都不算用户话）→ `lib/index.js` / `lib/transcript.js`。
 
 ## 可观测与运维
 
 - **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
 - **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback）/ `embeddingConfig`（嵌入召回配置，含生效的 `baseUrl`）；面板设置页有「管道健康卡」承载以上全部。
 - **提取运行日志面（v0.4.1）**：`/state` 的 `extractionLog` 字段——`runs`（最近 30 条结算记录）/ `unrecovered`（失败且未被后续补上的区间）/ `abandoned` 与 `abandonedCount`（结构性失败被显式放弃、不再重试的区间数与清单）；数据源即 `<storageRoot>/extraction-journal.jsonl`。`settings.corrupt`（开关文件解析失败标记）、`recentKeepDays`（近期动态保留天数）、`extractionTimeoutMs`（单次提取超时）也在 `/state` 里可观测。
-- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败）。渲染失败显式计入 `renderFailures`（不静默丢）。
+- **会话补提面（v0.4.2）**：`GET /dsh-keepsake/api/sessions/pending`（`hostSupported` + `items[]`，每条带 `sessionId` / `from` / `to` / `at` / `reason` / `kind`（failed / abandoned）/ `sessionAvailable`）；`POST /dsh-keepsake/api/sessions/recover`（202 异步，409 单飞 / 404 会话不在 / 503 宿主未提供会话持久化）；`/state` 的 `recover` 字段（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`）观测执行进度。
+- **记忆整理面（v0.4.2）**：`GET /dsh-keepsake/api/maintenance/suggestions`（`duplicates` / `stale` / `indexHealth`（`dangling` / `orphans` / `emptyCategories`）/ `counts` / `generatedAt`）；`POST /dsh-keepsake/api/maintenance/repair-index`（`fixed` 已应用动作明细数组 / `fixedCount` / `unchanged`）。
+- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败 / 变更节流 / 取代）。渲染失败显式计入 `renderFailures`（不静默丢）。
 - **写入安全面（v0.4.0）**：`/state` 的 `safety` 字段共十个：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行摘要，「快照」「回收站」两页可查可恢复。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-keepsake/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
-- **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。
+- **损坏可见**：settings.json / addressing.json / persona.md 解析失败=按缺省运行 + `corrupt` 标记 + 界面红条；覆盖写前损坏档自动备份 `*.corrupt-<ts>`。设置值不合法被纠正时另有 `/state.settingsDiagnostics.coercedFields` 诊断字段（设置页黄条可见）。
 - **debug 日志口**：`DSH_KEEPSAKE_DEBUG=1` 时写 `<storageRoot>/debug.log`（>1MB 轮转两档 debug.log.1）——Electron 宿主 console 不回传时的全量诊断通道。
 - **备份策略**：reset/import/restore 前自动全量备份到 `backups/`，滚动保留最新 **20 份**；半备份（meta 无 complete）标记 incomplete 且拒绝恢复。
 
@@ -414,11 +436,13 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **人设/称呼无逐次编辑历史；条目保存与删除有后悔药**：PUT persona / PUT addressing 仍是直接替换旧文——粘贴错内容保存即丢旧文（仅损坏档覆盖前会备份 `*.corrupt-<ts>`），覆盖前请自行先导出兜底；而 **PUT entry（保存条目）覆盖前会先把旧文留档到快照**（成功响应带 `preSaveSnapshotId`，可在「快照」页找回），**DELETE entry（删除条目）会移入回收站**（默认保留 30 天，可在「回收站」页找回）。批量破坏路径（reset/import/restore）另有自动全量备份。
 - **提取只处理存活期间新完成的轮次，不回扫历史**（有意保留）：插件中途挂载或从没提取过的会话不会主动回补历史轮次——需该会话继续产生新轮次才接着（跨重启续提只覆盖"曾提取过、边界已落盘"的会话）。
 - **4995 全局索引每次求值全量读条目**（有意不修）：近期动态条目渲染读取条目正文（只用 22 行预算），桌面规模无感；若条目数暴涨可加 mtime 缓存。
-- **注入块在会话内可能累积**：记忆内容变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。若长期高频变化，后续可考虑「同 form 只保最新」。
+- **注入块在会话内可能累积**：记忆内容大幅变化时补发新的注入消息、旧块不删（已提交历史不可改），仅靠 compaction 收敛；v0.4.2 起块首取代声明让模型只认最新一块、变更节流也压低了补发频率，但历史块仍占上下文。单块受 `injectMaxChars` 约束，`/state.injection.resends` 可观测累积速度。
 - **`injectMaxChars` 是注入总预算（含召回块）**：开启召回时主块为召回块让位，两段合计不超过该值；可见截断提示行也计入预算（仅当预算小到连包裹与提示行都装不下时才允许轻微越界）。
-- **防自食只覆盖自家注入**：提取侧按 `source.kind` 只排除 `plugin` / `plugin:*`；宿主官方 `agent-instructions`、`runtime-context` 等注入的 user 消息仍按普通用户内容对待（既有行为，非本版引入；本版保证的是"不把自己的注入记回去"）。
+- **防自食判据的边界（有意从窄）**：提取侧按 `source.kind` 排除两类：任意插件的注入（`plugin:*`）与已知系统性消息（inject / instruction / summary / tool 等）；其余来源（含来源缺失、`plugin`、`steer` / `followup`）一律按真人内容对待——判据故意从窄，因为假阴性（机器话当真人）最多多跑一轮提取，假阳性（真人话当机器）会丢记忆。
+- **同源替换的节流取舍**：记忆内容的小幅变化（相似度 ≥0.98 或字符差很小）先攒着不注入，等下次大变更或上下文压缩后随全量块补发——**等长的小幅改写（如改个错别字）可能一段时间内不进模型视野**；这是 append-only 历史下"少发"的代价，`/state.injection.throttled` 可观测节流频率。另一个取舍：注入块开头靠取代声明作废旧块，宿主历史里旧块本身撤不回，视野内多块时依赖模型遵循"只认最新"的声明。
+- **会话补提的范围限制**：补提区间必须整体落在会话可读范围内——超大会话读回有事件数上限（超限截断保留前段），被截断的**尾部**区间显式拒绝补提、留在待补清单里（不会假装补过）；宿主未提供会话持久化服务时补提整体不可用（如实提示）。
 - **回声抑制是标签级**：提取输入会剥掉自家 `<memory-context>` / `<memory-recall>` 包裹块（防模型原样回声被记回）；若模型是"意译"引用而非原样带标签，剥离不生效——注入消息本身的排除靠 `source.kind` 兜底，但意译文本不可辨。
 - **语义召回按轮嵌入查询**：开启后每轮对当前用户消息嵌一次（单请求超时 `recallTimeoutMs`，整轮总预算 `recallTotalBudgetMs`，超时即本轮不召回）；条目向量增量缓存不重复嵌入，但**首次开启会一次性嵌入当时全部条目**。默认关，未配置端点时不产生任何调用。
-- **召回块的会话内累积**：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。未做 supersede（与主注入同一取舍）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。
+- **召回块的会话内累积**：召回结果变化时补发新块、旧块不删（已提交历史不可改），仅靠 compaction 收敛；`/state.recall` 累计 `chars`/`items` 可观测。召回块**未做**同源替换（主注入块的取代声明 / 节流不覆盖召回块，命中集去重是它唯一的收敛手段）。端点连续失败会熔断 60s（期间跳过召回，避免每轮阻塞）。
 
 下一版方向与有意不做的清单见 [ROADMAP.md](ROADMAP.md)。

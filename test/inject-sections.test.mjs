@@ -3,7 +3,7 @@
 //     总开关关 = 四段全灭；projectMemory 关 = 5000/5001 灭（4990/4995 不受影响）；
 //     globalExtraction 关 = 四段不受影响（4995 跟随数据非空）。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -315,3 +315,49 @@ test("4995 全局索引字符预算：超长钩子逐类收紧，段落头齐全
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- token 预算接线：desiredMemoryContext 的 token 口径与调用面 ----
+// 引擎侧（buildMemoryContext 的 maxTokens 双上限）另有测试；这里钉的是 index.js
+// 接线结构 + 配置键流（若引擎侧缺 maxTokens 支持，token 参数会被旧签名忽略、字符口径照旧——对引擎缺陷仍有甄别力）。
+
+test("token 预算接线钉：desiredMemoryContext 收 token 预算、主块为召回让位按双口径算、记账带 tokens", () => {
+  const src = readFileSync(new URL("../lib/index.js", import.meta.url), "utf8");
+  // 签名收 maxTokens（缺省 cfg.injectMaxTokens）
+  assert.ok(/function desiredMemoryContext\(agent, maxChars = cfg\.injectMaxChars, maxTokens = cfg\.injectMaxTokens\)/.test(src),
+    "desiredMemoryContext 应增 token 预算参数（缺省取 cfg.injectMaxTokens）");
+  // 传给 buildMemoryContext 的两口径
+  const anchor = src.indexOf("buildMemoryContext(segments, { maxChars");
+  assert.ok(anchor > 0, "buildMemoryContext 调用应显式传 maxChars");
+  const region = src.slice(anchor, anchor + 260);
+  assert.ok(region.includes("maxTokens"), "buildMemoryContext 调用应同传 maxTokens（双上限）");
+  assert.ok(region.includes("tokens"), "返回对象应带 tokens（记账用）");
+  // 召回让位双口径：mainTokens = max(0, injectMaxTokens − costOf(recallText) − costOf("\n\n"))
+  assert.ok(/const mainTokens = cfg\.injectMaxTokens > 0/.test(src), "主块 token 预算应在 injectMaxTokens>0 时计算");
+  assert.ok(/estimateTokens\(recallText\) \+ estimateTokens\("\\n\\n"\)/.test(src), "召回让位口径：costOf(recallText)+costOf(\\n\\n)");
+  // recordInjection 传 tokens（缺失回落 estimateTokens）
+  assert.ok(/recordInjection\(\{ chars: built\.text\.length, dropped: built\.dropped, resend: prior !== void 0, tokens: built\.tokens \?\? estimateTokens\(built\.text\) \}\)/.test(src),
+    "recordInjection 应传 tokens（built.tokens ?? estimateTokens(built.text)）");
+  // estimateTokens 从 lib/tokens.js 引（不是 embedding.js 转发）
+  assert.ok(/import \{ estimateTokens \} from "\.\/tokens\.js"/.test(src), "estimateTokens 引自强模块 lib/tokens.js");
+});
+
+test("token 预算配置流：resolveConfig 产出 injectMaxTokens（默认 16000 / 0=禁用）并进 configSummary 字段面", async () => {
+  // configSummary 是闭包递进 api 的——这里用源码钉字段全集更直白（api 侧透传另测）。
+  const src = readFileSync(new URL("../lib/index.js", import.meta.url), "utf8");
+  const anchor = src.indexOf("configSummary: () => ({");
+  assert.ok(anchor > 0, "configSummary 应在");
+  const region = src.slice(anchor, src.indexOf("\n            }),", anchor) + 16);
+  for (const field of [
+    "redactionEnabled:", "injectMaxChars:", "injectMaxTokens:", "extractGateEnabled:",
+    "extractGateMinScore:", "extractIdleDelayMs:", "extractMaxRunsPerSession:", "autoRecoverEnabled:",
+  ]) {
+    assert.ok(region.includes(field), `configSummary 应含字段 ${field}`);
+  }
+  const { resolveConfig } = await import("../lib/index.js");
+  assert.equal(resolveConfig({ enabled: true }).injectMaxTokens, 16000);
+  assert.equal(resolveConfig({ enabled: true, injectMaxTokens: 0 }).injectMaxTokens, 0);
+  assert.equal(resolveConfig({ enabled: true, injectMaxTokens: 4096 }).injectMaxTokens, 4096);
+  // injectMaxChars 保留不动（字符口径并存）
+  assert.equal(resolveConfig({ enabled: true }).injectMaxChars, 30000);
+});
+

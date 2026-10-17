@@ -122,7 +122,7 @@ test("事件→提取→落盘 全链路", async () => {
       };
       yield { type: "finish", reason: { kind: "stop" } };
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, injectChannel: "section" });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, injectChannel: "section", extractIdleDelayMs: 0 });
     const session = fakeSession(workspace, [USER_EVENT]);
     // 照真实事件流：先消息事件（首见登记 cursor=0），再 turn/end(completed) 触发
     handlers.get("session/event")(session, USER_EVENT);
@@ -165,7 +165,7 @@ test("skip 轮（无散文）不调 LLM 但推进", async () => {
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       throw new Error("不应被调用");
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x" });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", extractIdleDelayMs: 0 });
     const userEvent = { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "好" }] } };
     const session = fakeSession(workspace, [userEvent]);
     handlers.get("session/event")(session, userEvent);
@@ -185,7 +185,7 @@ test("直写轮跳过（skip 双条件②）", async () => {
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       throw new Error("不应被调用");
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x" });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", extractIdleDelayMs: 0 });
     const paths = projectMemoryPaths(root, workspace);
     const directEvent = {
       type: "tool/call",
@@ -208,7 +208,7 @@ test("非 completed 轮不触发", async () => {
   const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
     throw new Error("不应被调用");
   });
-  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry-x"), provider: "prov", model: "m" });
+  apply(ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry-x"), provider: "prov", model: "m", extractIdleDelayMs: 0 });
   const session = fakeSession("D:\\nowhere", [USER_EVENT]);
   handlers.get("session/event")(session, { type: "turn/end", seq: 4, data: { turn: 1, reason: { kind: "aborted" } } });
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -223,7 +223,7 @@ test("总开关关 = 提取全停（提取半边；补覆盖——此前该闸�
     const { ctx, handlers, streamCalls } = fakeCtx(async function* () {
       throw new Error("总开关关时不应调用 LLM");
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x" });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", extractIdleDelayMs: 0 });
     writeSettings(root, { conversationMemory: false });
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);
@@ -252,7 +252,7 @@ test("路由兜底（desktop 实测加固）：无 request/header 时 assistant/
       yield { type: "finish", reason: { kind: "stop" } };
     });
     // 不给 provider/model 配置、不发 request/header——只发 assistant/message 带 source
-    apply(ctx, { enabled: true, storageRoot: root });
+    apply(ctx, { enabled: true, storageRoot: root, extractIdleDelayMs: 0 });
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, {
       type: "assistant/message",
@@ -285,6 +285,53 @@ test("config 注入通道键 fail loud：injectChannel 非法值 / injectMaxChar
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 0 }), /injectMaxChars/);
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: -5 }), /injectMaxChars/);
   assert.throws(() => apply(ctx, { enabled: true, injectMaxChars: 1.5 }), /injectMaxChars/);
+});
+
+// ---- 安全与成本相关配置键：默认值与 fail-loud 矩阵 ----
+
+test("8 新键：默认值全表（脱敏/自动补提/门/延迟/上限开启，token 预算 16000）", () => {
+  const cfg = resolveConfig({ enabled: true });
+  assert.equal(cfg.redactionEnabled, true, "脱敏默认开");
+  assert.equal(cfg.autoRecoverEnabled, true, "自动补提默认开");
+  assert.equal(cfg.autoRecoverCooldownMs, 300000, "自动补提冷却默认 5 分钟");
+  assert.equal(cfg.injectMaxTokens, 16000, "token 预算默认 16000");
+  assert.equal(cfg.extractGateEnabled, true, "打分门默认开");
+  assert.equal(cfg.extractGateMinScore, 6, "门阈值默认 6");
+  assert.equal(cfg.extractIdleDelayMs, 3000, "空闲延迟默认 3s");
+  assert.equal(cfg.extractMaxRunsPerSession, 50, "每会话上限默认 50");
+  // 显式 false / 0 语义（回滚面）
+  const rollback = resolveConfig({
+    enabled: true, redactionEnabled: false, autoRecoverEnabled: false, injectMaxTokens: 0,
+    extractGateEnabled: false, extractIdleDelayMs: 0, extractMaxRunsPerSession: 0,
+  });
+  assert.equal(rollback.redactionEnabled, false);
+  assert.equal(rollback.autoRecoverEnabled, false);
+  assert.equal(rollback.injectMaxTokens, 0, "0=禁用 token 预算（退字符口径）");
+  assert.equal(rollback.extractGateEnabled, false);
+  assert.equal(rollback.extractIdleDelayMs, 0, "0=立即提取");
+  assert.equal(rollback.extractMaxRunsPerSession, 0, "0=不限");
+});
+
+test("8 新键 fail loud 矩阵：类型/边界非法即抛（nonNegInt 允许 0；positiveInt 拒 0）", () => {
+  const { ctx } = fakeCtx();
+  // nonNegInt 三键：允许 0，拒负数/小数/非整数
+  for (const [key, bad] of [["injectMaxTokens", -1], ["injectMaxTokens", 1.5], ["injectMaxTokens", "8000"], ["injectMaxTokens", true]]) {
+    assert.throws(() => apply(ctx, { enabled: true, [key]: bad }), new RegExp(key), `${key}=${String(bad)} 应 fail loud`);
+  }
+  assert.throws(() => apply(ctx, { enabled: true, extractIdleDelayMs: -1 }), /extractIdleDelayMs/);
+  assert.throws(() => apply(ctx, { enabled: true, extractIdleDelayMs: 0.5 }), /extractIdleDelayMs/);
+  assert.throws(() => apply(ctx, { enabled: true, extractMaxRunsPerSession: -1 }), /extractMaxRunsPerSession/);
+  assert.throws(() => apply(ctx, { enabled: true, extractMaxRunsPerSession: 2.5 }), /extractMaxRunsPerSession/);
+  // positiveInt 两键：0 非法
+  assert.throws(() => apply(ctx, { enabled: true, autoRecoverCooldownMs: 0 }), /autoRecoverCooldownMs/);
+  assert.throws(() => apply(ctx, { enabled: true, autoRecoverCooldownMs: -100 }), /autoRecoverCooldownMs/);
+  assert.throws(() => apply(ctx, { enabled: true, extractGateMinScore: 0 }), /extractGateMinScore/);
+  assert.throws(() => apply(ctx, { enabled: true, extractGateMinScore: 1.5 }), /extractGateMinScore/);
+  // ms 级键过 MAX_TIMER_DELAY_MS 钳（2147483647）
+  assert.throws(() => apply(ctx, { enabled: true, autoRecoverCooldownMs: 2147483648 }), /autoRecoverCooldownMs too large/);
+  assert.throws(() => apply(ctx, { enabled: true, extractIdleDelayMs: 2147483648 }), /extractIdleDelayMs too large/);
+  // bool 键：非 bool 值不静默转义（!== false 语义 = 只有显式 false 关；其它值保持开）
+  assert.equal(resolveConfig({ enabled: true, redactionEnabled: "no" }).redactionEnabled, true, "非 false 值不关（只有显式 false 才关，与 enabled 缺省关的严格性反向：安全默认）");
 });
 
 test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即抛、section 冲突、端点 scheme 收紧、阈值/超时越界", () => {
@@ -324,7 +371,7 @@ test("DSH_KEEPSAKE_DEBUG 文件日志口：debug.log 落盘含标记行", async 
       yield { type: "text-delta", index: 0, text: "Nothing to save." };
       yield { type: "finish", reason: { kind: "stop" } };
     });
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "m", timeoutMs: 5000 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "m", timeoutMs: 5000, extractIdleDelayMs: 0 });
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);
     handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
@@ -351,7 +398,7 @@ test("路由优先级：assistant/message.source 不覆盖 request/header 已捕
       yield { type: "text-delta", index: 0, text: "Nothing to save." };
       yield { type: "finish", reason: { kind: "stop" } };
     });
-    apply(ctx, { enabled: true, storageRoot: root }); // 不给显式配置，走会话路由
+    apply(ctx, { enabled: true, storageRoot: root, extractIdleDelayMs: 0 }); // 不给显式配置，走会话路由
     const session = fakeSession(workspace, [USER_EVENT]);
     // 主路由先捕获（request/header 权威），兜底路 source 后到——不得覆盖
     handlers.get("session/event")(session, {
@@ -410,7 +457,7 @@ test("存储格式高于本插件 → 只读保护：不提取、不落盘（P2-
         },
       },
     };
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, extractIdleDelayMs: 0 });
 
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);

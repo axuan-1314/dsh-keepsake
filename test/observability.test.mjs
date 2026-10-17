@@ -135,25 +135,31 @@ test("metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷贝"
 
 test("metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ 缺省入参按 0", () => {
   __resetMetricsForTest();
-  // 空态：字段恒在（缺失=旧版判据），值全零（throttled/superseded 为 0.5.0 同源替换两计数）
+  // 空态：字段恒在（缺失=旧版判据），值全零（throttled/superseded 为同源替换两计数；
+  // lastTokens/totalTokens 为 token 口径两计数）
   assert.deepEqual(injectionSnapshot(), {
     count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, throttled: 0, superseded: 0, renderFailures: 0, lastAt: null,
+    lastTokens: 0, totalTokens: 0,
   });
-  recordInjection({ chars: 120 });
-  recordInjection({ chars: 80, dropped: ["globalIndex", "persona"], resend: true });
+  recordInjection({ chars: 120, tokens: 60 });
+  recordInjection({ chars: 80, tokens: 40, dropped: ["globalIndex", "persona"], resend: true });
   const snap = injectionSnapshot();
   assert.equal(snap.count, 2);
   assert.equal(snap.lastChars, 80, "lastChars = 最近一次 chars");
   assert.equal(snap.totalChars, 200, "totalChars 累加");
+  assert.equal(snap.lastTokens, 40, "lastTokens = 最近一次 tokens（token 口径）");
+  assert.equal(snap.totalTokens, 100, "totalTokens 累加");
   assert.equal(snap.resends, 1, "resend 为真才计补发");
   assert.equal(snap.droppedSegments, 2, "dropped.length 计入丢段累计");
   assert.equal(typeof snap.lastAt, "number");
-  // 缺省入参：chars 0 / dropped 空 / 非 resend 不额外计数
+  // 缺省入参：chars 0 / tokens 0 / dropped 空 / 非 resend 不额外计数
   recordInjection();
   const dflt = injectionSnapshot();
   assert.equal(dflt.count, 3);
   assert.equal(dflt.lastChars, 0);
   assert.equal(dflt.totalChars, 200);
+  assert.equal(dflt.lastTokens, 0);
+  assert.equal(dflt.totalTokens, 100, "缺省 tokens 记 0，不清累计");
   assert.equal(dflt.resends, 1);
   __resetMetricsForTest();
 });
@@ -302,13 +308,91 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
     assert.equal(body.recentKeepDays, 45);
     assert.equal(body.extractionTimeoutMs, 45000);
     assert.equal(body.settings.recentKeepDays, 45, "settings.recentKeepDays 回落到 config 现值");
-    // 未配 overrides → 如实 null（跟随会话路由）
-    assert.deepEqual(body.extractionConfig, { provider: null, model: null, fallback: [] });
+    // 未配 overrides → 如实 null（跟随会话路由）；五字段恒在（旧宿主 configSummary 无键 → null）
+    assert.deepEqual(body.extractionConfig, {
+      provider: null, model: null, fallback: [],
+      gateEnabled: null, gateMinScore: null, idleDelayMs: null, maxRunsPerSession: null, redactionEnabled: null,
+    });
     assert.deepEqual(body.embeddingConfig, { provider: null, model: null, baseUrl: "" });
     // 提取结算层（面板最近提取记录数据源）：字段恒在，无 journal 依赖时为标准空形
     assert.ok(Array.isArray(body.extractionLog.runs));
     assert.ok(Array.isArray(body.extractionLog.unrecovered));
     assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("api：GET state 的新字段面（extractionConfig 五字段 / 顶层双预算 / recover 四字段）", async () => {
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-api-state-contract-"));
+  const log = { info() {}, warn() {}, error() {} };
+  try {
+    // ① 新宿主：configSummary 备齐 8 字段 → extractionConfig 实值、顶层双预算透传
+    const handler = findRoute(makeApiRoutes({
+      storageRoot: root,
+      log,
+      extraction: {
+        triggerRetry: () => 0,
+        inFlight: () => false,
+        configSummary: () => ({
+          provider: "p", model: "m", fallback: [],
+          redactionEnabled: true, injectMaxChars: 30000, injectMaxTokens: 16000,
+          extractGateEnabled: true, extractGateMinScore: 6,
+          extractIdleDelayMs: 3000, extractMaxRunsPerSession: 50,
+          autoRecoverEnabled: true,
+        }),
+      },
+      recovery: {
+        pending: async () => ({ hostSupported: true, items: [] }),
+        start: () => ({ started: true }),
+        state: () => ({
+          inFlight: false, lastAt: 123, lastOutcome: "written", lastSessionId: "s1",
+          autoEnabled: true, autoAttempts: 2, lastAutoAt: 456, lastAutoTrigger: "turn/end",
+        }),
+      },
+    }), "GET", "state");
+    const res = mockRes();
+    await handler(makeReq("GET", "state"), res);
+    const body = JSON.parse(res.body);
+    // extractionConfig 新增五字段（契约名与数据源一一对应，键名漂移立刻红）
+    assert.equal(body.extractionConfig.gateEnabled, true);
+    assert.equal(body.extractionConfig.gateMinScore, 6);
+    assert.equal(body.extractionConfig.idleDelayMs, 3000);
+    assert.equal(body.extractionConfig.maxRunsPerSession, 50);
+    assert.equal(body.extractionConfig.redactionEnabled, true);
+    // 顶层双预算（仿 injectChannel 口径）
+    assert.equal(body.injectMaxChars, 30000);
+    assert.equal(body.injectMaxTokens, 16000);
+    // injection 快照的 token 口径两计数（metrics 落字段后自动在场）
+    assert.equal(body.injection.lastTokens, 0);
+    assert.equal(body.injection.totalTokens, 0);
+    // recover 四字段透传（autoEnabled 取 cfg）
+    assert.equal(body.recover.autoEnabled, true);
+    assert.equal(body.recover.autoAttempts, 2);
+    assert.equal(body.recover.lastAutoAt, 456);
+    assert.equal(body.recover.lastAutoTrigger, "turn/end");
+    assert.equal(body.recover.lastOutcome, "written");
+
+    // ② 旧宿主形态：configSummary 缺新键 → 如实 null（不冒领默认值）；未接线 recovery → 八字段空形
+    const legacy = findRoute(makeApiRoutes({
+      storageRoot: root,
+      log,
+      extraction: { triggerRetry: () => 0, inFlight: () => false, configSummary: () => ({ timeoutMs: 45000 }) },
+    }), "GET", "state");
+    const res2 = mockRes();
+    await legacy(makeReq("GET", "state"), res2);
+    const b2 = JSON.parse(res2.body);
+    for (const k of ["gateEnabled", "gateMinScore", "idleDelayMs", "maxRunsPerSession", "redactionEnabled"]) {
+      assert.equal(b2.extractionConfig[k], null, `旧宿主 extractionConfig.${k} 应如实 null`);
+    }
+    assert.equal(b2.injectMaxChars, null);
+    assert.equal(b2.injectMaxTokens, null);
+    // recover 八字段恒在（未接线空形；autoEnabled 未知给 null）
+    assert.deepEqual(b2.recover, {
+      inFlight: false, lastAt: null, lastOutcome: null, lastSessionId: null,
+      autoEnabled: null, autoAttempts: 0, lastAutoAt: null, lastAutoTrigger: null,
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

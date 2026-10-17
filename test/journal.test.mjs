@@ -622,3 +622,57 @@ test("journal：数值字段钳为非负整数、at 缺省 Date.now()、reason �
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 二道脱敏：journal 行 redacted 字段（>0 才序列化） ----
+
+test("journal：redacted 字段 >0 才写进行（盘上行与内存 ring 同形；0/缺省不出现该键）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    // >0 → 键在
+    const hit = await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "written", redacted: 3 });
+    assert.equal(hit.redacted, 3);
+    // 0 / 缺省 → 键不在（旧行形态逐字节不变）
+    const zero = await journal.recordRun({ sessionId: "s1", from: 10, to: 20, cursorAfter: 20, outcome: "written", redacted: 0 });
+    assert.equal(Object.prototype.hasOwnProperty.call(zero, "redacted"), false, "redacted=0 不写键");
+    const absent = await journal.recordRun({ sessionId: "s1", from: 20, to: 30, cursorAfter: 30, outcome: "zero-ops" });
+    assert.equal(Object.prototype.hasOwnProperty.call(absent, "redacted"), false, "缺省不写键");
+    // 盘上 JSONL：首行含 "redacted":3，后两行不含
+    const raw = lines(root);
+    assert.equal(raw.length, 3);
+    assert.match(raw[0], /"redacted":3/);
+    assert.doesNotMatch(raw[1], /redacted/);
+    assert.doesNotMatch(raw[2], /redacted/);
+    // ring 快照同形（内存态 = 盘上形态）
+    const ring = journal.getRing();
+    assert.equal(ring.find((r) => r.from === 0).redacted, 3);
+    assert.equal(Object.prototype.hasOwnProperty.call(ring.find((r) => r.from === 10), "redacted"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：redacted 脏值归一（负/小数/NaN/非数字 → 0 即不写键；重放保持同口径）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    for (const bad of [-1, 2.9, NaN, Infinity, "x", null]) {
+      const rec = await journal.recordRun({ sessionId: "s1", from: 0, to: 1, cursorAfter: 1, outcome: "written", redacted: bad });
+      // 2.9 是正数小数：floor 后 2 → 写键；其余钳 0 → 不写
+      if (bad === 2.9) assert.equal(rec.redacted, 2, "小数向下取整");
+      else assert.equal(Object.prototype.hasOwnProperty.call(rec, "redacted"), false, `redacted=${String(bad)} 应不写键`);
+    }
+    // 重放：手写一行带 redacted 的行 + 一行脏值（负数），新实例读回同口径
+    writeFileSync(join(root, JOURNAL_FILE_NAME), [
+      JSON.stringify({ at: "2026-01-01T00:00:00.000Z", sessionId: "s2", from: 0, to: 5, cursorAfter: 5, outcome: "written", redacted: 7 }),
+      JSON.stringify({ at: "2026-01-01T00:00:01.000Z", sessionId: "s2", from: 5, to: 9, cursorAfter: 9, outcome: "written", redacted: -3 }),
+      "",
+    ].join("\n"), "utf8");
+    const replayed = createJournal({ storageRoot: root });
+    const rows = replayed.getRing();
+    assert.equal(rows.find((r) => r.from === 5).redacted, void 0, "重放脏值按 0 处理（键不出现）");
+    assert.equal(rows.find((r) => r.from === 5).cursorAfter, 9, "其它字段不受影响");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

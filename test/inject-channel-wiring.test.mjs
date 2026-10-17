@@ -13,6 +13,7 @@ import { createEntry, categoryDir, writePersona } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 import { __resetMetricsForTest, injectionSnapshot, recallSnapshot, recordInjection, recordInjectionSuperseded, recordInjectionThrottled } from "../lib/metrics.js";
+import { estimateTokens } from "../lib/tokens.js";
 import { MEMORY_CONTEXT_INTRO, MEMORY_CONTEXT_SUPERSEDE_NOTE } from "../lib/inject-channel.js";
 import { skipReason } from "../lib/transcript.js";
 
@@ -118,6 +119,8 @@ test("默认 message 模式——pre-step 注入 memory-context（不依赖 sect
     assert.equal(snap.count, 1);
     assert.equal(snap.lastChars, text.length);
     assert.equal(snap.totalChars, text.length);
+    assert.equal(snap.lastTokens, estimateTokens(text), "token 记账与注入文本估算一致");
+    assert.equal(snap.totalTokens, estimateTokens(text));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -898,5 +901,71 @@ test("召回候选确定性：超限取舍按稳定序（mtime 降序），与 r
   } finally {
     rmSync(rootA, { recursive: true, force: true });
     rmSync(rootB, { recursive: true, force: true });
+  }
+});
+
+test('注入 token 记账：累计只加显式值、缺省/脏值按 0、复位清零', () => {
+  __resetMetricsForTest();
+  recordInjection({ chars: 10, tokens: 7 });
+  recordInjection({ chars: 20 }); // 缺省 tokens
+  let snap = injectionSnapshot();
+  assert.equal(snap.lastTokens, 0, '缺省 tokens 最近值按 0');
+  assert.equal(snap.totalTokens, 7, '缺省不加也清不掉累计');
+  recordInjection({ chars: 5, tokens: 3 });
+  recordInjection({ chars: 5, tokens: NaN });
+  recordInjection({ chars: 5, tokens: -2 });
+  snap = injectionSnapshot();
+  assert.equal(snap.lastTokens, 0, '脏值（NaN/负数）按 0');
+  assert.equal(snap.totalTokens, 10, '只累计显式正值');
+  __resetMetricsForTest();
+  snap = injectionSnapshot();
+  assert.equal(snap.lastTokens, 0);
+  assert.equal(snap.totalTokens, 0);
+});
+
+test('token 预算接线：injectMaxTokens 顶紧按 token 丢段、记账不越上限（字符口径宽松）', async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    // 三条重 CJK 索引（描述进索引行）：字符数不高但 token 代价高（1.5/字）
+    for (let i = 1; i <= 3; i += 1) {
+      createEntry(root, 'work-profile', { title: 'T' + i, description: '述'.repeat(500), content: '正文' });
+    }
+    seedProjectMemory(root);
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, injectMaxChars: 100000, injectMaxTokens: 300 });
+    const handler = handlers.get('agent/pre-step');
+    const decision = { kind: 'enter', messages: [userMsg('你好')] };
+    const agent = makeAgent({ cwd: root });
+    const out = await run(handler, payloadOf({ agent, messages: decision.messages }), decision);
+    const text = textOf(out.messages[1]);
+    const snap = injectionSnapshot();
+    assert.ok(snap.droppedSegments > 0, 'token 顶紧应丢段');
+    assert.ok(estimateTokens(text) <= 300, '注入块 token 预算内（实际 ' + estimateTokens(text) + '）');
+    assert.equal(snap.lastTokens, estimateTokens(text), '记账=真实口径');
+    assert.ok(snap.lastTokens <= 300);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('token 预算接线：上限禁用（0）同样内容不丢段（对照）', async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, 'work-profile', { title: 'T', description: '述'.repeat(500), content: '正文' });
+    seedProjectMemory(root);
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, injectMaxChars: 100000, injectMaxTokens: 0 });
+    const handler = handlers.get('agent/pre-step');
+    const decision = { kind: 'enter', messages: [userMsg('你好')] };
+    const agent = makeAgent({ cwd: root });
+    const out = await run(handler, payloadOf({ agent, messages: decision.messages }), decision);
+    const text = textOf(out.messages[1]);
+    const snap = injectionSnapshot();
+    assert.equal(snap.droppedSegments, 0, 'token 预算禁用时不丢段');
+    assert.ok(text.includes('述'.repeat(50)), '重 CJK 内容全量在场');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,7 @@
 // transcript：触发门槛（边界⑤：≥3 词用户散文 / 直写记忆跳过）与摘录渲染
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { REDACTION_PLACEHOLDER } from "../lib/redact.js";
 import { clipTail, hasDirectMemoryWrite, hasEnoughUserProse, isMachineOrigin, renderTranscript, skipReason } from "../lib/transcript.js";
 
 // 路径按平台取（直写判定对 file_path 相对 memoryRoot 解析：Windows 绝对路径在 posix 不是绝对）
@@ -279,4 +280,91 @@ test("renderTranscript 剥掉助手回复里回声的注入块（<memory-context
   const text = renderTranscript(events);
   assert.doesNotMatch(text, /SHOULD-NOT-APPEAR/, "回声的注入块内容必须被剥掉");
   assert.match(text, /我按记忆来/, "回复里的正常文本仍在");
+});
+
+// ── 第一道脱敏（renderTranscript 四个 push 点；默认开，redact:false 逐字节回旧行为） ──
+
+const OPENAI_KEY = "sk-FAKEFAKEFAKEFAKEFAKE";
+const GH_TOKEN = `ghp_${"Zq9".repeat(8)}`;
+
+test("renderTranscript: 用户/助手/工具参数/工具结果里的密钥都落 [redacted]", () => {
+  const events = [
+    userMessageEvent(1, `我的 key 是 ${OPENAI_KEY} 请记下`, "user"),
+    { type: "assistant/message", surfaceOp: "append", seq: 2, data: { message: { content: [{ type: "text", text: `收到，token=${GH_TOKEN}` }] } } },
+    { type: "tool/call", seq: 3, data: { name: "run_code", arguments: JSON.stringify({ code: `fetch(url, { headers: { Authorization: "Bearer ${GH_TOKEN}" } })` }) } },
+    { type: "tool/result", seq: 4, data: { message: { content: [{ type: "text", text: `export API_KEY=${OPENAI_KEY}` }] } } },
+  ];
+  const text = renderTranscript(events);
+  assert.doesNotMatch(text, /sk-A1b2C3d4/, "厂商 key 不得进摘录");
+  assert.doesNotMatch(text, /ghp_Zq9/, "GitHub token 不得进摘录");
+  assert.match(text, /\[redacted\]/, "命中处应有占位符");
+  assert.match(text, /我的 key 是/, "用户文本其余部分保留");
+  assert.match(text, /请记下/);
+  assert.match(text, /\[seq 4\] ToolResult: export API_KEY=/);
+});
+
+test("renderTranscript: redact:false 原样输出（逐字节回旧行为），缺省 = 脱敏开", () => {
+  const events = [
+    userMessageEvent(1, `记住 ${OPENAI_KEY}`, "user"),
+    { type: "tool/call", seq: 2, data: { name: "read", arguments: `{"token":"${OPENAI_KEY}"}` } },
+    { type: "tool/result", seq: 3, data: { message: { content: [{ type: "text", text: `found ${OPENAI_KEY}` }] } } },
+    { type: "assistant/message", surfaceOp: "append", seq: 4, data: { message: { content: [{ type: "text", text: `got ${OPENAI_KEY}` }] } } },
+  ];
+  const off = renderTranscript(events, { redact: false });
+  assert.equal(off, [
+    `[seq 1] User: 记住 ${OPENAI_KEY}`,
+    `[seq 2] ToolCall read: {"token":"${OPENAI_KEY}"}`,
+    `[seq 3] ToolResult: found ${OPENAI_KEY}`,
+    `[seq 4] Assistant: got ${OPENAI_KEY}`,
+  ].join("\n"), "redact:false 必须逐字节等于接线前行为");
+  assert.ok(off.includes(OPENAI_KEY), "redact:false 时密钥原样保留");
+
+  const on = renderTranscript(events); // 不传参数 = 默认脱敏开
+  assert.ok(!on.includes(OPENAI_KEY), "缺省必须脱敏");
+  assert.match(on, /\[redacted\]/);
+
+  // 无密钥夹具：脱敏开/关输出逐字节一致（脱敏不吃正常文本）
+  const clean = [
+    userMessageEvent(1, "我们 团队 决定 用 pnpm", "user"),
+    { type: "tool/call", seq: 2, data: { name: "read", arguments: '{"file_path":"D:/x"}' } },
+  ];
+  assert.equal(renderTranscript(clean), renderTranscript(clean, { redact: false }));
+});
+
+test("renderTranscript: 先脱敏后 clip——长密钥在截断前完整命中（先截断会切半致正则失配泄漏）", () => {
+  // ToolCall 上限 200：190 字符填充（尾随空格给正则 \b 边界）+ 33 字符密钥。总计 223 字符。
+  // 若先 clip（切走 200）：只剩 "sk-ccccccc…" 7 位残段（<16，正则已认不出）→ 泄漏；
+  // 先脱敏则整键换 [redacted]（190+10=200 恰好不触截断）。
+  const filler = `${"A".repeat(189)} `;
+  const callText = renderTranscript([{ type: "tool/call", seq: 1, data: { name: "read", arguments: `${filler}sk-${"c".repeat(30)}` } }]);
+  assert.equal(callText, `[seq 1] ToolCall read: ${filler}[redacted]`, "密钥被整体替换且填充文本未损");
+  assert.doesNotMatch(callText, /sk-/, "不得留下密钥残段");
+
+  // ToolResult 同口径（独立 200 字上限）
+  const fillerB = `${"B".repeat(189)} `;
+  const resultText = renderTranscript([
+    { type: "tool/result", seq: 2, data: { message: { content: [{ type: "text", text: `${fillerB}ghp_${"d".repeat(40)}` }] } } },
+  ]);
+  assert.equal(resultText, `[seq 2] ToolResult: ${fillerB}[redacted]`);
+  assert.doesNotMatch(resultText, /ghp_/, "不得留下 token 残段");
+});
+
+test("renderTranscript: 多行混合（密码/令牌/URL 内凭据/内网 IP）只换占位符，行结构不动", () => {
+  const events = [
+    userMessageEvent(1, "行一 记住密码 password=hunter2 别外传", "user"),
+    { type: "assistant/message", surfaceOp: "append", seq: 2, data: { message: { content: [{ type: "text", text: `行二 Basic ${"Q".repeat(30)} 已存` }] } } },
+    { type: "tool/call", seq: 3, data: { name: "curl", arguments: "url=https://alice:EXAMPLE_PASSWORD@example.com@internal.example.com/x" } },
+    { type: "tool/result", seq: 4, data: { message: { content: [{ type: "text", text: "行四 内网 192.168.1.50 可达" }] } } },
+  ];
+  const text = renderTranscript(events);
+  const lines = text.split("\n");
+  assert.equal(lines.length, 4, "四行结构保留");
+  assert.match(lines[0], /^\[seq 1\] User: 行一 /);
+  assert.doesNotMatch(text, /hunter2/, "键值密码不得进摘录");
+  assert.doesNotMatch(text, /Q{16}/, "Basic 令牌不得进摘录");
+  assert.doesNotMatch(text, /EXAMPLE_PASSWORD/, "URL userinfo 不得进摘录");
+  assert.match(text, /https:\/\/\[redacted\]@internal\.example\.com\/x/, "URL 保留 scheme 与 host");
+  assert.doesNotMatch(text, /192\.168\.1\.50/, "内网 IP 不得进摘录");
+  assert.match(text, /行四 内网/);
+  assert.match(text, /可达/);
 });

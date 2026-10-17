@@ -33,11 +33,11 @@ test("常量：来源标识/ form / 顺序", () => {
 });
 
 test("① 全空段 → text 为空、不丢不截", () => {
-  assert.deepEqual(buildMemoryContext({}), { text: "", dropped: [], truncated: false });
-  assert.deepEqual(buildMemoryContext(undefined), { text: "", dropped: [], truncated: false });
+  assert.deepEqual(buildMemoryContext({}), { text: "", dropped: [], truncated: false, tokens: 0 });
+  assert.deepEqual(buildMemoryContext(undefined), { text: "", dropped: [], truncated: false, tokens: 0 });
   assert.deepEqual(
     buildMemoryContext({ persona: "", globalIndex: undefined, usage: "", projectIndex: "" }),
-    { text: "", dropped: [], truncated: false },
+    { text: "", dropped: [], truncated: false, tokens: 0 },
   );
 });
 
@@ -506,4 +506,88 @@ test("㉑c summarizeInjectionDelta：prior 只认自有字段，原型污染不�
   assert.equal(Object.prototype.prior, undefined, "测完还原污染");
   // 还原后首发照旧不计取代
   assert.deepEqual(summarizeInjectionDelta(undefined, { sent: true }), { superseded: 0, throttled: 0, sent: true });
+});
+
+// ---- token 预算（maxTokens）：CJK 感知估算、双上限取更严者、maxTokens=0 逐字节回归 ----
+
+import { estimateTokens } from "../lib/tokens.js";
+
+test("㉒ maxTokens=0（缺省）→ 与字符口径逐字节一致；tokens 字段 = estimateTokens(text)", () => {
+  const segments = { persona: "人格说明", globalIndex: "全局索引条目", usage: "用法说明", projectIndex: "项目索引" };
+  const charsOnly = buildMemoryContext(segments, { maxChars: 80 });
+  const zeroTokens = buildMemoryContext(segments, { maxChars: 80, maxTokens: 0 });
+  assert.equal(zeroTokens.text, charsOnly.text, "maxTokens=0 不改变文本");
+  assert.deepEqual(zeroTokens.dropped, charsOnly.dropped);
+  assert.equal(zeroTokens.truncated, charsOnly.truncated);
+  assert.equal(charsOnly.tokens, estimateTokens(charsOnly.text), "tokens 字段与默认估算一致");
+});
+
+test("㉓ token 超限按 INJECT_DROPPABLE_ORDER 丢段（字符预算宽松时由 token 顶紧）", () => {
+  // 四段各 40 个中文字（60 token/段）：maxChars 宽松、maxTokens 只够 persona+usage
+  const segments = { persona: "人".repeat(40), globalIndex: "全".repeat(40), usage: "用".repeat(40), projectIndex: "项".repeat(40) };
+  const charsFit = buildMemoryContext(segments, { maxChars: 60000 });
+  assert.deepEqual(charsFit.dropped, [], "字符口径不丢");
+  const { text, dropped, truncated } = buildMemoryContext(segments, { maxChars: 60000, maxTokens: 150 });
+  assert.deepEqual(dropped, ["globalIndex", "projectIndex"], "token 口径按序先丢 globalIndex 再 projectIndex");
+  assert.equal(truncated, true);
+  assert.ok(text.includes("人".repeat(40)) && text.includes("用".repeat(40)), "persona/usage 保留");
+  assert.ok(estimateTokens(text) <= 150, `token 预算内（实际 ${estimateTokens(text)}）`);
+});
+
+test("㉔ 双上限取更严者：token 上限极松不改字符口径结果；token 顶紧时独立生效", () => {
+  const segments = { persona: "P".repeat(10), globalIndex: "G".repeat(10), usage: "U".repeat(10), projectIndex: "J".repeat(10) };
+  // 方向一：字符顶紧（与用例④同参）、token 极松 → 逐字节一致
+  const byChars = buildMemoryContext(segments, { maxChars: 62 });
+  const looseTokens = buildMemoryContext(segments, { maxChars: 62, maxTokens: 1e9 });
+  assert.equal(looseTokens.text, byChars.text, "token 上限极松不改变字符口径结果");
+  assert.deepEqual(looseTokens.dropped, byChars.dropped);
+  assert.equal(looseTokens.truncated, byChars.truncated);
+  // 方向二：字符极松、token 顶紧 → 按序丢段照常发生（18 token 恰好只丢一段：全量 21→丢后 17）
+  const bindTokens = buildMemoryContext(segments, { maxChars: 60000, maxTokens: 18 });
+  assert.deepEqual(bindTokens.dropped, ["globalIndex"], "token 顶紧独立生效（先丢 globalIndex）");
+  assert.equal(bindTokens.truncated, true);
+});
+
+test("㉕ persona 兜底截断（token 口径）：CJK 长 persona 收到预算内，保留头部+省略号", () => {
+  const persona = "忆".repeat(300); // 450 token
+  const { text, dropped, truncated } = buildMemoryContext({ persona }, { maxChars: 60000, maxTokens: 120 });
+  assert.equal(truncated, true);
+  assert.deepEqual(dropped, [], "persona 不整段丢弃");
+  assert.ok(text.endsWith("</memory-context>"));
+  assert.ok(text.includes("…"), "末尾省略号");
+  assert.ok(text.includes("忆".repeat(5)), "保留头部内容");
+  assert.ok(estimateTokens(text) <= 120, `token 预算内（实际 ${estimateTokens(text)}）`);
+});
+
+test("㉖ persona 兜底截断（字符口径照旧）：ASCII 长 persona 仍按 maxChars 收", () => {
+  const persona = "A".repeat(500);
+  const { text, truncated } = buildMemoryContext({ persona }, { maxChars: 100, maxTokens: 100000 });
+  assert.equal(truncated, true);
+  assert.ok(text.length <= 100, `字符预算内（实际 ${text.length}）`);
+  assert.ok(text.includes("A".repeat(10)));
+});
+
+test("㉗ 两上限交叉：CJK persona 同时受字符与 token 顶紧，产出满足两者", () => {
+  const persona = "合".repeat(400); // 600 token / 400 字符
+  const { text, truncated } = buildMemoryContext({ persona }, { maxChars: 150, maxTokens: 100 });
+  assert.equal(truncated, true);
+  assert.ok(text.length <= 150, `字符预算内（实际 ${text.length}）`);
+  assert.ok(estimateTokens(text) <= 100, `token 预算内（实际 ${estimateTokens(text)}）`);
+});
+
+test("㉘ 截断提示行计入 token 预算：丢段后的含提示行文本仍在预算内", () => {
+  const segments = { persona: "人".repeat(30), globalIndex: "全".repeat(30), usage: "用".repeat(30), projectIndex: "项".repeat(30) };
+  const { text, dropped, truncated } = buildMemoryContext(segments, { maxChars: 60000, maxTokens: 160 });
+  assert.equal(truncated, true);
+  assert.ok(dropped.length > 0);
+  assert.match(text, /\[memory-context truncated:/, "提示行在场");
+  assert.ok(estimateTokens(text) <= 160, `含提示行仍在预算内（实际 ${estimateTokens(text)}）`);
+});
+
+test("㉙ 自定义 costOf 生效：按字数计价的口径下 ASCII 段同样被裁", () => {
+  const segments = { persona: "A".repeat(50), globalIndex: "B".repeat(50) };
+  const charCost = (t) => t.length; // 粗口径：1 字 = 1 代价
+  const { text, dropped } = buildMemoryContext(segments, { maxChars: 60000, maxTokens: 120, costOf: charCost });
+  assert.deepEqual(dropped, ["globalIndex"], "自定义口径下丢段照常");
+  assert.ok(charCost(text) <= 120, `自定义口径预算内（实际 ${charCost(text)}）`);
 });

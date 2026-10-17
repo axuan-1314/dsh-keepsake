@@ -49,8 +49,8 @@ function mockRes() {
   };
 }
 
-async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal, recovery, maintenance }) {
-  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal, recovery, maintenance });
+async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal, recovery, maintenance, extraction }) {
+  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal, recovery, maintenance, extraction });
   const handler = routes[0].handler;
   assert.equal(routes[0].kind, "prefix");
   assert.equal(routes[0].path, API_PREFIX.replace(/\/$/, "")); // 内核 prefix 不带尾斜杠（实证）
@@ -850,6 +850,60 @@ test("state：extractionFailures 计数面在场（观测口）", async () => {
   }
 });
 
+test("state：新字段面（extractionConfig 五字段 / 顶层双预算 / recover 八字段）", async () => {
+  const root = freshRoot();
+  try {
+    // ① 新宿主：configSummary 备齐 → extractionConfig 实值 + 顶层双预算；recover 走假依赖八字段
+    const extraction = {
+      triggerRetry: () => 0,
+      inFlight: () => false,
+      configSummary: () => ({
+        provider: "p", model: "m", fallback: [],
+        redactionEnabled: false, injectMaxChars: 30000, injectMaxTokens: 8000,
+        extractGateEnabled: false, extractGateMinScore: 9,
+        extractIdleDelayMs: 0, extractMaxRunsPerSession: 20,
+        autoRecoverEnabled: false,
+      }),
+    };
+    const { deps } = fakeRecovery({});
+    const withDeps = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, extraction, recovery: { ...deps, state: () => ({ inFlight: false, lastAt: 1, lastOutcome: "written", lastSessionId: "s", autoEnabled: false, autoAttempts: 3, lastAutoAt: 2, lastAutoTrigger: "startup" }) } });
+    assert.equal(withDeps.status, 200);
+    const j = withDeps.json;
+    assert.equal(j.extractionConfig.gateEnabled, false);
+    assert.equal(j.extractionConfig.gateMinScore, 9);
+    assert.equal(j.extractionConfig.idleDelayMs, 0);
+    assert.equal(j.extractionConfig.maxRunsPerSession, 20);
+    assert.equal(j.extractionConfig.redactionEnabled, false);
+    assert.equal(j.injectMaxChars, 30000);
+    assert.equal(j.injectMaxTokens, 8000);
+    assert.equal(j.recover.autoEnabled, false);
+    assert.equal(j.recover.autoAttempts, 3);
+    assert.equal(j.recover.lastAutoAt, 2);
+    assert.equal(j.recover.lastAutoTrigger, "startup");
+    // ② 旧宿主：extraction/configSummary 全缺 → 五字段/双预算如实 null；recover 八字段空形
+    const legacy = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
+    const lj = legacy.json;
+    for (const k of ["gateEnabled", "gateMinScore", "idleDelayMs", "maxRunsPerSession", "redactionEnabled"]) {
+      assert.equal(lj.extractionConfig[k], null, `旧宿主 extractionConfig.${k} 应如实 null`);
+    }
+    assert.equal(lj.injectMaxChars, null);
+    assert.equal(lj.injectMaxTokens, null);
+    assert.deepEqual(lj.recover, {
+      inFlight: false, lastAt: null, lastOutcome: null, lastSessionId: null,
+      autoEnabled: null, autoAttempts: 0, lastAutoAt: null, lastAutoTrigger: null,
+    });
+    // ③ 半新宿主：configSummary 只有 provider/model（无新键）→ 同样如实 null（不冒领默认）
+    const half = await callApi(root, {
+      method: "GET", path: `${API_PREFIX}state`,
+      extraction: { triggerRetry: () => 0, inFlight: () => false, configSummary: () => ({ provider: "p", model: "m", fallback: [] }) },
+    });
+    assert.equal(half.json.extractionConfig.gateEnabled, null);
+    assert.equal(half.json.injectMaxTokens, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("state：injection 注入面字段在场（服务端恒在；缺失=旧版）", async () => {
   const root = freshRoot();
   try {
@@ -858,8 +912,9 @@ test("state：injection 注入面字段在场（服务端恒在；缺失=旧版�
     const inj = s.json.injection;
     assert.equal(typeof inj, "object");
     // 契约字段恒在（字段缺失=旧版宿主，面板 tolerant 消费）
-    // throttled/superseded：同源替换两计数（想发没发 / 发了作废旧块），0.5.0 起恒在
-    for (const k of ["count", "lastChars", "totalChars", "resends", "droppedSegments", "throttled", "superseded", "renderFailures", "lastAt"]) {
+    // throttled/superseded：同源替换两计数（想发没发 / 发了作废旧块），契约恒在；
+    // lastTokens/totalTokens：token 口径两计数（token 预算观测面）
+    for (const k of ["count", "lastChars", "totalChars", "lastTokens", "totalTokens", "resends", "droppedSegments", "throttled", "superseded", "renderFailures", "lastAt"]) {
       assert.ok(Object.prototype.hasOwnProperty.call(inj, k), `injection 缺字段 ${k}`);
     }
     assert.equal(typeof inj.count, "number");
@@ -1188,12 +1243,16 @@ test("POST sessions/recover：host 不支持 503 / 会话不存在 404 / 已有�
   }
 });
 
-test("state：recover 观测面字段恒在（未接线空形 / 已接线真值）", async () => {
+test("state：recover 观测面字段恒在（未接线八字段空形 / 已接线真值透传）", async () => {
   const root = freshRoot();
   try {
     const empty = await callApi(root, { method: "GET", path: `${API_PREFIX}state` });
     assert.equal(empty.status, 200);
-    assert.deepEqual(empty.json.recover, { inFlight: false, lastAt: null, lastOutcome: null, lastSessionId: null });
+    // 未接线也要八字段同形（缺失=旧版判定依据）；autoEnabled 未知给 null 不谎报
+    assert.deepEqual(empty.json.recover, {
+      inFlight: false, lastAt: null, lastOutcome: null, lastSessionId: null,
+      autoEnabled: null, autoAttempts: 0, lastAutoAt: null, lastAutoTrigger: null,
+    });
     const { deps } = fakeRecovery({});
     const wired = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, recovery: deps });
     assert.equal(wired.json.recover.lastOutcome, "written");

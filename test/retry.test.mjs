@@ -29,6 +29,9 @@ const USER_EVENT = {
   data: { role: "user", content: [{ type: "text", text: "记住 我们 团队 统一 用 pnpm" }] },
 };
 
+/** MAX_TIMER_DELAY_MS 同值（index.js 未导出该常量，矩阵边界用同一字面值钉）。 */
+const MAX_TIMER_DELAY_MS = 2147483647;
+
 function fakeCtx(streamImpl) {
   const handlers = new Map();
   const sections = [];
@@ -94,7 +97,8 @@ function fakeSession(cwd, events) {
  */
 async function runExtraction({ root, workspace, streamImpl, config = {}, waitFor, timeoutMs = 15000 }) {
   const { ctx, handlers, streamCalls } = fakeCtx(streamImpl);
-  apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, ...config });
+  // extractIdleDelayMs: 0 — 本文件非延迟用例（立即提取，防 3s 默认拖慢/抖动）
+  apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, extractIdleDelayMs: 0, ...config });
   const session = fakeSession(workspace, [USER_EVENT]);
   handlers.get("session/event")(session, USER_EVENT);
   handlers.get("session/event")(session, { type: "turn/end", seq: 1, data: { turn: 1, reason: { kind: "completed" } } });
@@ -115,7 +119,7 @@ async function runExtraction({ root, workspace, streamImpl, config = {}, waitFor
  */
 async function runRounds({ root, workspace, streamImpl, config = {}, rounds, sessionId = "s-test", settleMs = 60, noRoute = false }) {
   const { ctx, handlers, streamCalls, effects } = fakeCtx(streamImpl);
-  apply(ctx, { enabled: true, storageRoot: root, provider: noRoute ? void 0 : "prov", model: noRoute ? void 0 : "model-x", timeoutMs: 5000, ...config });
+  apply(ctx, { enabled: true, storageRoot: root, provider: noRoute ? void 0 : "prov", model: noRoute ? void 0 : "model-x", timeoutMs: 5000, extractIdleDelayMs: 0, ...config });
   const session = {
     id: sessionId,
     seq: 0,
@@ -150,7 +154,7 @@ function roundEvents(rounds, from, to) {
  */
 async function runTwoSessions({ root, plan, settleMs = 60 }) {
   const { ctx, handlers, effects } = fakeCtx(() => { throw new Error("两会话 streak 用例不应发起 LLM 调用"); });
-  apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000 });
+  apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, extractIdleDelayMs: 0 });
   const sessions = new Map();
   const getSession = (id) => {
     let s = sessions.get(id);
@@ -406,7 +410,7 @@ test("drain 纪律：退避 sleep 期间 dispose——不发起后续 attempt", 
     //     这样 dispose 的 abort 一定落在那次退避 sleep 窗口内；
     //   · 首次 attempt 瞬败 → 进退避 → dispose 等待 drain 1s 后 abort →
     //     可取消 sleep 提前 resolve → attempt 前 aborted 检查命中，不再发起。
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1000, retryAttempts: 3, retryBackoffMs: 3000, retryMaxDelayMs: 3000 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1000, retryAttempts: 3, retryBackoffMs: 3000, retryMaxDelayMs: 3000, extractIdleDelayMs: 0 });
     // 摘出 lifecycle dispose 句柄（apply 注册的 ctx.effect 返回的清理函数）
     disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
     const session = fakeSession(workspace, [USER_EVENT]);
@@ -462,7 +466,7 @@ test("drain 纪律：dispose 挂起中的 stream（永不 finish）后不再有�
     };
     // timeoutMs 故意短（1500ms）：本用例验的是"挂起流不衍生重试链"而非超时收口本身，
     // 长 timeout 会让 drain 等满 60s 预算拖垮检查（attempt 级超时有单独钉）。
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1500, retryAttempts: 3, retryBackoffMs: 10, retryMaxDelayMs: 20 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 1500, retryAttempts: 3, retryBackoffMs: 10, retryMaxDelayMs: 20, extractIdleDelayMs: 0 });
     const disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
     const session = fakeSession(workspace, [USER_EVENT]);
     handlers.get("session/event")(session, USER_EVENT);
@@ -587,6 +591,63 @@ test("resolveConfig：未知键 did-you-mean 提示（failbacks→fallback）", 
   assert.throws(() => resolveConfig({ enabled: true, zzzzqqq: 1 }), /unknown config key "zzzzqqq"$/);
   // retryMaxDelayMs 拼错也应提示
   assert.throws(() => resolveConfig({ enabled: true, retryMaxDelay: 1 }), /did you mean "retryMaxDelayMs"\?/);
+});
+
+test("resolveConfig：8 新键矩阵（默认/显式/0 语义/边界/未知近邻）", () => {
+  const base = { enabled: true };
+  // 默认全表
+  const cfg = resolveConfig(base);
+  assert.deepEqual(
+    {
+      redactionEnabled: cfg.redactionEnabled, autoRecoverEnabled: cfg.autoRecoverEnabled,
+      autoRecoverCooldownMs: cfg.autoRecoverCooldownMs, injectMaxTokens: cfg.injectMaxTokens,
+      extractGateEnabled: cfg.extractGateEnabled, extractGateMinScore: cfg.extractGateMinScore,
+      extractIdleDelayMs: cfg.extractIdleDelayMs, extractMaxRunsPerSession: cfg.extractMaxRunsPerSession,
+    },
+    {
+      redactionEnabled: true, autoRecoverEnabled: true, autoRecoverCooldownMs: 300000, injectMaxTokens: 16000,
+      extractGateEnabled: true, extractGateMinScore: 6, extractIdleDelayMs: 3000, extractMaxRunsPerSession: 50,
+    },
+  );
+  // 缺省 null 与 undefined 同义（回落默认）
+  assert.equal(resolveConfig({ ...base, injectMaxTokens: null }).injectMaxTokens, 16000);
+  // nonNegInt：0 合法（三个键各自的 0 语义）
+  const zeros = resolveConfig({ ...base, injectMaxTokens: 0, extractIdleDelayMs: 0, extractMaxRunsPerSession: 0 });
+  assert.equal(zeros.injectMaxTokens, 0);
+  assert.equal(zeros.extractIdleDelayMs, 0);
+  assert.equal(zeros.extractMaxRunsPerSession, 0);
+  // nonNegInt 非法值逐个抛
+  for (const bad of [-1, 1.5, "0", NaN, Infinity, true]) {
+    assert.throws(() => resolveConfig({ ...base, injectMaxTokens: bad }), /injectMaxTokens/, `injectMaxTokens=${String(bad)}`);
+    assert.throws(() => resolveConfig({ ...base, extractIdleDelayMs: bad }), /extractIdleDelayMs/, `extractIdleDelayMs=${String(bad)}`);
+    assert.throws(() => resolveConfig({ ...base, extractMaxRunsPerSession: bad }), /extractMaxRunsPerSession/, `extractMaxRunsPerSession=${String(bad)}`);
+  }
+  // positiveInt：0 非法（两键）
+  for (const bad of [0, -1, 1.5, "300000", NaN]) {
+    assert.throws(() => resolveConfig({ ...base, autoRecoverCooldownMs: bad }), /autoRecoverCooldownMs/, `autoRecoverCooldownMs=${String(bad)}`);
+    assert.throws(() => resolveConfig({ ...base, extractGateMinScore: bad }), /extractGateMinScore/, `extractGateMinScore=${String(bad)}`);
+  }
+  // ms 级键过 MAX_TIMER_DELAY_MS 钳
+  assert.throws(() => resolveConfig({ ...base, autoRecoverCooldownMs: MAX_TIMER_DELAY_MS + 1 }), /autoRecoverCooldownMs too large/);
+  assert.throws(() => resolveConfig({ ...base, extractIdleDelayMs: MAX_TIMER_DELAY_MS + 1 }), /extractIdleDelayMs too large/);
+  // 边界值恰好合法
+  assert.equal(resolveConfig({ ...base, autoRecoverCooldownMs: MAX_TIMER_DELAY_MS }).autoRecoverCooldownMs, MAX_TIMER_DELAY_MS);
+  // 显式自定义值生效
+  const custom = resolveConfig({
+    ...base, redactionEnabled: false, autoRecoverEnabled: false, autoRecoverCooldownMs: 1000,
+    injectMaxTokens: 999, extractGateEnabled: false, extractGateMinScore: 12, extractIdleDelayMs: 20, extractMaxRunsPerSession: 3,
+  });
+  assert.equal(custom.redactionEnabled, false);
+  assert.equal(custom.autoRecoverEnabled, false);
+  assert.equal(custom.autoRecoverCooldownMs, 1000);
+  assert.equal(custom.injectMaxTokens, 999);
+  assert.equal(custom.extractGateEnabled, false);
+  assert.equal(custom.extractGateMinScore, 12);
+  assert.equal(custom.extractIdleDelayMs, 20);
+  assert.equal(custom.extractMaxRunsPerSession, 3);
+  // 未知键 did-you-mean：手滑近邻应提示
+  assert.throws(() => resolveConfig({ ...base, injectMaxToken: 1 }), /did you mean "injectMaxTokens"\?/);
+  assert.throws(() => resolveConfig({ ...base, extractGateMinScores: 1 }), /did you mean "extractGateMinScore"\?/);
 });
 
 test("fallback 换道接线：主道耗尽→换道成功→记 fallbackUsed + 落盘", async () => {
@@ -793,7 +854,7 @@ test("关闭总开关 → skipped/gate-off 仍记账（成功面也要有痕）"
 // ---- extractSession 14 个 return 点的 {status, detail} 全量钉子 ----
 //
 // 前面只钉住 4 个点（written / zero-ops-model-无产出 / failed-llm-error /
-// skipped-gate-off），其余写错测试全部通过。以下把缺的逐个补齐，全部走同一口径：
+// skipped-gate-off），其余写错测试仍会通过。以下把缺的逐个补齐，全部走同一口径：
 // 触发真实提取 → 读 extraction-journal.jsonl → 断言 outcome/reason/status/cursorAfter。
 // status 无法从盘上直读（journal 只落 detail），用 cursorAfter 反推：
 //   · status==='error' → cursor 不动 → cursorAfter === from；
@@ -1036,7 +1097,7 @@ test("aborted：重试链退避期间 dispose → failed/aborted（cursor 不动
       })();
     });
     let disposeFns = [];
-    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, retryAttempts: 3, retryBackoffMs: 50, retryMaxDelayMs: 100 });
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, retryAttempts: 3, retryBackoffMs: 50, retryMaxDelayMs: 100, extractIdleDelayMs: 0 });
     disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
     const session = { id: "s-test", seq: 1, header: { cwd: workspace }, snapshotEvents(from, to) { return [USER_EVENT].slice(from, to); } };
     handlers.get("session/event")(session, USER_EVENT);
@@ -1230,5 +1291,207 @@ test("ops-未落盘：有 op 但全被跳过/过滤 → zero-ops（applied=0 且
       rmSync(root, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }
+  }
+});
+
+// ---- 打分门 e2e：薄轮 skipped/thin-evidence 留痕 + cursor 推进；厚轮照常提取 ----
+
+test("打分门：薄轮（低分）→ skipped/thin-evidence 留痕 + cursor 推进，不调 LLM", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-gate-thin-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-gate-thin-"));
+  try {
+    // 文本过薄但过 skipReason（≥3 词）而打分门拦（score<6）：3 空格词 + 0 工具 + 1 轮
+    // = 3 + 0 + 2 = 5 <6。刻意构造"能过 no-user-prose 但过不了打分门"的夹缝轮——
+    // 这正是打分门要拦的烧钱轮。（注意 CJK 按 ⌊字数/2⌋ 折算会抬分，故用纯 ASCII 三词。）
+    const events = [
+      { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "please do it" }] } },
+    ];
+    await runRounds({
+      root,
+      workspace,
+      rounds: [{ seq: 3, events }],
+      streamImpl: () => {
+        throw new Error("打分门拦下：不得发起任何 LLM 调用");
+      },
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1, "薄轮也记账（journal 留痕）");
+    assert.equal(runs[0].outcome, "skipped");
+    assert.equal(runs[0].reason, "thin-evidence", "门拦 reason=thin-evidence");
+    assert.ok(runs[0].cursorAfter > runs[0].from, "status='ok'：门拦也推进 cursor（不积累重试）");
+    // journal 行不写 gateScore（detail 字段只落 journal 白名单数值——gateScore 无对应列即不入行，
+    // 观测经日志与 detail 出参；此处钉的是"留痕 + 推进"两件事）
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("打分门：厚轮（工具种类/多轮抬分）照常提取落盘", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-gate-thick-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-gate-thick-"));
+  try {
+    // 带 2 种工具（2×2=4 分）+ 1 轮（2 分）→ 6 分过门；薄文本也无妨（工具证据即够）
+    const events = [
+      { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "看 一下 这个" }] } },
+      { type: "tool/call", seq: 1, data: { name: "read", callId: "c1", arguments: JSON.stringify({ file_path: "/tmp/x" }) } },
+      { type: "tool/call", seq: 2, data: { name: "grep", callId: "c2", arguments: JSON.stringify({ pattern: "y" }) } },
+    ];
+    const { streamCalls } = await runRounds({
+      root,
+      workspace,
+      rounds: [{ seq: 4, events }],
+      streamImpl: okStream(),
+      settleMs: 200,
+    });
+    assert.ok(streamCalls.length >= 1, "厚轮应过门并调 LLM");
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "written", "过门后照常提取落盘");
+    assert.notEqual(runs[0].reason, "thin-evidence");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("打分门：extractGateEnabled=false 关掉 → 薄轮照常提取（回滚面）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-gate-off-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-gate-off-"));
+  try {
+    const events = [
+      { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "看 一下 这个" }] } },
+    ];
+    const { streamCalls } = await runRounds({
+      root,
+      workspace,
+      config: { extractGateEnabled: false },
+      rounds: [{ seq: 3, events }],
+      streamImpl: okStream(),
+      settleMs: 200,
+    });
+    assert.ok(streamCalls.length >= 1, "关了门薄轮也照常调 LLM（旧行为）");
+    const runs = journalRuns(root);
+    assert.notEqual(runs[0].reason, "thin-evidence");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("打分门：阈值可调（extractGateMinScore 抬高 → 原本过门的轮被拦）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-gate-min-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-gate-min-"));
+  try {
+    // 1 种工具 + 1 轮 = 2 + 2 = 4 分：默认门（6）本会拦；这里反向验证阈值旋钮生效——
+    // 抬阈值 + 加厚到"默认能过"的组合才有甄别力：userWords 5（3 空格词 + ⌊4 CJK/2⌋）
+    // + 3 工具（6）+ 1 轮（2）= 13 ≥ 6 默认过；阈值抬到 20 → 13 < 20 被拦 ——
+    // 这一对才真正钉住阈值被读取（若实现恒用默认 6，此用例会红）。
+    const events = [
+      { type: "user/message", surfaceOp: "append", seq: 0, data: { role: "user", content: [{ type: "text", text: "看 一下 这个" }] } },
+      { type: "tool/call", seq: 1, data: { name: "read", callId: "c1", arguments: "{}" } },
+      { type: "tool/call", seq: 2, data: { name: "grep", callId: "c2", arguments: "{}" } },
+      { type: "tool/call", seq: 3, data: { name: "write", callId: "c3", arguments: "{}" } },
+    ];
+    const { streamCalls } = await runRounds({
+      root,
+      workspace,
+      config: { extractGateMinScore: 20 },
+      rounds: [{ seq: 5, events }],
+      streamImpl: () => {
+        throw new Error("阈值 20：8 分轮应被拦，不得调 LLM");
+      },
+    });
+    assert.equal(streamCalls.length, 0, "抬阈值后低分轮被拦");
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "skipped");
+    assert.equal(runs[0].reason, "thin-evidence");
+    assert.ok(runs[0].cursorAfter > runs[0].from);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---- 二道脱敏 e2e：假 LLM 回含密钥 op → 记忆文件落 [redacted] + journal redacted 计数 ----
+
+test("二道脱敏：模型把密钥写进 op → 落盘前替换 [redacted]，journal 记 redacted 计数", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-redact-hit-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-redact-hit-"));
+  try {
+    // 模型回一条含 GitHub PAT 与 password= 赋值的 op（模拟"密钥经别的路径漏进 ops"）
+    const keyText = '{"ops":[{"action":"write","name":"creds.md","type":"project","title":"Creds","description":"token=ghp_' + "a".repeat(30) + '","content":"部署用 password=hunter2super 与 ghp_' + "b".repeat(30) + ' 两处"}]}';
+    await runExtraction({
+      root,
+      workspace,
+      streamImpl: okStream(keyText),
+      waitFor: settleAfter(12),
+    });
+    const { memoryDir } = projectMemoryPaths(root, workspace);
+    const body = readFileSync(join(memoryDir, "creds.md"), "utf8");
+    assert.doesNotMatch(body, /ghp_[ab]{30}/, "厂商标记不得原样落盘");
+    assert.doesNotMatch(body, /hunter2super/, "password 值不得原样落盘");
+    assert.match(body, /\[redacted\]/, "应落占位符");
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "written");
+    assert.ok(runs[0].redacted > 0, "journal 行应记 redacted 命中数（>0 才写）");
+    assert.equal(typeof runs[0].redacted, "number");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("二道脱敏：redactionEnabled=false → 完全不脱敏（回旧行为，回滚面）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-redact-off-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-redact-off-"));
+  try {
+    const keyText = '{"ops":[{"action":"write","name":"creds-off.md","type":"project","title":"Creds","description":"d","content":"password=hunter2super"}]}';
+    await runExtraction({
+      root,
+      workspace,
+      config: { redactionEnabled: false },
+      streamImpl: okStream(keyText),
+      waitFor: settleAfter(12),
+    });
+    const { memoryDir } = projectMemoryPaths(root, workspace);
+    const body = readFileSync(join(memoryDir, "creds-off.md"), "utf8");
+    assert.match(body, /hunter2super/, "关脱敏后密钥原样落盘（旧行为）");
+    assert.doesNotMatch(body, /\[redacted\]/);
+    const runs = journalRuns(root);
+    assert.equal(runs[0].redacted, void 0, "无命中不写 redacted 键");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("二道脱敏：无敏感内容 → journal 行不含 redacted 键（>0 才序列化）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-redact-clean-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-redact-clean-"));
+  try {
+    await runExtraction({ root, workspace, streamImpl: okStream(), waitFor: settleAfter(12) });
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "written");
+    assert.equal(runs[0].redacted, void 0, "干净轮不写 redacted 键（旧行形态不变）");
+    const file = readFileSync(join(root, JOURNAL_FILE_NAME), "utf8");
+    assert.doesNotMatch(file, /"redacted"/, "盘上原始行也不含该键");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
   }
 });

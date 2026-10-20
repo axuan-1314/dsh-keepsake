@@ -11,6 +11,11 @@ import {
   PENDING_EMPTY_TEXT,
   PENDING_RECOVERING_TEXT,
   PENDING_UNAVAILABLE_NOTE,
+  RUNTIME_GUIDE_TEXT,
+  RUNTIME_OVER_QUOTA_HINT,
+  RUNTIME_READONLY_NOTE,
+  RUNTIME_SKIP_REASON_LABELS,
+  RUNTIME_UNPIN_WARNING,
   abandonedNoticeText,
   applyThemeVars,
   buildImportRequest,
@@ -53,6 +58,20 @@ import {
   recentExpireDays,
   relativeTimeOf,
   repairIndexResultText,
+  runtimeArtifactRows,
+  runtimeCandidateRows,
+  runtimeCompileSummaryText,
+  runtimeEnabledOf,
+  runtimeEvictSelection,
+  runtimeEvictToastText,
+  runtimePinTarget,
+  runtimeRestoreRows,
+  runtimeRestoreToastText,
+  runtimeScopeLabel,
+  runtimeScopeOptions,
+  runtimeSkippedRows,
+  runtimeStatusBadge,
+  runtimeUsageOf,
   safetyLocationText,
   safetySummaryText,
   serializeEntries,
@@ -1113,4 +1132,230 @@ test("trapFocus：容器内暂无可聚焦元素时不拦（空态弹窗不卡�
   } finally {
     globalThis.document = realDoc;
   }
+});
+
+// ---- 运行时记忆页签（RUNTIME-FORMAT §十二 UX 约定；GET/POST runtime 契约纯函数） ----
+
+test("runtimeScopeLabel：global→全局；projects/<slug>-<hash16>→项目 <slug>（hash 对用户无意义）；脏值容错", () => {
+  assert.equal(runtimeScopeLabel("global"), "全局");
+  assert.equal(runtimeScopeLabel("projects/demo-0123456789abcdef"), "项目 demo");
+  assert.equal(runtimeScopeLabel("projects/my-app-aaaaaaaaaaaaaaaa"), "项目 my-app");
+  assert.equal(runtimeScopeLabel(""), "—");
+  assert.equal(runtimeScopeLabel(null), "—");
+  assert.equal(runtimeScopeLabel("projects/foo"), "projects/foo", "未知形态原样显示（不硬掰）");
+});
+
+test("runtimeScopeOptions：全局在首 + 项目升序；坏 id/重复 id 丢弃（不摆必 404 的死选项）；同名 slug 补 hash 消歧", () => {
+  const out = runtimeScopeOptions([
+    { id: "zeta-0123456789abcdef", entries: 3 },
+    { id: "alpha-0123456789abcdef", entries: 1 },
+    { id: "Bad_UPPER", entries: 9 }, // 不过形态闸
+    null,
+    { id: "alpha-0123456789abcdef", entries: 1 }, // 重复
+  ]);
+  assert.deepEqual(out.map((o) => o.scope), ["global", "projects/alpha-0123456789abcdef", "projects/zeta-0123456789abcdef"]);
+  assert.equal(out[0].label, "全局");
+  assert.equal(out[0].entries, null);
+  assert.equal(out[1].label, "项目 alpha");
+  assert.equal(out[1].entries, 1);
+  // 同名 slug 撞车 → 补 hash 前 8 位
+  const dup = runtimeScopeOptions([
+    { id: "app-aaaaaaaaaaaaaaaa" }, { id: "app-bbbbbbbbbbbbbbbb" },
+  ]);
+  assert.equal(dup[1].label, "项目 app · aaaaaaaa");
+  assert.equal(dup[2].label, "项目 app · bbbbbbbb");
+  // 空/脏输入 → 只有全局
+  assert.deepEqual(runtimeScopeOptions(undefined).map((o) => o.scope), ["global"]);
+  assert.deepEqual(runtimeScopeOptions("x").map((o) => o.scope), ["global"]);
+});
+
+test("runtimeUsageOf：百分比/越界红显/条宽截顶；配额未知不拿 0% 冒充", () => {
+  const u = runtimeUsageOf({ bytes: 1024, quotaBytes: 4096 });
+  assert.deepEqual({ bytes: u.bytes, quotaBytes: u.quotaBytes, pct: u.pct, barPct: u.barPct, over: u.over }, { bytes: 1024, quotaBytes: 4096, pct: 25, barPct: 25, over: false });
+  assert.match(u.text, /1024 \/ 4096 字节 · 25%/);
+  // 越界：pct 如实 >100，barPct 截顶 100（防破版），over=true
+  const over = runtimeUsageOf({ bytes: 12288, quotaBytes: 10240 });
+  assert.equal(over.pct, 120);
+  assert.equal(over.barPct, 100);
+  assert.equal(over.over, true);
+  assert.match(over.text, /已超配额/);
+  // 恰好等于配额：不算越界（≤ 是 ok）
+  const exact = runtimeUsageOf({ bytes: 4096, quotaBytes: 4096 });
+  assert.equal(exact.pct, 100);
+  assert.equal(exact.over, false);
+  // 配额未知（缺失/0/脏值）→ over=false 且文案明说（不冒充 0% 正常）
+  for (const file of [undefined, null, {}, { bytes: 100 }, { bytes: 100, quotaBytes: 0 }, { bytes: "x", quotaBytes: "y" }]) {
+    const r = runtimeUsageOf(file);
+    assert.equal(r.over, false);
+    assert.equal(r.pct, 0);
+    assert.match(r.text, /配额未知/);
+  }
+});
+
+test("runtimeStatusBadge：ok/overQuota/error 三态映射 + 缺失/未知→尚未编译（不冒充正常）", () => {
+  assert.deepEqual(runtimeStatusBadge("ok"), { level: "green", word: "正常", hint: "" });
+  const over = runtimeStatusBadge("overQuota");
+  assert.equal(over.level, "red");
+  assert.equal(over.word, "超配额");
+  assert.equal(over.hint, RUNTIME_OVER_QUOTA_HINT, "overQuota 必须给操作指引（解 pin/处理候选/调配额指路）");
+  assert.match(over.hint, /取消关键标记/);
+  assert.match(over.hint, /淘汰候选/);
+  const err = runtimeStatusBadge("error");
+  assert.equal(err.level, "red");
+  assert.equal(err.word, "编译失败");
+  assert.match(err.hint, /重新编译/);
+  for (const s of [undefined, null, "", "bogus"]) {
+    const b = runtimeStatusBadge(s);
+    assert.equal(b.level, "grey");
+    assert.equal(b.word, "尚未编译");
+  }
+  // §十二 固定文案常量在场（单一出处）
+  assert.match(RUNTIME_GUIDE_TEXT, /运行时记忆＝每轮注入的紧凑记忆层，默认关闭；开启后生效/);
+  assert.match(RUNTIME_UNPIN_WARNING, /取消关键标记后，该条目可能在下次编译成为淘汰候选；如需保留可先处理淘汰候选或调高配额/);
+  assert.match(RUNTIME_READONLY_NOTE, /只读预览/);
+});
+
+test("runtimeCandidateRows：标题/分类/字节/稳定 key；global:<category> 与 project 分类文案分列；坏项跳过", () => {
+  const rows = runtimeCandidateRows([
+    { rootKey: "global:work-profile", file: "big.md", bytes: 620, reason: "quota", firstSeenAt: "2026-10-20T12:00:00.000Z" },
+    { rootKey: "project", file: "deep/nested.md", bytes: 300, reason: "quota" },
+    null,
+    { rootKey: "global:user-profile" }, // 缺 file → 跳过
+    { rootKey: "global:user-profile", file: "   " }, // 空 file → 跳过
+  ]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual({ title: rows[0].title, category: rows[0].category, bytes: rows[0].bytes, sizeText: rows[0].sizeText, reasonText: rows[0].reasonText }, {
+    title: "big", category: "全局 · work-profile", bytes: 620, sizeText: "620 字节", reasonText: "超出配额",
+  });
+  // 嵌套 file 取末段做标题，key 用完整 file（供提交时原样回传）
+  assert.equal(rows[1].title, "nested");
+  assert.equal(rows[1].category, "项目条目");
+  assert.equal(rows[1].key, "project\u0000deep/nested.md");
+  // 未知 reason 原样透传（不粉饰）
+  assert.equal(runtimeCandidateRows([{ rootKey: "project", file: "a.md", reason: "weird" }])[0].reasonText, "weird");
+  assert.deepEqual(runtimeCandidateRows(undefined), []);
+});
+
+test("runtimeEvictSelection：刷新后清单与勾选集求交（防过期）；消失的进 dropped 不硬提交", () => {
+  const rows = runtimeCandidateRows([
+    { rootKey: "global:work-profile", file: "a.md", bytes: 1 },
+    { rootKey: "global:work-profile", file: "b.md", bytes: 1 },
+  ]);
+  const strong = new Set([rows[0].key, rows[1].key, "global:work-profile\u0000gone.md"]);
+  const sel = runtimeEvictSelection(strong, rows);
+  assert.deepEqual(sel.files, [
+    { rootKey: "global:work-profile", file: "a.md" },
+    { rootKey: "global:work-profile", file: "b.md" },
+  ]);
+  assert.deepEqual(sel.dropped, [{ rootKey: "global:work-profile", file: "gone.md" }]);
+  // 刷新后清单为空（产出消失）→ 一条都不提交，全部如实进 dropped
+  const none = runtimeEvictSelection(strong, []);
+  assert.deepEqual(none.files, []);
+  assert.equal(none.dropped.length, 3);
+  // 空勾选 / 脏输入不炸
+  assert.deepEqual(runtimeEvictSelection(undefined, rows), { files: [], dropped: [] });
+  assert.deepEqual(runtimeEvictSelection([], null), { files: [], dropped: [] });
+});
+
+test("runtimeSkippedRows：skipped 原因中文化（含「条目已变化，已跳过」）；未收录原因原样如实", () => {
+  const rows = runtimeSkippedRows([
+    { rootKey: "global:work-profile", file: "x.md", reason: "not-candidate" },
+    { rootKey: "project", file: "y.md", reason: "missing" },
+    { rootKey: "project", file: "z.md", reason: "weird-reason" },
+    null,
+  ]);
+  assert.equal(rows.length, 3);
+  assert.match(rows[0].text, /条目已变化，已跳过/);
+  assert.match(rows[1].text, /已不存在/);
+  assert.match(rows[2].text, /weird-reason/);
+  assert.equal(RUNTIME_SKIP_REASON_LABELS["not-candidate"], "条目已变化，已跳过", "§十二 固定文案");
+  assert.deepEqual(runtimeSkippedRows(null), []);
+});
+
+test("runtimeCompileSummaryText：diff 摘要（入选/候选/前后字节差）；无前值只报现值；响应不成形如实说未知", () => {
+  const out = { ok: true, scope: "global", status: "ok", selected: 5, candidates: 2, overQuota: false, bytes: { user: 220, memory: 4300 } };
+  const text = runtimeCompileSummaryText(out, { user: { bytes: 200 }, memory: { bytes: 4300 } });
+  assert.match(text, /全局/);
+  assert.match(text, /入选 5 条/);
+  assert.match(text, /淘汰候选 2 条/);
+  assert.match(text, /user 200→220 字节（\+20）/);
+  assert.match(text, /memory 4300→4300 字节（±0）/);
+  // 减少与无前值两态
+  assert.match(runtimeCompileSummaryText(out, { user: { bytes: 300 }, memory: { bytes: 5000 } }), /memory 5000→4300 字节（-700）/);
+  assert.match(runtimeCompileSummaryText(out, null), /user 220 字节/);
+  // overQuota 附指引；不成形响应如实说未知（不拿 0 冒充）
+  assert.match(runtimeCompileSummaryText({ ...out, overQuota: true }, null), /超出配额/);
+  assert.match(runtimeCompileSummaryText(null, null), /重新编译结果未知/);
+  assert.match(runtimeCompileSummaryText({ ok: false }, null), /重新编译结果未知/);
+  // 项目 scope 标签人话化
+  assert.match(runtimeCompileSummaryText({ ...out, scope: "projects/demo-0123456789abcdef" }, null), /项目 demo/);
+});
+
+test("runtimeEvictToastText：§十二 固定口径（已归档到 long-term，未删除；快照在 backups/evict-<ts>）+ skipped 计数", () => {
+  const text = runtimeEvictToastText({ archived: 2, skipped: [], snapshotDir: "backups/evict-2026-10-20T12-00-00-000Z" });
+  assert.match(text, /已归档 2 条到 long-term，未删除/);
+  assert.match(text, /快照在 backups\/evict-/);
+  // skipped 非空：附计数（明细在页内）
+  const withSkip = runtimeEvictToastText({ archived: 1, skipped: [{ rootKey: "project", file: "a.md", reason: "not-candidate" }], snapshotDir: "backups/evict-x" });
+  assert.match(withSkip, /1 条已跳过/);
+  // 零归档不谎报成功
+  assert.match(runtimeEvictToastText({ archived: 0, skipped: [{ file: "a.md", reason: "not-candidate" }] }), /没有条目被归档/);
+  assert.match(runtimeEvictToastText(undefined), /没有条目被归档/);
+  // 无快照（异常态）不编造路径
+  assert.doesNotMatch(runtimeEvictToastText({ archived: 1, skipped: [] }), /快照在/);
+});
+
+test("runtimeRestoreRows：单层 .md 名才收（端点只认单层）；嵌套/坏名跳过；古人话时间", () => {
+  const now = Date.parse("2026-10-20T12:00:00.000Z");
+  const rows = runtimeRestoreRows([
+    { name: "archived.md", title: "归档条目", description: "来自项目", mtimeMs: now - 3600_000 },
+    { name: "nested/evil.md", title: "嵌套" },
+    { name: "not-md.txt", title: "非 md" },
+    null,
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].file, "archived.md");
+  assert.equal(rows[0].title, "归档条目");
+  assert.match(rows[0].whenText, /小时前/);
+  // 无 title 用文件名去扩展名兜底（不空着）
+  assert.equal(runtimeRestoreRows([{ name: "x.md" }])[0].title, "x");
+  assert.deepEqual(runtimeRestoreRows(undefined), []);
+});
+
+test("runtimeRestoreToastText：移回成功文案（落点/重名避让/scope）；坏响应不炸", () => {
+  const text = runtimeRestoreToastText({ file: "a.md", name: "a.md", to: "global/long-term/a.md", scope: "global" });
+  assert.match(text, /已从归档移回：a\.md/);
+  assert.match(text, /落点 global\/long-term\/a\.md/);
+  assert.doesNotMatch(text, /重名避让/, "未改名不印避让说明");
+  const renamed = runtimeRestoreToastText({ file: "a.md", name: "a-2.md", to: "projects/demo-0123456789abcdef/memory/a-2.md", scope: "projects/demo-0123456789abcdef" });
+  assert.match(renamed, /a\.md → a-2\.md（重名避让改名）/);
+  assert.match(renamed, /scope：项目 demo/);
+  assert.match(runtimeRestoreToastText(null), /已从归档移回/);
+});
+
+test("runtimePinTarget：rootKey 一律在路径 scope 内解析（§十一）；不可定位给原因不猜", () => {
+  const globalRow = { rootKey: "global:work-profile", file: "f.md" };
+  const projectRow = { rootKey: "project", file: "p.md" };
+  assert.deepEqual(runtimePinTarget(globalRow, "global"), { ok: true, rootKey: "global:work-profile", file: "f.md" });
+  assert.deepEqual(runtimePinTarget(projectRow, "projects/demo-0123456789abcdef"), { ok: true, rootKey: "project", file: "p.md" });
+  // 跨 scope 形态：拒绝并说清该去哪切
+  assert.match(runtimePinTarget(globalRow, "projects/demo-0123456789abcdef").reason, /全局.*scope/);
+  assert.match(runtimePinTarget(projectRow, "global").reason, /项目.*scope/);
+  // 不可定位（产物行反推失败）
+  assert.match(runtimePinTarget({ rootKey: null, file: null }, "global").reason, /不可识别/);
+  assert.match(runtimePinTarget(null, "global").reason, /不可识别/);
+});
+
+test("runtimeEnabledOf：后端字段优先 → 本会话回填 → 缺省关（三态 tolerant，不让界面回弹谎报）", () => {
+  // ① 后端带了该字段（settingsForClient 接线后）：以它为准，本地回填不得覆盖
+  assert.equal(runtimeEnabledOf({ runtimeEnabled: true }, null), true);
+  assert.equal(runtimeEnabledOf({ runtimeEnabled: false }, true), false, "后端说关就关（本地回填不越过真值）");
+  // ② 后端没带（旧宿主）：用本会话 PUT 成功后的回填
+  assert.equal(runtimeEnabledOf({}, true), true);
+  assert.equal(runtimeEnabledOf({}, false), false);
+  // ③ 都没有 → 缺省关（与 settings 读侧 parsed.runtimeEnabled === true 同口径）
+  assert.equal(runtimeEnabledOf({}, null), false);
+  assert.equal(runtimeEnabledOf(undefined, undefined), false);
+  assert.equal(runtimeEnabledOf(null, "yes"), false, "脏回填不冒充布尔");
+  assert.equal(runtimeEnabledOf({ runtimeEnabled: 1 }, null), false, "非布尔真值不当 true（口径是 === true）");
 });

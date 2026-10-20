@@ -9,7 +9,9 @@
 ├── keepsake-format.json           # 存储格式版本标记（本插件内部用；见第八节）
 ├── extract.lock                   # 提取/恢复批互斥锁（插件自管，可安全删除；见第七节）
 ├── extraction-journal.jsonl       # 提取运行日志（观测+续提边界，非真源，可安全删除；见第七节）
-├── backups/  trash/               # 副本目录（非真源，可安全删除；见第七节）
+├── runtime/                       # 运行时记忆层编译产物（USER.md/MEMORY.md + runtime.json + compile-journal.jsonl；非真源，可删可重建；见第七节）
+├── evict-audit.jsonl              # 淘汰归档审计（持久记录，不随 runtime/ 清理；非真源，见第七节）
+├── backups/  trash/               # 副本目录（含 backups/evict-<ts>/ 归档前手术式快照；非真源，可安全删除；见第七节）
 ├── global/                        # 全局记忆（跨所有会话）
 │   ├── persona.md                 # 人设（出厂默认模板起步）
 │   ├── addressing.json            # 称呼 {dshName, userAlias}
@@ -24,6 +26,7 @@
 
 - 全局分类 `<category>` ∈ `work-profile` / `user-profile` / `current-focus` / `recent-activity` / `long-term`。
 - `<slug>` = workspace basename 净化（小写、`[^a-z0-9._-]+`→`-`、截 48、空则 `project`）；`<hash16>` = 绝对路径（win32 转小写）sha256 前 16 hex。
+- `runtime/`、`evict-audit.jsonl`、`backups/evict-<ts>/` 都是**编译/归档设施的派生产物**，不是记忆真源：`runtime/` 整目录可删可重建（丢的只是编译观测历史）；`evict-audit.jsonl` 是持久审计记录（删除丢的是可追溯性）；`backups/evict-<ts>/` 只快照归档搬动的文件（见第七节）。
 
 ## 二、frontmatter
 
@@ -63,8 +66,28 @@ node_type: "memory"
 | `description` | 是 | 一行钩子，进索引行（≤150 字符提示）；也是语义召回的嵌入文本之一 |
 | `metadata.type` | 是 | 见下「类型」；全局记忆恒为 `global` |
 | `metadata.timestamp` | 仅 recent-activity | ISO 时间，**宿主盖章**（不信模型） |
+| `pinned` | 可选 | `true` = 关键条目（运行时记忆层不淘汰、优先入选）。全局与项目条目皆可；缺省/`false` 即非 pinned。格式 v2 起（见第八节） |
 | `node_type` | 是 | 恒 `"memory"`（跨库识别用的稳定标记） |
 | `originSessionId` | 项目 | 产出该条目的会话 id（可追溯） |
+
+**`pinned`（格式 v2 新增，可选布尔）**：写在**顶层**（不缩进），字段序紧随 `metadata` 块之后、`node_type` 之前，只在为真时写出：
+
+```yaml
+metadata:
+  type: global
+pinned: true
+node_type: "memory"
+```
+
+读者口径宽容：`"true"` 与 `true` 皆视为真，缺失、`false` 及其他值一律视为非 pinned。它是运行时记忆层（编译产物）的选条依据，**不影响**本节其余字段的固定语义。
+
+**long-term 可选 origin 三字段（格式 v2 新增）**：`global/long-term/` 里的条目由淘汰归档写入时，额外携带出处，全部可选：
+
+- `originProject`——来源项目（形如 `projects/<slug>-<hash16>`）；全局条目归档时省略。
+- `originType`——原 `metadata.type`（`project` / `feedback` / `user`）或原全局分类名。
+- `originSessionId`——原条目的 `originSessionId` 原样透传。
+
+三字段只服务「从归档移回」的可逆性；普通读者忽略它们不损失任何信息（向后兼容，旧条目没有这三个字段也完全合法）。
 
 **类型（`metadata.type`，项目记忆）**：
 
@@ -106,47 +129,58 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 
 > 约定变更（字段增删、语义调整）视为**对外契约变化**，按 ROADMAP 的版本纪律记入并同步本页。
 
-## 七、`backups/` 与 `trash/` 是包外非真源目录
+`pinned` 与运行时记忆层编译产物的行前缀（`【关键】`/`【普通】`）**不参与跨 agent 互认**：前者是本插件的可选扩展字段（读不懂时按非 pinned 处理即可），后者只出现在本插件生成的产物里，回退到真源（条目文件 + `MEMORY.md`）即可获得完整语义。
 
-存储根下有两类**插件自留的副本目录**，它们**不是记忆真源**：
+## 七、`backups/`、`trash/`、`runtime/` 是包外非真源目录
+
+存储根下有多类**插件自留的非真源目录**，它们**不是记忆真源**：
 
 ```text
 <storageRoot>/
 ├── backups/<ts>/               # 批量破坏性操作前的全量备份（滚动保留最新 20 份）
-│   └── surgical/<batchId>/     # 批前「手术式」快照：本批覆写/删除触及的原文留档
-│       ├── manifest.json       # 批次清单（files[]：name / rootKey / sha1 / action / indexLine）
-│       ├── files/              # 原文副本（按 rootKey 分目录）
-│       └── failed/             # 写后校验失败的新档标本（不删，留待排查）
-└── trash/<entryId>/            # 回收站：被删除的记忆文件（默认保留 30 天）
-    ├── meta.json               # 条目清单（files[]：name / rootKey / sha1 / action / indexLine）
-    └── files/                  # 原文副本
+│   ├── surgical/<batchId>/     # 批前「手术式」快照：本批覆写/删除触及的原文留档
+│   │   ├── manifest.json       # 批次清单（files[]：name / rootKey / sha1 / action / indexLine）
+│   │   ├── files/              # 原文副本（按 rootKey 分目录）
+│   │   └── failed/             # 写后校验失败的新档标本（不删，留待排查）
+│   └── evict-<ts>/<n>-<name>   # 淘汰归档前的手术式快照（只快照被搬文件；保留最近 10 份）
+├── trash/<entryId>/            # 回收站：被删除的记忆文件（默认保留 30 天）
+│   ├── meta.json               # 条目清单（files[]：name / rootKey / sha1 / action / indexLine）
+│   └── files/                  # 原文副本
+├── runtime/                    # 运行时记忆层编译产物（非真源，整目录可删可重建）
+│   ├── global/                 # 每个 scope 一份：USER.md / MEMORY.md / runtime.json
+│   ├── projects/<slug>-<hash16>/
+│   └── compile-journal.jsonl   # 编译观测日志（滚动清理）
+└── evict-audit.jsonl           # 淘汰归档审计（持久记录，不随 runtime/ 清理；5000 行轮转留尾 2500）
 ```
 
 - **真源只有 `*.md` 与 `MEMORY.md`**：`global/<category>/*.md` 与 `projects/<slug>-<hash16>/memory/*.md` 才是记忆本身；每目录的 `MEMORY.md` 是导航索引。`settings.json`（开关）、`persona.md`（人设）、`addressing.json`（称呼）也是真源（各自唯一）。
-- **`backups/` 与 `trash/` 可安全删除**：删掉它们**不损失任何当前记忆**——它们是历史副本，用于回滚。插件会在下次批量操作/删除时按需重建目录；`keepsake-format.json` 缺失同理会被补写（见第八节）。
-- **删除的代价是失去后悔药**：清掉 `backups/` 就没有「恢复此备份 / 回滚快照」的入口；清掉 `trash/` 就等于把被删的条目**真正**删除（回收站的语义是"延迟删除"，不是归档）。注意回收站只收**自动提取**产生的删除；面板手动「删除条目」（`DELETE /entry`）与分类重置（`clearCategory`）、近期动态滚动清理（`pruneRecentActivity`）是直接删除、不进回收站。
-- **`backups/surgical/` 与 `trash/` 都有自动清理**：快照按 `settings.surgicalKeep`（默认 30 份）滚动保留最新；回收站按 `settings.trashKeepDays`（默认 30 天）清过期。两者都由写入路径顺带收口，无需手工维护。
+- **`backups/`、`trash/`、`runtime/`、`evict-audit.jsonl` 都是非真源**：删掉它们**不损失任何当前记忆**——`backups/` 与 `trash/` 是历史副本（用于回滚）；`runtime/` 是编译产物（下次编译自动重建）；`evict-audit.jsonl` 是归档执行审计（删除只丢可追溯性）。`keepsake-format.json` 缺失同理会被补写（见第八节）。
+- **删除的代价是失去后悔药**：清掉 `backups/` 就没有「恢复此备份 / 回滚快照」的入口；清掉 `trash/` 就等于把被删的条目**真正**删除（回收站的语义是"延迟删除"，不是归档）；清掉 `evict-audit.jsonl` 就查不到某条何时、被谁、从哪归档到哪。**面板手动「删除条目」（`DELETE /entry`）与自动提取产生的删除同口径，都移入回收站**（v0.4.1 起；此前是直接删除）。分类重置（`clearCategory`）与近期动态滚动清理（`pruneRecentActivity`）仍是直接删除、不进回收站。
+- **`backups/surgical/`、`backups/evict-*` 与 `trash/` 都有自动清理**：快照按 `settings.surgicalKeep`（默认 30 份）滚动保留最新；归档快照保留最近 10 份；回收站按 `settings.trashKeepDays`（默认 30 天）清过期。三者都由写入/归档路径顺带收口，无需手工维护。
 - **不要手工改 `manifest.json` / `meta.json`**：它们是盘上数据，恢复时按三道闸逐条校验（`name` / `rootKey` 都要过 `sanitizeMemoryName` 与 `rootDirOf`），改坏了最多是该条被跳过并告警——但没必要冒险。
-- **跨 agent 互认不涉及这两类目录**：外部 agent 只读真源（`*.md` + `MEMORY.md`）即可；副本目录是本插件内部的可逆性设施，格式不对外承诺稳定。
+- **跨 agent 互认不涉及这些非真源目录**：外部 agent 只读真源（`*.md` + `MEMORY.md`）即可；副本/产物目录是本插件内部的可逆性与编译设施，格式不对外承诺稳定。
 - **`extract.lock` 是运行时锁文件（同样可安全删除）**：提取落盘与三类恢复端点（快照 / 回收站 / 整份备份）共用存储根下的 `extract.lock` 互斥——原子创建、stale 超时接管、用完即删。它不是记忆数据、也不进任何备份，**删掉不损失记忆**，只是放弃一次在途批次的互斥保护，下一批会自动重建。
 - **`extraction-journal.jsonl` 是提取运行日志（同样可安全删除）**：每次提取结算（写了几条 / 无可记 / 跳过 / 失败）落一行，是面板"最近提取记录"与"未恢复区间"提示的数据源；每会话提取覆盖边界（cursor）也随它持久化，DSH 重启后据此从上次边界续提。它不是记忆真源——**删掉不损失任何记忆**，代价是丢掉提取观测历史与跨重启续提边界（此前失败未补的区间会因此补不回来），之后的提取照常重新开张。文件自带滚动清理（超 2000 行留尾 1000），无需手工维护。
+- **`runtime/` 是运行时记忆层的编译产物（非真源，整目录可删可重建）**：`runtime/<scope>/USER.md`、`MEMORY.md` 由条目**编译**而来（每 scope 一份，内容 = 全局条目 + 该项目条目），`runtime.json` 是编译清单（选条 / 淘汰候选 / 状态），`runtime/compile-journal.jsonl` 是编译观测日志（达 2000 行轮转留尾 1000）。它们全部可删——**删掉不损失任何记忆**，代价只是丢编译观测历史与编译缓存，下一次注入/面板打开时自动重建。手工修改产物会在下次编译时被覆盖；编辑请回到条目文件。
+- **`evict-audit.jsonl` 是淘汰归档的持久审计记录（非真源）**：每次「执行归档」追加一行（时间 / scope / 原位置 / 新位置 / 快照目录 / 操作者）。它**不随 `runtime/` 删除**，是「某条何时被归档到哪」的唯一凭证；达 5000 行轮转留尾 2500（「持久」指不随 `runtime/` 清理，非无限增长）。删掉不损失任何记忆，只丢可追溯性。
+- **`backups/evict-<ts>/` 是归档前的手术式快照**：只复制被搬文件（不做全量导出），保留最近 10 份；用于误归档时精确还原。
 
 ## 八、存储格式版本（`keepsake-format.json`）
 
 存储根下有一个 `keepsake-format.json`，记录**写这份数据的格式版本**：
 
 ```json
-{ "formatVersion": 1 }
+{ "formatVersion": 2 }
 ```
 
 - **它不是记忆内容**（跨 agent 互认只认上面的 markdown 与索引），而是本插件的**升级/降级安全标记**。
 - 语义：`formatVersion` = 写下这份数据的插件所理解的格式版本。插件启动时按存储根的标记判定：
   - **标记缺失**（v0.1/v0.2 的旧数据无此文件，或全新目录）→ 补写当前版本，正常读写；
   - **等于当前** → 正常；
-  - **低于当前** → 未来的格式迁移入口（当前 `FORMAT_VERSION=1`，无更早版本），补写当前版本；
-  - **高于当前** → 数据由**更新版**插件写入，本版本**自动转只读**：拒绝写入与滚动清理（写端点 503，门牌与面板健康卡显式报警），读取仍放行（非破坏性）。升级插件后自动恢复。
+  - **低于当前** → 在迁移位逐版登记迁移后补写当前版本。**v1 → v2（2026-10-20）**：新增可选 `pinned` 与 long-term 可选 origin 三字段（第二节），均为可选增量字段，**无数据迁移**——旧条目缺省即「非 pinned / 无出处」，启动时只补写 `formatVersion:2` 标记，不改写任何文件；
+  - **高于当前** → 数据由**更新版**插件写入，本版本**自动转只读**：拒绝写入与滚动清理（写端点 503，门牌与面板健康卡显式报警），读取仍放行（非破坏性）。升级插件后自动恢复。v2 起这也覆盖「旧版插件读 v2 数据」场景——旧版读不懂 `pinned`，转只读后不会在覆写时把 pin 剥掉；
   - **标记损坏**（文件在但无法解析，如截断 / 非法 JSON）→ 无法判断版本，**先备份再补写**：把损坏文件改名为 `keepsake-format.json.corrupt-<时间戳>`，再补写当前版本——绝不静默覆盖（原标记可能记录着更高版本，是唯一的降级信号）。
-- **格式版本没变，不代表能力没变**：`FORMAT_VERSION` 自 v0.3.0 起未再变化，所以从 v0.4.0 降级回旧版（如 v0.2.x）时格式闸**不会**触发——旧版可以正常读写同一份数据；但旧版没有 v0.4.0 的写入安全面（批前快照 / 回收站 / `sha1` 覆盖闸 / 写后读校验），其覆写是直接替换旧文。降级前建议先做一次全量备份（设置页「导出全部」或直接拷走 `<storageRoot>/`）。
+- **格式版本没变，不代表能力没变**：v0.3.0 → v0.5.0 期间 `FORMAT_VERSION` 一直为 1，所以从 v0.4.0/v0.5.0 降级回旧版（如 v0.2.x）时格式闸**不会**触发——旧版可以正常读写同一份数据；但旧版没有 v0.4.0 的写入安全面（批前快照 / 回收站 / `sha1` 覆盖闸 / 写后读校验），其覆写是直接替换旧文。降级前建议先做一次全量备份（设置页「导出全部」或直接拷走 `<storageRoot>/`）。
 - 该文件可安全删除（会被视为"缺失"并补写当前版本）；但删除它等于放弃降级保护，请仅在确认数据格式与当前插件一致时这么做。
 - **破坏性格式变更（字段增删、语义调整）必须把 `FORMAT_VERSION` +1 并在迁移位登记**——这是对外契约变化，同步更新本页与 [ROADMAP.md](ROADMAP.md) 的版本纪律。
 

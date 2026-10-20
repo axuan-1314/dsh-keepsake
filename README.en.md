@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.5.0 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.6.0 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -23,7 +23,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 > Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.5.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.0.tar.gz
 ```
 
 ## Contents
@@ -31,6 +31,7 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
 - [What is this](#what-is-this)
 - [Features](#features)
   - [Automatic memory: extracted at turn end, injected next time](#automatic-memory-extracted-at-turn-end-injected-next-time)
+  - [Runtime memory layer (optional, off by default)](#runtime-memory-layer-optional-off-by-default)
   - [Content redaction: secrets never reach memory or prompts](#content-redaction-secrets-never-reach-memory-or-prompts)
   - [Semantic recall (optional)](#semantic-recall-optional)
   - [Memory management panel](#memory-management-panel)
@@ -61,12 +62,12 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
 Every new DSH session starts from scratch: your work context, the decision history of a project, the conventions you settled on last week — all of it has to be repeated. dsh-keepsake automates this:
 
 1. **Automatic extraction** — at the end of each turn, the plugin decides whether anything is worth remembering (user preferences, project decisions, durable conclusions…) and, if so, writes it to local Markdown files.
-2. **Automatic injection** — on every later turn, the recorded content is injected into the session as a plugin-owned user message (four segments: persona / global-memory index / project usage notes / project-memory index), so the model "remembers" you.
+2. **Automatic injection** — on every later turn, the recorded content is injected into the session as a plugin-owned user message in six segments (persona / runtime user profile / runtime work memory / global-memory index / project usage notes / project-memory index), so the model "remembers" you. (The two runtime segments require the "runtime memory" switch, which is off by default; when off they are empty and produce no output.)
 3. **Panel management** — a **Memory** section appears in DSH settings; from there you open the panel to browse / edit / delete / import-export memory entries, edit the persona and addressing, toggle each memory class, and inspect extraction-pipeline health.
 
 Memory has two layers:
 
-- **Global memory** (shared across all conversations): four conversational categories — work profile, user profile, current focus, recent activity (auto-rolling, keeping 30 entries / 30 days by default) — plus long-term memory;
+- **Global memory** (shared across all conversations): four conversational categories — work profile, user profile, current focus, recent activity (auto-rolling, keeping 30 entries / 30 days by default) — plus long-term memory (the archive area, which no longer enters the injected index as of v0.6.0; see [Runtime memory layer](#runtime-memory-layer-optional-off-by-default));
 - **Project memory** (isolated per workspace path): one directory per project, recording that project's decisions and state.
 
 ## Features
@@ -78,24 +79,41 @@ Every item below is backed by source (`lib/` and `web/`), described in terms of 
 - **No manual work**: extraction is triggered after each turn completes normally (`turn/end` with `reason.kind === "completed"`); chit-chat and command-style one-liners (fewer than 3 words of user prose) are skipped, so no tokens are wasted.
 - **Incremental**: the plugin keeps a per-session cursor and only processes newly completed turns; on failure the cursor does not advance, so the next turn retries automatically (no missed or duplicated writes).
 - **Extraction follows the session route**: by default it reuses the model route of your current conversation; you can also pin a more stable `provider` / `model` in `cordis.patch.yml`.
-- **Cross-session injection**: each later turn injects memory as a **plugin-owned user message** (delivered over the durable message channel by default, which works for **all** presets — including the `complete:true` minimal preset; `injectChannel: "section"` reverts to the old system-prompt injection). Injection is bounded by a **dual budget**: the char-level `injectMaxChars` (default 30000) and the token-level `injectMaxTokens` (default **16000**, CJK-aware estimate; 0 = disable the token budget, char budget only) — both caps apply at once, dropping whole segments by priority on overflow. The message has four segments:
+- **Cross-session injection**: each later turn injects memory as a **plugin-owned user message** (delivered over the durable message channel by default, which works for **all** presets — including the `complete:true` minimal preset; `injectChannel: "section"` reverts to the old system-prompt channel, which since v0.6.0 carries the same six segments). Injection is bounded by a **dual budget**: the char-level `injectMaxChars` (default 30000) and the token-level `injectMaxTokens` (default **24000**, CJK-aware estimate; 0 = disable the token budget, char budget only) — both caps apply at once, dropping whole segments by priority on overflow. The message has six segments (the persona and the two runtime segments are **locked**: never dropped as a whole):
 
 | Segment | What the model sees | Budget |
 |---|---|---|
-| Persona | addressing + your edited persona body | 400 lines / 16k chars |
-| Global index | index of the four categories + long-term memory; recent-activity entries carry age and expiry | 22 lines per class (keeps newest), 120 lines / 12k chars total |
+| Persona (locked) | addressing + your edited persona body | 400 lines / 8k chars (lowered from 16k in v0.6.0) |
+| Runtime user profile (locked) | with runtime memory on: `USER.md`, compiled from `user-profile` etc. into a fixed-size compact profile | ≤ 4096 bytes (compile-time quota) |
+| Runtime work memory (locked) | with runtime memory on: `MEMORY.md`, compiled from work profile / current focus / project entries | ≤ 10240 bytes (compile-time quota) |
+| Global index | index of the four categories (long-term memory **no longer enters the injected index** as of v0.6.0); recent-activity entries carry age and expiry | 22 lines per class (keeps newest), 120 lines / 12k chars total |
 | Project usage notes | where the memory dir is, how to read the index, how to write/delete on request | fixed short text |
 | Project index | the project's `MEMORY.md` index (the model Reads files on demand) | 200 lines / 25k chars, keeps newest on overflow |
 
-- **Three-layer switches** (panel → Settings, effective next turn):
+> With runtime memory off, the two runtime segments are empty (they do not appear in the injection), so the payload is equivalent to the old four segments — the only difference being that long-term index lines are no longer injected as of v0.6.0.
+
+- **Three-layer switches + runtime memory** (panel → Settings, effective next turn):
 
 | Switch | Effect when off |
 |---|---|
 | Conversational memory (master) | injection and auto-extraction both stop; turns while off are not accumulated or backfilled |
-| Project memory | project notes/index are no longer injected, project-class writes are filtered (count visible) |
+| Project memory | project notes/index are no longer injected (and both runtime segments stop too, conservative rule); project-class writes are filtered (count visible) |
 | Global auto-extraction | no new global entries; existing ones still inject |
+| Runtime memory (off by default) | no compilation, no runtime segments; the global index renders every category again (no dedupe) |
 
 - **Anti-feedback (machine-origin exclusion)**: injected messages carry `source.kind = "plugin:dsh-keepsake"`; the extraction side applies a unified machine-origin rule — messages injected by **any plugin** (not just this one), plus systematic messages such as instruction / summary / tool, are all excluded from "user prose" (they count neither toward the skip gate nor into the extraction input), so the model never re-records injected memory into memory. Genuine human messages (including those with no source, or `steer` / `followup` kinds) always count; the semantic-recall query text likewise takes only human messages.
+
+### Runtime memory layer (optional, off by default)
+
+Entry files are **compiled** into two fixed-size compact memory files (`USER.md` user profile + `MEMORY.md` work memory) and injected every turn — no need to wait for the model to Read the index on demand. Off by default (`runtimeEnabled`); turn it on on the panel's Settings page and it takes effect next turn.
+
+- **One-line mechanism**: entries → (compile) `runtime/<scope>/USER.md` / `MEMORY.md` → injection. Entry files remain the source of truth; artifacts can be deleted and rebuilt, and manual edits to them are overwritten by the next compile.
+- **Quotas**: `USER.md` ≤ **4096 bytes**, `MEMORY.md` ≤ **10240 bytes** (UTF-8 bytes, including the header notice and warning lines). Pinned entries (`pinned: true`) are always selected and never evicted; when they exceed the quota nothing is truncated and nothing is silent — the manifest turns `status=overQuota`, the panel shows a red gauge and the injected block carries a visible warning line.
+- **Eviction is "candidates + confirmation"**: compilation only *registers* entries that did not fit (never moves files); you tick them on the panel's Runtime memory tab and press **Archive** to actually move them into `global/long-term/` (archiving is not deleting).
+- **Archiving is reversible**: before moving, every touched file is copied to a **surgical snapshot** (`backups/evict-<ts>/`, latest 10 kept) and a **durable audit** line is appended to `evict-audit.jsonl` (time / from / to / snapshot / actor); the panel's "restore from archive" writes the entry back to its recorded origin (`originProject` / `originType` / `originSessionId`). Moving files back by hand also works — the changed path set triggers a recompile.
+- **Budget**: persona is capped at 8000 chars (≈12000 tokens) and the two runtime segments occupy up to 14336 bytes (≈7170 tokens) ≈ 19170 < `injectMaxTokens` **24000**; char level 8000 + 4779 ≈ 12779 < `injectMaxChars` **30000**. `injectChannel: "section"` carries the same two segments (between persona and the global index).
+- **Where in the panel**: the "Runtime memory" tab (switch scope global/per project; read-only preview, usage bar, candidate list, "Recompile", "Restore from archive", and a "mark as key / unmark" toggle on each entry — the `pinned` switch).
+- **How to roll back**: turn the "Runtime memory" switch off (or delete `runtimeEnabled` from `settings.json`) and the runtime segments are no longer injected — no compilation, no writes; the existing `runtime/` directory can be deleted entirely without losing any memory.
 
 ### Content redaction: secrets never reach memory or prompts
 
@@ -148,7 +166,8 @@ The panel (`/dsh-keepsake/panel/`, localhost only) includes:
 - **Addressing page**: two inputs ("DSH's name" / "what to call me", 40 chars each), debounced auto-save, same data as the settings block.
 - **Project memory page** (read-only): per-project entry count and last update; per-project JSON export.
 - **Trash page / Snapshots page** (see [Write reversibility](#write-reversibility-snapshots-and-trash)): deleted entries and pre-batch archives, restorable per entry or per file.
-- **Settings page**: the three switches; pipeline health card (with the backfill area, see [Session backfill](#session-backfill-recover-failed-ranges-across-restarts)) and extraction-model card; the **Memory upkeep** card (see [Memory upkeep](#memory-upkeep-duplicate-stale-and-index-audit-suggestions)); a **retention policy** card (trash retention days / snapshot count / recent-activity retention days, effective next turn); data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
+- **Runtime memory page** (see [Runtime memory layer](#runtime-memory-layer-optional-off-by-default)): scope switch, read-only `USER.md` / `MEMORY.md` preview, usage bar (turns red past quota), eviction-candidate ticks + "Archive", "Recompile", "Restore from archive". Off by default; when off the page shows a one-line guide.
+- **Settings page**: the three switches plus the runtime-memory switch; pipeline health card (with the backfill area, see [Session backfill](#session-backfill-recover-failed-ranges-across-restarts)) and extraction-model card; the **Memory upkeep** card (see [Memory upkeep](#memory-upkeep-duplicate-stale-and-index-audit-suggestions)); a **retention policy** card (trash retention days / snapshot count / recent-activity retention days, effective next turn); data card (**export all** JSON / **clear all memory**, auto-backup per class, persona & addressing preserved); backup list (latest 20, each restorable — restoring auto-backups the current state first).
 - **Visible corruption**: if `settings.json` / `addressing.json` / `persona.md` fail to parse, a red bar appears ("parse failed, running with defaults"); toggling a switch or re-saving repairs it. Corrupt files are preserved as `*.corrupt-<ts>` before being overwritten. A corrupt `settings.json` is preserved (renamed to `settings.json.corrupt-<ts>`) and then recovered from the shadow file `settings.last-good.json` (refreshed on every successful write), restoring your switch choices — it only falls back to defaults when no shadow is available, not by discarding your settings outright. When individual settings values are invalid and coerced to defaults, a yellow bar lists the field names ("N settings values were invalid and reset to defaults", from `/state.settingsDiagnostics.coercedFields`); re-saving the settings fixes it.
 
 ### Pipeline health card and "retry extraction now"
@@ -254,7 +273,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.5.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.0.tar.gz
 # profile: web / headless / desktop
 ```
 
@@ -282,7 +301,8 @@ dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/
 
 - **Your data is unaffected by upgrades**: memory, switches, persona and backups all live under `~/.dsh/memory/` — **outside the plugin package directory** — so uninstall / reinstall never touches them (unless you delete that directory yourself). Keeping data separate from code is deliberate.
 - **Restart after upgrading**: replacing the installed package requires a process restart to load the new JS modules (web profile can reload via HMR; restart the desktop app; headless picks it up on next start).
-- **Back up before downgrading**: a `keepsake-format.json` marker in the data directory records the storage-format version (see [FORMAT.md](FORMAT.md)). The format version has not changed since v0.3.0 (`FORMAT_VERSION=1`), so going back from v0.4.0 to v0.2.x does **not** trip the gate — the older build can read and write the same data normally; what it lacks is the v0.4.0 write-safety surface (pre-batch snapshots / trash / `sha1` overwrite guard / write-then-verify), so its extraction overwrites replace files outright. Take a full backup before downgrading (the data card's "export all", or simply copy `~/.dsh/memory/`). The read-only gate itself remains: only when data was written by a plugin of a **newer format version** does the older version turn read-only (write endpoints return 503) with a visible warning, recovering once you upgrade.
+- **v0.6.0 upgrade notes (behavior changes — worth a glance)**: ① long-term memory no longer enters the injected index (archived entries are invisible to every session; the extraction prompt still sees them); ② the persona segment cap drops from 16000 to 8000 chars; ③ `injectMaxTokens` default rises from 16000 to 24000; ④ a new "runtime memory" switch, **off by default** (with it off the payload is equivalent to the old behavior, minus the long-term index lines); ⑤ the storage format version goes 1 → 2, and older builds turn read-only. Details in the 0.6.0 entry of [CHANGELOG.md](CHANGELOG.md).
+- **Back up before downgrading**: a `keepsake-format.json` marker in the data directory records the storage-format version (see [FORMAT.md](FORMAT.md)). **As of v0.6.0 `FORMAT_VERSION=2`** (it sat at 1 from v0.3.0 through v0.5.0): v2 adds the optional `pinned` field and the optional long-term origin fields — optional increments with no data migration. Consequently, going back from v0.6.0 to v0.5.0 or older makes the older build turn **read-only** when it sees the v2 marker (write endpoints return 503 with a visible warning; reads still work) — that is the safety net against an old build stripping `pinned` on overwrite. Going back from v0.4.0/v0.5.0 to v0.2.x still does **not** trip the gate; the older build can read and write the same data, but it lacks the v0.4.0 write-safety surface (pre-batch snapshots / trash / `sha1` overwrite guard / write-then-verify), so its extraction overwrites replace files outright. Take a full backup before downgrading (the data card's "export all", or simply copy `~/.dsh/memory/`).
 
 ### Verify it works
 
@@ -301,9 +321,9 @@ cordis entry config (see `cordis.patch.yml`):
 | Field | Default | Description |
 |---|---|---|
 | `enabled` | **false** (fail-closed) | Master switch; `cordis.patch.yml` sets `enabled: true`, so installing enables it visibly |
-| `injectChannel` | **`"message"`** | Injection channel: `"message"` = durable user-message channel (default, all presets); `"section"` = legacy four-segment system-prompt injection (rollback) |
+| `injectChannel` | **`"message"`** | Injection channel: `"message"` = durable user-message channel (default, all presets); `"section"` = legacy system-prompt channel (rollback; since v0.6.0 it carries the same six segments) |
 | `injectMaxChars` | 30000 | **Total** budget for message-channel injection (**char** level): the recall block and the main block share it, and the main block yields to the recall block; overflow drops whole segments by priority, with a visible WARNING. Lowered from 60000 in v0.4.2 (the supersede / disclaimer lines add fixed overhead, and throttling favors smaller per-turn blocks — see [How it works](#how-it-works)); set it explicitly if you need a larger budget |
-| `injectMaxTokens` | 16000 | **Token-level** total budget for message-channel injection (CJK-aware estimate; recall block included, main block yields; applies together with `injectMaxChars`, the stricter cap wins). **0 = disable the token budget**, reverting to the char-only rule. The estimate is an approximation (CJK chars ≈1.5 tokens each, others ≈0.25 tokens each), not exact tokenization |
+| `injectMaxTokens` | 24000 | **Token-level** total budget for message-channel injection (CJK-aware estimate; recall block included, main block yields; applies together with `injectMaxChars`, the stricter cap wins). **0 = disable the token budget**, reverting to the char-only rule. Raised from 16000 in v0.6.0 to make room for the runtime layer (persona 8000 chars ≈12000 tokens + runtime segments ≈7170 tokens ≈ 19170). The estimate is an approximation (CJK chars ≈1.5 tokens each, others ≈0.25 tokens each), not exact tokenization |
 | `redactionEnabled` | **true** | Content-redaction master switch (see [Content redaction](#content-redaction-secrets-never-reach-memory-or-prompts)): secret-like content in the extraction prompt and in write-back is replaced with `[redacted]`; **false = no redaction at all**, old behavior |
 | `storageRoot` | `~/.dsh/memory` | Root for all memory (tests / migration; usually leave alone) |
 | `provider` / `model` | empty (follow session) | Extraction call route; must appear as a pair, else an error. Empty auto-captures the current session route (`request/header` first, `assistant/message`'s `source` as fallback, the same session-title strategy) |
@@ -336,6 +356,8 @@ cordis entry config (see `cordis.patch.yml`):
 
 Unknown config keys throw (with a did-you-mean hint) — fail-loud, never silently swallowing a misconfiguration.
 
+**The runtime-memory switch is not entry config**: `runtimeEnabled` lives in `~/.dsh/memory/settings.json` alongside the three switches (editable on the panel's Settings page, effective next turn, no restart); putting it in `cordis.patch.yml` is rejected as an unknown key.
+
 ## Data & privacy
 
 - **All data is local**: memory, settings, backups and logs live under `~/.dsh/memory/` (a dedicated dir; uninstalling does not touch other components);
@@ -350,13 +372,18 @@ Data layout:
 ├── keepsake-format.json                   # storage-format version marker (internal; see FORMAT.md section 8)
 ├── extract.lock                           # extraction/restore batch lock (self-managed, safe to delete)
 ├── extraction-journal.jsonl               # extraction run log (observation + resume boundary; not source of truth, safe to delete)
-├── settings.json                          # three-layer switches + retention policy (panel-editable, read each turn)
+├── settings.json                          # three-layer switches + runtime-memory switch + retention policy (panel-editable, read each turn)
 ├── settings.last-good.json                # settings shadow (refreshed on every successful write; source for recovery when settings.json is corrupt)
 ├── settings.corrupt                       # corruption flag (set when settings.json fails to parse, cleared once settings are re-saved; keeps the red bar visible)
 ├── settings.json.corrupt-<ts>             # preserved copy of a corrupt settings.json (renamed, original content never lost)
 ├── extraction-errors.log                  # extraction failure log (always on, rotated at 512KB)
 ├── debug.log                              # diagnostic log when DSH_KEEPSAKE_DEBUG=1
 ├── embeddings.json                        # semantic-recall vector cache (created when recallEnabled)
+├── runtime/                               # runtime memory layer artifacts (not source of truth; safe to delete, rebuilt on next compile)
+│   ├── global/                            # one per scope: USER.md / MEMORY.md / runtime.json
+│   ├── projects/<slug>-<hash16>/
+│   └── compile-journal.jsonl              # compile observation log (rotates at 2000 lines, keeps the last 1000)
+├── evict-audit.jsonl                      # eviction archive audit (durable ledger, survives runtime/ cleanup; rotates at 5000 lines, keeps the last 2500)
 ├── global/                                # global memory
 │   ├── persona.md                         # persona (starts from the factory template)
 │   ├── addressing.json                    # {dshName, userAlias}
@@ -366,11 +393,12 @@ Data layout:
 │   ├── MEMORY.md                          # index: - [Title](file.md) — one-line hook (≤150 chars)
 │   └── <kebab-name>.md                    # entry: frontmatter name/description/metadata.type
 ├── backups/<ts>/                          # automatic backups (latest 20 kept)
-│   └── surgical/<batchId>/                # pre-batch snapshots: old text before overwrite/delete (latest 30 kept)
+│   ├── surgical/<batchId>/                # pre-batch snapshots: old text before overwrite/delete (latest 30 kept)
+│   └── evict-<ts>/                        # surgical snapshots taken before archiving (moved files only; latest 10 kept)
 └── trash/<entryId>/                       # trash: originals of deleted entries (kept 30 days by default)
 ```
 
-- `keepsake-format.json` / `extract.lock` / `extraction-journal.jsonl` are all **self-managed, non-source-of-truth files that are safe to delete** (restamped if missing / rebuilt next batch / restarted afresh respectively); the only source of truth is `*.md` and `MEMORY.md` — see [FORMAT.md](FORMAT.md) sections 7 and 8.
+- `keepsake-format.json` / `extract.lock` / `extraction-journal.jsonl` / `runtime/` / `evict-audit.jsonl` are all **self-managed, non-source-of-truth files that are safe to delete** (restamped if missing / rebuilt next batch / restarted afresh / rebuilt on the next compile / only the audit trail is lost respectively); the only source of truth is `*.md` and `MEMORY.md` — see [FORMAT.md](FORMAT.md) sections 7 and 8.
 
 - `slug`: a sanitized workspace basename (lowercased, `[^a-z0-9._-]+` → `-`, truncated to 48, falling back to `project` when empty);
 - `hash16`: the first 16 hex chars of the sha256 of the absolute path (win32 lowercased);
@@ -379,7 +407,8 @@ Data layout:
 ## Rollback & uninstall
 
 1. **Disable without uninstalling**: set `enabled` to `false` in the profile's `cordis.patch.yml` (or bundle patch). Web picks it up via HMR; desktop/headless require a restart. To pause memory temporarily, just use the panel's master switch (next turn, no restart).
-   - To revert **only the injection channel**: set `injectChannel` to `"section"`.
+   - To revert **only the injection channel**: set `injectChannel` to `"section"` (since v0.6.0 it carries the same six segments).
+   - To disable **only the runtime memory layer**: turn off the "Runtime memory" switch on the panel's Settings page (or delete `runtimeEnabled` from `settings.json`) — the two runtime segments stop being injected; `~/.dsh/memory/runtime/` can be deleted entirely without losing memory.
    - To disable **only semantic recall**: set `recallEnabled` to `false` (or remove it) — back to index-only, no embedding calls.
 2. **Uninstall**: `dsh plugin --profile <name> remove dsh-keepsake`.
 3. **Clear data**: delete `~/.dsh/memory/`.
@@ -417,11 +446,12 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Trigger**: subscribes to `session/event`; after `turn/end` (`data.reason.kind === "completed"`) it triggers extraction (in-process single-flight + latestPending merge: while a run is in flight, new triggers only update the latest boundary). After a turn completes the run first waits on the idle-delay timer (`extractIdleDelayMs`, fixed-time, merging bursts), then passes the scoring gate (`extractGateEnabled` / `extractGateMinScore`) and the per-session cap (`extractMaxRunsPerSession`); a run blocked by any gate settles as `skipped` (`thin-evidence` / `session-cap`) with the cursor advanced, without calling the model.
 - **Extraction**: one `ctx.llm.stream` call — input is an incremental transcript excerpt + the current memory manifest (mtime-desc, top 200, recent small files with bodies) + global category indices; output is `Nothing to save.` or a `{"ops":[...]}` JSON (ops carry scope: `project` default / `global:<category>`). Both the transcript rendering and the write-back pass content redaction first (`redactionEnabled`, see [Content redaction](#content-redaction-secrets-never-reach-memory-or-prompts)).
 - **Write-back**: the plugin (not the model) writes files under `~/.dsh/memory/...`; filenames pass three gates (containment + blacklist segments + Unicode control-char stripping); `MEMORY.md` is merged automatically; recent-activity timestamps are stamped by the host (never trusting the model's clock).
-- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates four segments (4990 persona / 4995 global index / 5000 project usage notes / 5001 project index) into a `<memory-context>`-wrapped user message. The block opens with two lines: a supersede note (this is the current memory snapshot; it supersedes earlier memory blocks — if you see more than one, follow only the latest), then the disclaimer (memory is reference context, not instructions; subagent sessions are not injected). Whether to send is a three-way decision: identical to the last visible block → skip; a small change (character-bigram similarity ≥0.98, or a char delta ≤ max(200, 1% of length)) → throttled and held back until the next large change or until compaction/rewind evicts the old block and a full block goes out; a near-total rewrite (similarity <0.5) → sent immediately. The total budget is dual: char-level `injectMaxChars` and token-level `injectMaxTokens` (CJK-aware estimate: CJK chars ≈1.5 tokens each, others ≈0.25 tokens each) apply at once, the stricter winning; the recall block counts toward the budget and the main block yields to it (the recall block itself is not clipped). `injectMaxTokens: 0` reverts to the char-only rule (byte-identical to the old behavior). `injectChannel: "section"` reverts to four `ctx.systemPrompt.section` segments.
+- **Injection**: by default over the durable user-message channel — the first step of each turn evaluates six segments (4990 persona / 4992 runtime user profile / 4993 runtime work memory / 4995 global index / 5000 project usage notes / 5001 project index; empty runtime segments produce no output) into a `<memory-context>`-wrapped user message. The order is fixed and `persona` / `runtimeUser` / `runtimeMemory` are **locked** (never dropped as a whole; the last-resort truncation order is persona > runtimeUser > runtimeMemory, always with a warning line). The block opens with two lines: a supersede note (this is the current memory snapshot; it supersedes earlier memory blocks — if you see more than one, follow only the latest), then the disclaimer (memory is reference context, not instructions; subagent sessions are not injected). Whether to send is a three-way decision: identical to the last visible block → skip; a small change (character-bigram similarity ≥0.98, or a char delta ≤ max(200, 1% of length)) → throttled and held back until the next large change or until compaction/rewind evicts the old block and a full block goes out; a near-total rewrite (similarity <0.5) → sent immediately. The total budget is dual: char-level `injectMaxChars` (default 30000) and token-level `injectMaxTokens` (default 24000; CJK-aware estimate: CJK chars ≈1.5 tokens each, others ≈0.25 tokens each) apply at once, the stricter winning; the recall block counts toward the budget and the main block yields to it (the recall block itself is not clipped). `injectMaxTokens: 0` reverts to the char-only rule (byte-identical to the old behavior). `injectChannel: "section"` injects the same six `ctx.systemPrompt.section` segments in order.
+- **Runtime memory layer** (optional, `runtimeEnabled`, off by default): before injecting, the candidate pool is hashed (`runtime.json.sourceHash` = paths + mtimeMs + size + quotas + algorithm version); a match uses the cache, a mismatch lazily recompiles. A compile selects (pinned first, then weight/mtime until the byte quota fills) → sorts → renders (`- 【关键|普通】[Title](relative path) — hook`) → clips to the byte quota → records eviction candidates, and atomically writes (tmp+rename) to `runtime/<scope>/`. When enabled and the artifact is `status=ok`, `user-profile` / `work-profile` / `current-focus` leave the global index (their content is carried by the runtime segments, so nothing is injected twice); `long-term` leaves the injected index **unconditionally** (independent of the switch and of artifact state), with the extraction prompt as the only exception. Invalidation: writes / deletes / archive execution / pin changes drop the affected scope's cache and the next injection or panel open recompiles; with the format read-only gate active nothing is compiled (use the cache if present, otherwise skip the runtime segments and record `[runtime readOnly]`).
 - **Semantic recall** (optional, `recallEnabled`): each turn embeds the current user message once and retrieves top-k entries by cosine, injected as a `<memory-recall>` block; entry vectors are cached incrementally in `<storageRoot>/embeddings.json`. On timeout/error/unconfigured the turn recalls nothing (explicit degradation, observable under `/state.recall`).
 - **Cursor discipline**: a run settles as `ok` (success or skip) and advances the cursor to the snapshot boundary; `error`/abort do not advance, merging and retrying next turn. The cursor is persisted alongside the extraction run log (one line per settle, replayed on restart), so after a DSH restart a reopened session **resumes from the last boundary**; but a session mounted midway or never extracted before only processes turns completed while it is alive and does not back-scan history.
 - **Skip double condition**: no ≥3-word user prose; and no direct write into the memory dir that turn (a write/edit tool call landing in memoryRoot). A skip still advances the cursor. Three additional cost gates (scoring gate / idle-delay merge / per-session cap, see [Extraction trigger gates](#extraction-trigger-gates-scoring-gate-idle-delay-and-per-session-cap)) settle as skips with the cursor advanced as well.
-- **Modules of note**: `lib/redact.js` (redaction pure functions — 7 fixed patterns, linear regexes to avoid backtracking), `lib/extract-gate.js` (scoring-gate pure function: `score = userWords + 2*toolKinds + 2*turns`), `lib/tokens.js` (CJK-aware token estimate).
+- **Modules of note**: `lib/redact.js` (redaction pure functions — 7 fixed patterns, linear regexes to avoid backtracking), `lib/extract-gate.js` (scoring-gate pure function: `score = userWords + 2*toolKinds + 2*turns`), `lib/tokens.js` (CJK-aware token estimate), `lib/runtime.js` (runtime memory layer: candidate pool / selection / render / quotas / `runtime.json`), `lib/runtime-archive.js` (eviction archive execution + restore-from-archive), `lib/runtime-log.js` (`compile-journal.jsonl` / `evict-audit.jsonl`).
 - **Shutdown discipline**: on uninstall the plugin first drains in-flight extraction with a bounded wait (headless one-shot relies on this to finish writing memory before exit) and only aborts on timeout.
 - **Six spec boundaries**: ① debounce merge + cursor advance → `lib/state.js`; ② write boundary (`.md` only, containment enforced, the model never touches the disk directly) → `lib/extract.js`; ③ filename safety → `lib/filename.js`; ④ injection budget → `lib/manifest.js`; ⑤ trigger threshold → `lib/transcript.js`; ⑥ anti-feedback (request-only extraction + the machine-origin rule: injections from any plugin and systematic instruction/summary/tool messages never count as user prose) → `lib/index.js` / `lib/transcript.js`.
 
@@ -433,6 +463,7 @@ Kernel-level mechanics (implementation semantics, for secondary development / tr
 - **Session-backfill surface (v0.4.2)**: `GET /dsh-keepsake/api/sessions/pending` (`hostSupported` + `items[]`, each carrying `sessionId` / `from` / `to` / `at` / `reason` / `kind` (failed / abandoned) / `sessionAvailable`); `POST /dsh-keepsake/api/sessions/recover` (202 async; 409 single-flight, 404 session missing, 503 host without session persistence); `/state.recover` (`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`, plus the v0.5.0 auto-backfill four keys `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger` — `lastAutoTrigger` names the trigger point `disposed` / `turn/end` / `startup` / `manual`) observes progress.
 - **Memory-upkeep surface (v0.4.2)**: `GET /dsh-keepsake/api/maintenance/suggestions` (`duplicates` / `stale` / `indexHealth` with `dangling` / `orphans` / `emptyCategories` / `counts` / `generatedAt`); `POST /dsh-keepsake/api/maintenance/repair-index` (`fixed` array of applied actions / `fixedCount` / `unchanged`).
 - **Injection surface**: `/state.injection` (`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`); v0.4.2 adds two same-source-replacement counters — `throttled` (changes held back this turn) and `superseded` (old blocks invalidated by the supersede note); v0.5.0 adds two token-level counters — `lastTokens` (last injection's token estimate) / `totalTokens` (cumulative, CJK-aware, see `lib/tokens.js`); the health card's injection summary shows them too (including the budget usage "last ≈X tokens / cap Y", falling back to chars when `injectMaxTokens` is 0). Render failures are counted, never silently dropped.
+- **Runtime memory surface (v0.6.0)**: `GET /dsh-keepsake/api/runtime/<scope>` (`scope` = `global` or `projects/<slug>-<hash16>`; returns artifact text / bytes / quotas / `status` / eviction candidates), `POST /api/runtime/<scope>/compile`, `POST /api/runtime/compile-all`, `POST /api/runtime/<scope>/pin`, `POST /api/runtime/<scope>/evict`, `POST /api/runtime/global/archive/restore`; the observation files are `runtime/compile-journal.jsonl` (one line per compile) and `evict-audit.jsonl` (one line per archive execution). Unknown scope → 404, bad parameters → 400, lock held → 409, compile failure → 500 (the previous artifacts are kept).
 - **Recall surface**: `/state.recall` (`hits` / `items` / `chars` / `misses` / `errors` / `lastAt`).
 - **Write-safety surface (v0.4.0)**: `/state.safety` carries ten fields: three on-disk values (`surgicalBackups` / `lastSnapshotAt` / `trashPending`, computed live per request) plus seven in-process counters (`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`, **reset on restart**); the pipeline health card gains a summary line, and the **Snapshots** / **Trash** pages let you inspect and restore.
 - **Failure log**: `<storageRoot>/extraction-errors.log` (summary only; >512KB rotates two files), always on, independent of `DSH_KEEPSAKE_DEBUG`.
@@ -474,6 +505,7 @@ Module map: `lib/index.js` (entry: subscribe / route capture / retry chain / inj
 - **No per-edit history for persona/addressing; entry saves and deletes do have an undo**: PUT persona / PUT addressing still replace the old text outright — a bad paste overwrites it (only an already-corrupt file gets a `*.corrupt-<ts>` backup before being overwritten), so export first if you want an undo; but **PUT entry (saving an entry) snapshots the old text before overwriting** (the response carries `preSaveSnapshotId`, restorable from the **Snapshots** page), and **DELETE entry (deleting an entry) moves it to the trash** (kept 30 days by default, restorable from the **Trash** page). Batch destructive paths (reset/import/restore) also take a full auto-backup.
 - **Extraction only processes turns completed while it is alive; it does not back-scan history** (intentional): a session mounted midway or never extracted is not proactively backfilled — it needs to keep producing new turns (cross-restart resume only covers sessions that were extracted before and whose boundary was persisted).
 - **The global index reads all entries on every evaluation** (intentional): recent-activity rendering reads entry bodies (22-line budget only); fine at desktop scale; add mtime caching if the entry count explodes.
+- **Long-term memory (`global/long-term/`) no longer enters the injected index as of v0.6.0** (even with `runtimeEnabled` off): archived entries are invisible to every session; only the extraction prompt still sees them (so the model does not recreate archived entries). To bring one back, use the long-term page or the runtime page's "Restore from archive", which puts it back at its recorded origin.
 - **Injection blocks can accumulate within a session**: on large content changes a new injection message is sent and old blocks are not removed (committed history is immutable); only compaction converges them. Since v0.4.2 the supersede note makes the model follow only the latest block and change throttling reduces resend frequency, but the historical blocks still occupy context. Each block is bounded by the dual `injectMaxChars` / `injectMaxTokens` budgets; observable via `/state.injection.resends`.
 - **The token estimate is a CJK-aware approximation, not exact tokenization**: `injectMaxTokens` and the recall-block budget use a codepoint-level estimate (CJK/fullwidth chars ≈1.5 tokens each, others ≈0.25 tokens each, rounded up); tokenizer differences across models skew the number — the budget is a guardrail against blowing up the context, not precise metering.
 - **Redaction is regex best-effort**: the 7 built-in fixed patterns cover common secret shapes but are not exhaustive — non-standard key formats, credentials split across lines, or tokens cut apart by clipping can still slip through (redacting before clipping lowers the odds but not to zero). Regex replacement can also hurt body semantics, typically because **private IPv4 addresses are always replaced**: an address like `10.0.0.5` / `192.168.1.1` discussed as a subject (say, in a network-debugging note) becomes `[redacted]`. Two known deviations: key-value assignments only replace the first whitespace-delimited token of an unquoted value (quoted values are replaced whole), and a password containing @ inside URL userinfo is only cut at the first @. The pattern list is fixed and user-supplied regexes are not supported (guarding against regex backtracking), see [Content redaction](#content-redaction-secrets-never-reach-memory-or-prompts).

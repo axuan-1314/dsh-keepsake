@@ -4,6 +4,36 @@
 
 ## [未发布]
 
+## [0.6.0] - 2026-10-20
+
+运行时记忆层：把条目文件**编译**成定长的 `USER.md`（≤4KB）/ `MEMORY.md`（≤10KB），随每轮注入，替代"只给索引、靠模型按需 Read"。默认**关**（`runtimeEnabled`，规矩：开关默认关、可回滚）；开启后注入由四段变六段。另有两项预算切分（persona 上限 8000 字符、`injectMaxTokens` 24000）与一项索引面变化（long-term 退出注入索引）。格式层只增可选字段，`FORMAT_VERSION` 1→2。
+
+### 新增
+- **运行时记忆层（`runtimeEnabled`，默认关；面板「设置」页开关）**：L0 = 每轮注入的紧凑记忆。编译规则——pinned（`pinned: true`）条目全部优先入选、剩余额度按「权重 desc, mtimeMs desc」顺序装填、装不下即停；配额 **USER.md ≤ 4096 字节 / MEMORY.md ≤ 10240 字节**（UTF-8 字节口径，含文件头声明与告警行）。候选池 = 全局分类 + 当前项目条目（`long-term` / `recent-activity` 不进、`reference` 不入正文）。
+- **编译产物与清单**：`<storageRoot>/runtime/<scope>/`（`global` 与 `projects/<slug>-<hash16>` 各一份）落 `USER.md` / `MEMORY.md` / `runtime.json`。`runtime.json` 记选条明细（`entries[]` 含 `pinned` / `included` / `bytes`）、`status`（`ok` / `overQuota` / `error`）、`sourceHash`（候选池路径+mtimeMs+size+配额+算法版本）与 `evictCandidates[]`；同输入同产物（确定性编译）。**产物不是真源**：整目录可删可重建，手工修改会被下次编译覆盖。
+- **`pin`（「关键」）**：条目 frontmatter 可选 `pinned: true`（全局与项目条目皆可）。pinned 条目在候选池内永不淘汰、优先入选；合计超配额时**不截断、不静默**——`status=overQuota` + 面板红灯 + 注入块内告警行。五条覆写路径（面板保存 / 提取覆写 / 导入覆盖 / pin 端点 / 归档重写）均透传 `pinned`（有 roundtrip 测试钉死）。
+- **淘汰候选 + 面板确认归档**：编译只**登记**候选（`runtime.json.evictCandidates`），绝不搬文件；用户在面板「运行时记忆」页勾选后点「执行归档」才落盘。执行序列：抢 `extract.lock`（被占 409）→ 逐条复查仍为候选（过期项进响应 `skipped[]`）→ **手术式快照**到 `backups/evict-<ts>/<n>-<name>`（只快照被搬文件，保留最近 10 份）→ 按 long-term 扩展 schema 重写进 `global/long-term/`（`originProject` / `originType` / `originSessionId` 三字段承载出处）→ 索引对账 → **持久审计** `evict-audit.jsonl` 追加一行（5000 行轮转留尾 2500，不随 `runtime/` 清理）→ 失效并全量重编受影响 scope。**归档 ≠ 删除**，可逆：面板「从归档移回」按 origin 三字段落回原位（`POST runtime/global/archive/restore`），快照与审计存证。
+- **面板「运行时记忆」页签**：scope 切换（全局 / 各项目）、`USER.md` / `MEMORY.md` 只读预览、字节用量进度条（越界红显）、淘汰候选列表（勾选 + 执行归档 + 计数徽标）、「重新编译」、从归档移回；开关关闭时给一句引导文案。执行归档前自动刷新候选清单。
+- **runtime API 六端点**：`GET runtime/<scope>`（只读产物与清单）、`POST runtime/<scope>/compile`、`POST runtime/compile-all`、`POST runtime/<scope>/pin`、`POST runtime/<scope>/evict`、`POST runtime/global/archive/restore`。scope 值含斜杠，走专用匹配 `matchRuntime`；scope 不存在 404、参数非法 400、锁被占 409、编译失败 500（保留上一版产物）。
+- **`compile-journal.jsonl`**：每次编译一行（`trigger` / `selected` / `candidates` / `overQuota` / `bytes` / `sourceHash`），独立实现（不复用 `journal.js` 的会话语义），达 2000 行轮转留尾 1000。
+
+### 变更（升级前请读）
+- **① long-term 归档区退出注入索引**：全局索引不再渲染 `long-term` 分类——归档区条目不再注入任何会话，顺带修掉「归档条目跨项目外溢」；`runtimeEnabled` 关着也生效（不依赖产物状态）。唯一例外是**提取 prompt**（`renderGlobalIndex({includeArchived:true})`）：模型仍看得见归档区，避免重复造已归档条目。此项使「无 runtime 数据时输出与 0.5.0 逐字节一致」不再成立，回归门改为内容集合等价（差异白名单=long-term 索引行）。
+- **② persona 段上限 16000 → 8000 字符**（行数仍 400）：为 runtime 两段腾预算；8000 字符 ≈12000 tokens。超限照旧截断并附可见 WARNING。
+- **③ `injectMaxTokens` 默认 16000 → 24000**：口径切分为「persona ≈12000 + runtime 常驻 ≈7170 ≈ 19170 < 24000」，留出余量；`injectMaxChars` 仍为 30000（字符口径：8000 + 4779 ≈ 12779）。两项默认值在代码与 `cordis.patch.yml` 同步，显式配置可覆盖。
+- **④ `runtimeEnabled` 新开关，默认关**：关闭时——不编译、不注入 runtime 两段、`globalIndex` 的 runtime 去重不生效（`user-profile` / `work-profile` / `current-focus` 照旧渲染）。开启后才生效；`conversationMemory` / `projectMemory` 关掉时 runtime 两段一并停注（保守口径）。
+- **⑤ `FORMAT_VERSION` 1 → 2**：新增可选 `pinned` 与 long-term 可选 origin 三字段，**无数据迁移**（启动只补写标记，不改写任何文件）。旧版插件读到 v2 标记自动转只读——这是「降级后旧版覆写剥掉 pin」的兜底防线。
+- **注入段序**：`persona → runtimeUser → runtimeMemory → globalIndex → usage → projectIndex`（原四段相对顺序不动，usage 不前移，runtime 两段插在 persona 与 globalIndex 之间）；`persona` / `runtimeUser` / `runtimeMemory` 为**锁定段**，不进丢弃序列，兜底截断优先级 persona > runtimeUser > runtimeMemory，每次截断带告警行。`section` 模式同序承载（4992 / 4993）。
+
+### 修复
+- **文档**：`FORMAT.md` 第七节订正「面板手动删除不进回收站」的过时句——v0.4.1 起面板「删除条目」（`DELETE /entry`）与自动提取删除同口径，均移入回收站（分类重置与近期动态滚动清理仍是直接删除）；同节补 `runtime/`、`evict-audit.jsonl`、`backups/evict-<ts>/` 的非真源语义。
+- **文档**：`FORMAT.md` 第八节「`FORMAT_VERSION` 自 v0.3.0 起未再变化」订正为「v0.3.0 → v0.5.0 一直为 1，本版起为 2」，并登记 v1→v2 迁移位。
+
+### 回滚
+- **整层回退**：`runtimeEnabled=false`（或删掉 `settings.json` 里的该键）即回到 L0 不注入——不编译、不注 runtime 两段，其余功能不受影响；已产生的 `runtime/` 产物可整目录删除，不影响任何记忆。
+- **预算回退**：persona 上限与 `injectMaxTokens` 是代码默认值，无需配置即随版本变化；若要回到旧口径，显式配置 `injectMaxTokens: 16000` 即可（persona 8000 上限为编译期常量，回退需回旧版本）。
+- **格式回退**：`FORMAT_VERSION=2` 对旧版是只读闸；回旧版本前先做全量备份。v2 只新增可选字段，旧版读取不受影响。
+
 ## [0.5.0] - 2026-10-17
 
 安全与成本收敛：密钥类内容默认脱敏；失败区间自动补提收口；注入加 token 预算；提取触发加打分门、空闲延迟与每会话上限。四项全部默认开启，各有独立回滚开关；测试全部通过。
@@ -163,7 +193,8 @@
 ### 修复
 - `enabled` 缺省关（fail-closed）；索引缓存键加项目维度；Windows 保留设备名段防穿越；截断保最新；直写判定按结果成败校验；CJK 词数折算；关停 drain 纪律；debug 日志口。
 
-[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.5.0...HEAD
+[未发布]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/axuan-1314/dsh-keepsake/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/axuan-1314/dsh-keepsake/releases/tag/v0.4.1

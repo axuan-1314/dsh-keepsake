@@ -392,7 +392,8 @@ test("结构钉：窄屏 @media + 文案统一 + fmtHint + 计数 0 显示 + 删
   assert.match(panelSrc, /<div class="group">记忆分类<\/div>/, "侧栏分组改名「记忆分类」");
   assert.doesNotMatch(panelSrc, /改动即时生效（下一轮对话）/, "去掉自相矛盾的即时生效文案");
   assert.match(panelSrc, /const FMT_HINTS = \{/, "导入格式说明表在位");
-  assert.match(panelSrc, /key === "extraction-streak" \? \(n > 0 \? String\(n\) : ""\) : String\(n\)/, "计数 0 也显示（红徽标除外）");
+  // 计数 0 也显示（红徽标与 runtime 候选徽标除外——两者都是「有值才显」的告警/提示位）
+  assert.match(panelSrc, /\(key === "extraction-streak"(?: \|\| key === "runtime")?\) \? \(n > 0 \? String\(n\) : ""\) : String\(n\)/, "计数 0 也显示（红徽标/runtime 徽标除外）");
   assert.match(panelSrc, /function markCountsError\(\)/, "refreshCounts 失败给提示态（不吞错）");
   assert.match(panelSrc, /将移入回收站（可在回收站找回，保留天数见设置页保留策略）/, "删除确认文案对齐移入回收站（保留天数不写死，指向设置页保留策略）");
   const delConfirm = panelSrc.slice(panelSrc.indexOf('title: "删除条目"'), panelSrc.indexOf('title: "删除条目"') + 400);

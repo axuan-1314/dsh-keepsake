@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { apply, resolveConfig, name, inject } from "../lib/index.js";
 import { buildExtractionPayload } from "../lib/extract.js";
 import { projectMemoryPaths } from "../lib/paths.js";
+import { FORMAT_VERSION } from "../lib/format.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 
 function fakeCtx(streamImpl) {
@@ -95,18 +96,23 @@ test("入口元数据与注入段注册", () => {
   assert.ok(registeredRoutes.some((r) => r.kind === "prefix" && r.path === "/dsh-keepsake/api"));
   assert.ok(registeredRoutes.some((r) => r.path === "/dsh-keepsake/panel/"));
 
-  // 显式 injectChannel=section → 旧四段：4990 人设 / 4995 全局索引 / 5000 项目说明 / 5001 项目索引
+  // 显式 injectChannel=section → 六段：4990 人设 / 4992 runtimeUser / 4993 runtimeMemory /
+  // 4995 全局索引 / 5000 项目说明 / 5001 项目索引（RUNTIME-FORMAT §10.1：runtime 两段插在 4990 与 4995 之间）
   const sectioned = fakeCtx();
   apply(sectioned.ctx, { enabled: true, storageRoot: join(tmpdir(), "dsh-keepsake-entry"), injectChannel: "section" });
-  assert.equal(sectioned.sections.length, 4);
+  assert.equal(sectioned.sections.length, 6);
   assert.equal(sectioned.sections[0].name, "dsh-keepsake:persona");
   assert.equal(sectioned.sections[0].order, 4990);
-  assert.equal(sectioned.sections[1].name, "dsh-keepsake:global-index");
-  assert.equal(sectioned.sections[1].order, 4995);
-  assert.equal(sectioned.sections[2].name, "dsh-keepsake:instructions");
-  assert.equal(sectioned.sections[2].order, 5000);
-  assert.equal(sectioned.sections[3].name, "dsh-keepsake:index");
-  assert.equal(sectioned.sections[3].order, 5001);
+  assert.equal(sectioned.sections[1].name, "dsh-keepsake:runtime-user");
+  assert.equal(sectioned.sections[1].order, 4992);
+  assert.equal(sectioned.sections[2].name, "dsh-keepsake:runtime-memory");
+  assert.equal(sectioned.sections[2].order, 4993);
+  assert.equal(sectioned.sections[3].name, "dsh-keepsake:global-index");
+  assert.equal(sectioned.sections[3].order, 4995);
+  assert.equal(sectioned.sections[4].name, "dsh-keepsake:instructions");
+  assert.equal(sectioned.sections[4].order, 5000);
+  assert.equal(sectioned.sections[5].name, "dsh-keepsake:index");
+  assert.equal(sectioned.sections[5].order, 5001);
   for (const section of sectioned.sections) assert.equal(section.interpolate, false);
 });
 
@@ -144,14 +150,14 @@ test("事件→提取→落盘 全链路", async () => {
     assert.equal(streamCalls[0].model, "model-x");
     assert.equal(streamCalls[0].purpose, "dsh-keepsake-extraction");
     assert.equal(streamCalls[0].sessionId, "s-test");
-    // 注入段：项目索引段（sections[3]）此时能读到 MEMORY.md
-    const indexText = sections[3].text({ agent: { session: { header: { cwd: workspace } } } });
+    // 注入段：项目索引段（sections[5]）此时能读到 MEMORY.md
+    const indexText = sections[5].text({ agent: { session: { header: { cwd: workspace } } } });
     assert.match(indexText, /uses-pnpm\.md/);
-    const usageText = sections[2].text({ agent: { session: { header: { cwd: workspace } } } });
+    const usageText = sections[4].text({ agent: { session: { header: { cwd: workspace } } } });
     assert.match(usageText, new RegExp(paths.memoryDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     // 无 cwd 会话：项目两段为空串（不炸组装）
-    assert.equal(sections[2].text({}), "");
-    assert.equal(sections[3].text({}), "");
+    assert.equal(sections[4].text({}), "");
+    assert.equal(sections[5].text({}), "");
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
@@ -289,12 +295,12 @@ test("config 注入通道键 fail loud：injectChannel 非法值 / injectMaxChar
 
 // ---- 安全与成本相关配置键：默认值与 fail-loud 矩阵 ----
 
-test("8 新键：默认值全表（脱敏/自动补提/门/延迟/上限开启，token 预算 16000）", () => {
+test("8 新键：默认值全表（脱敏/自动补提/门/延迟/上限开启，token 预算 24000）", () => {
   const cfg = resolveConfig({ enabled: true });
   assert.equal(cfg.redactionEnabled, true, "脱敏默认开");
   assert.equal(cfg.autoRecoverEnabled, true, "自动补提默认开");
   assert.equal(cfg.autoRecoverCooldownMs, 300000, "自动补提冷却默认 5 分钟");
-  assert.equal(cfg.injectMaxTokens, 16000, "token 预算默认 16000");
+  assert.equal(cfg.injectMaxTokens, 24000, "token 预算默认 24000（0.6.0 为 runtime 两段扩容，RUNTIME-FORMAT §10.2）");
   assert.equal(cfg.extractGateEnabled, true, "打分门默认开");
   assert.equal(cfg.extractGateMinScore, 6, "门阈值默认 6");
   assert.equal(cfg.extractIdleDelayMs, 3000, "空闲延迟默认 3s");
@@ -430,8 +436,8 @@ test("存储格式高于本插件 → 只读保护：不提取、不落盘（P2-
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-ro-"));
   const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-ro-"));
   try {
-    // 造"更新版插件写入"的存储根：formatVersion=2 高于当前 FORMAT_VERSION(1)
-    writeFileSync(join(root, "keepsake-format.json"), JSON.stringify({ formatVersion: 2 }) + "\n", "utf8");
+    // 造"更新版插件写入"的存储根：formatVersion = 当前 + 1（跟着常量走，升版后不失效）
+    writeFileSync(join(root, "keepsake-format.json"), JSON.stringify({ formatVersion: FORMAT_VERSION + 1 }) + "\n", "utf8");
 
     const logs = [];
     const streamCalls = [];

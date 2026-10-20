@@ -94,6 +94,11 @@
   #recentErrors { margin: 12px 20px 0; }
   #recentErrors summary { cursor: pointer; }
   #recentErrors .errItem { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+  /* 运行时记忆页签：用量进度条（越界红显，红=#d5564d 既有值）+ 产物只读预览框（等宽字体滚动区） */
+  .bar { flex: 1; min-width: 120px; height: 8px; border-radius: 99px; background: rgba(128,128,128,.25); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--dsw-alias-state-business-primary, #4176e6); }
+  .bar.over > i { background: #d5564d; }
+  .codeBox { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; background: rgba(128,128,128,.08); border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 8px; padding: 8px 10px; max-height: 320px; overflow: auto; }
   /* 三态灯状态词（颜色之外的第二编码，色弱/灰度屏也能读） */
   .statusWord { font-size: 12px; font-weight: 600; }
   .statusWord.green { color: #50a05a; }
@@ -122,6 +127,7 @@
     <a href="#/category/recent-activity" data-route="category/recent-activity">近期动态 <span class="cnt" data-cnt="recent-activity"></span></a>
     <div class="group">通用</div>
     <a href="#/long-term" data-route="long-term">长期记忆 <span class="cnt" data-cnt="long-term"></span></a>
+    <a href="#/runtime" data-route="runtime">运行时记忆 <span class="cnt" data-cnt="runtime" title="淘汰候选数（打开该页签后回填；0 不显示）"></span></a>
     <a href="#/persona" data-route="persona">人设</a>
     <a href="#/addressing" data-route="addressing">称呼</a>
     <a href="#/projects" data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
@@ -839,6 +845,316 @@ async function renderLongTermPage(query = "", pageIndex = 0) {
       },
     });
   });
+}
+
+// ============ 页面：运行时记忆（RUNTIME-FORMAT §十二 UX 约定） ============
+// 端点：GET runtime/<scope> / POST runtime/<scope>/compile / POST runtime/<scope>/evict /
+//       POST runtime/<scope>/pin / POST runtime/global/archive/restore（+ POST runtime/compile-all）。
+// 分工：一切展示判定走 panel-logic 纯函数（用量/状态徽标/候选行/diff 摘要/skip 明细/移回行），
+//   本函数只拉取、渲染、接线；破坏/搬动操作（归档、移回、解 pin）一律先确认弹窗。
+let runtimeScope = "global"; // 当前选中 scope（页内重渲染保留选择）
+let runtimeSkippedNotice = null; // 上次归档的 skipped 明细 {scope, rows}（限定 scope 展示，不跨 scope 误串）
+let runtimeCompileResult = null; // 上次「重新编译」diff 摘要（限定 scope 展示，不跨 scope 误串）
+let runtimeBadgeCount = null; // aside 徽标口径：候选数（null=本次会话还没拉过，不显示）
+let runtimeEnabledLocal = null; // 本会话 PUT runtimeEnabled 成功后的回填（/state 未带该字段时的兜底）
+let runtimeGuideSeen = false; // 引导句是否已展示过（§十二：首次打开且开关关 → 内联引导；此后只留一行提示）
+
+async function renderRuntimePage() {
+  const seq = ++pageRenderSeq;
+  pageTitle.textContent = "运行时记忆";
+  pageSub.textContent = "每轮注入的紧凑记忆层（USER.md / MEMORY.md 编译产物）；产物非真源，可随时重建";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  let st;
+  try {
+    st = await api("state");
+  } catch (err) {
+    if (seq !== pageRenderSeq) return;
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  const enabled = L.runtimeEnabledOf(st?.settings, runtimeEnabledLocal);
+  const opts = L.runtimeScopeOptions(st.projects);
+  // 选中 scope 已消失（项目被清掉/切换后残留）→ 先回落全局再拉产物（不拿必 404 的 scope 打空转）
+  if (!opts.some((o) => o.scope === runtimeScope)) runtimeScope = L.RUNTIME_GLOBAL_SCOPE;
+  // 产物读取：404（尚未编译/未失效重建）与真错误都如实显示服务端 message，不冒充成功
+  let data = null;
+  let loadError = "";
+  try {
+    data = await api("runtime/" + runtimeScope);
+  } catch (err) {
+    loadError = err.message;
+  }
+  if (seq !== pageRenderSeq) return;
+  const badge = L.runtimeStatusBadge(data ? data.status : null);
+  const userUsage = L.runtimeUsageOf(data?.user);
+  const memUsage = L.runtimeUsageOf(data?.memory);
+  const candRows = L.runtimeCandidateRows(data?.evictCandidates);
+  runtimeBadgeCount = candRows.length;
+  const badgeEl = document.querySelector('[data-cnt="runtime"]');
+  if (badgeEl) badgeEl.textContent = candRows.length > 0 ? String(candRows.length) : "";
+  // pin 清单：产物行反推（产物只渲染入选条目，故这里恰是「可 pin 的条目全集」；
+  // 被淘汰的条目不可能是关键标记——pinned 永不参与淘汰，语义自洽）
+  const pinRows = data
+    ? [
+      ...L.runtimeArtifactRows(data.user?.text, runtimeScope).map((r) => ({ ...r, artifact: "USER.md" })),
+      ...L.runtimeArtifactRows(data.memory?.text, runtimeScope).map((r) => ({ ...r, artifact: "MEMORY.md" })),
+    ]
+    : [];
+  const compiledText = data && data.compiledAt
+    ? `编译于 <span title="${esc(data.compiledAt)}">${esc(L.relativeTimeOf(data.compiledAt))}</span> · sourceHash ${esc(String(data.sourceHash ?? "").slice(0, 12))}`
+    : "尚无编译清单";
+  // 跨 scope 不误串：归档明细 / 重编摘要只在各自的 scope 下展示（切 scope 后旧结果不冒充新 scope 的）
+  const skippedRows = runtimeSkippedNotice && runtimeSkippedNotice.scope === runtimeScope ? runtimeSkippedNotice.rows : null;
+  const compileResultText = runtimeCompileResult && runtimeCompileResult.scope === runtimeScope ? runtimeCompileResult.text : "";
+  // §十二：首次打开该页签且开关关闭 → 内联引导（非打断式弹窗；此后降为一行 meta 提示，不反复占屏）
+  const guideFirstTime = !enabled && !runtimeGuideSeen;
+  runtimeGuideSeen = true;
+  const guideHtml = enabled
+    ? ""
+    : guideFirstTime
+      ? `<div class="notice show" style="margin:0 0 10px">${esc(L.RUNTIME_GUIDE_TEXT)}——可在「设置」页开关区开启。</div>`
+      : `<div class="meta" style="margin:0 0 10px">运行时记忆当前关闭（${esc(L.RUNTIME_GUIDE_TEXT)}）——「设置」页开关区可开启。</div>`;
+  const checked = new Set(); // 候选勾选态（页内状态，重渲染即重置）
+  page.innerHTML = `
+    ${guideHtml}
+    <div class="toolbar">
+      <span class="meta">存储范围</span>
+      <span class="presetRow" style="margin:0" data-scopes>
+        ${opts.map((o) => `<button class="pill${o.scope === runtimeScope ? " on" : ""}" data-scope="${esc(o.scope)}">${esc(o.label)}${o.entries === null ? "" : ` <span class="meta">${o.entries}</span>`}</button>`).join("")}
+      </span>
+      <span class="spacer"></span>
+      <button class="btn sm" data-compileAll title="对全部 scope 强制重编">全部 scope 重编</button>
+      <button class="btn primary" data-compile>重新编译</button>
+    </div>
+    <div class="card"><h3>
+        <span class="dot ${badge.level}" role="img" aria-label="状态：${esc(badge.word)}"></span><span class="statusWord ${badge.level}">${esc(badge.word)}</span>编译状态
+        <span class="badge">淘汰候选 ${candRows.length}</span>
+        <span class="meta" style="font-weight:400">${compiledText}</span>
+      </h3>
+      ${badge.hint ? `<div class="notice show${badge.level === "red" ? " err" : ""}" style="margin:6px 0 0">${esc(badge.hint)}</div>` : ""}
+      <div class="kv"><b>USER.md 用量</b><span class="bar${userUsage.over ? " over" : ""}"><i style="width:${userUsage.barPct}%"></i></span><span class="meta">${esc(userUsage.text)}</span></div>
+      <div class="kv"><b>MEMORY.md 用量</b><span class="bar${memUsage.over ? " over" : ""}"><i style="width:${memUsage.barPct}%"></i></span><span class="meta">${esc(memUsage.text)}</span></div>
+      ${compileResultText ? `<div class="meta" data-compileResult style="margin-top:6px">${esc(compileResultText)}</div>` : ""}
+      <div class="meta">开关只控制自动编译与注入；这里的手动重编随时可用（产物仅供查看/整理，真源永远是条目文件）。</div>
+    </div>
+    ${data ? `
+    <div class="split">
+      <div class="card"><h3>USER.md <span class="badge">只读</span></h3>
+        <div class="meta">${esc(L.RUNTIME_READONLY_NOTE)}</div>
+        <pre class="codeBox">${esc(data.user?.text ?? "")}</pre></div>
+      <div class="card"><h3>MEMORY.md <span class="badge">只读</span></h3>
+        <div class="meta">${esc(L.RUNTIME_READONLY_NOTE)}</div>
+        <pre class="codeBox">${esc(data.memory?.text ?? "")}</pre></div>
+    </div>` : `<div class="card"><h3>编译产物</h3><div class="empty">未能读取产物：${esc(loadError || "未知错误")}</div>
+      <div class="meta">点上方「重新编译」可立即生成；未编译过属正常态（注入前会懒触发编译）。</div></div>`}
+    <div class="card" data-pinCard></div>
+    <div class="card" data-candCard></div>
+    <div data-restoreHost></div>`;
+
+  // ---- scope 切换（保留页内其它状态：切换本身重渲染，选择由 runtimeScope 带走） ----
+  for (const btn of Array.from(page.querySelectorAll("[data-scope]"))) {
+    btn.addEventListener("click", () => {
+      const next = btn.getAttribute("data-scope");
+      if (!next || next === runtimeScope) return;
+      runtimeScope = next;
+      renderRuntimePage();
+    });
+  }
+
+  // ---- 重新编译（§八：返回 diff 摘要）----
+  const compileBtn = page.querySelector("[data-compile]");
+  compileBtn.addEventListener("click", async () => {
+    const before = data; // 竞争前快照：摘要「字节变化」的前值（缺失=没有前值，只报现值）
+    compileBtn.disabled = true; compileBtn.textContent = "编译中…"; // 三段式 busy
+    try {
+      const out = await apiPost(`runtime/${runtimeScope}/compile`);
+      const text = L.runtimeCompileSummaryText(out, before);
+      runtimeCompileResult = { scope: runtimeScope, text };
+      toast(text);
+      renderRuntimePage();
+    } catch (err) {
+      toast("重新编译失败：" + err.message, "err");
+      compileBtn.disabled = false; compileBtn.textContent = "重新编译";
+    }
+  });
+  const compileAllBtn = page.querySelector("[data-compileAll]");
+  compileAllBtn.addEventListener("click", async () => {
+    compileAllBtn.disabled = true; compileAllBtn.textContent = "编译中…";
+    try {
+      const out = await apiPost("runtime/compile-all");
+      const scopes = Array.isArray(out?.scopes) ? out.scopes : [];
+      const failed = scopes.filter((s) => s && s.ok === false);
+      const text = failed.length === 0
+        ? `全部 scope 重编完成（${scopes.length} 个）`
+        : `全部 scope 重编：${scopes.length} 个，失败 ${failed.length} 个（${failed.map((s) => L.runtimeScopeLabel(s.scope)).join("、")}）`;
+      toast(text, failed.length > 0 ? "err" : "ok");
+      renderRuntimePage();
+    } catch (err) {
+      toast("全部重编失败：" + err.message, "err");
+      compileAllBtn.disabled = false; compileAllBtn.textContent = "全部 scope 重编";
+    }
+  });
+
+  // ---- 条目与关键标记（pin）：只对能定位到真源的产物行开放 ----
+  const pinCard = page.querySelector("[data-pinCard]");
+  if (pinRows.length === 0) {
+    pinCard.innerHTML = "<h3>条目与关键标记（pin）</h3><div class=\"meta\">产物里暂无条目（或尚未编译）。关键标记的条目永不淘汰，始终优先入选。</div>";
+  } else {
+    pinCard.innerHTML = `
+      <h3>条目与关键标记（pin）<span class="meta" style="font-weight:400">关键条目永不淘汰、始终优先入选</span></h3>
+      <div class="tableScroll"><table class="preview">
+        <tr><th style="width:96px">产物</th><th>条目</th><th style="width:96px">标记</th><th style="width:110px"></th></tr>
+        ${pinRows.map((r, i) => {
+          const target = L.runtimePinTarget(r, runtimeScope);
+          const label = r.pinned ? '<span class="badge warn">关键</span>' : '<span class="badge">普通</span>';
+          const btn = target.ok
+            ? `<button class="btn sm" data-pin="${i}">${r.pinned ? "取消关键标记" : "标为关键"}</button>`
+            : `<span class="meta" title="${esc(target.reason)}">不可在此切换</span>`;
+          return `<tr><td class="meta">${esc(r.artifact)}</td><td>${esc(r.title)}${r.hook ? `<div class="meta">${esc(r.hook)}</div>` : ""}<div class="meta"><code class="k">${esc(r.file ?? "—")}</code></div></td><td>${label}</td><td>${btn}</td></tr>`;
+        }).join("")}
+      </table></div>`;
+    for (const btn of Array.from(pinCard.querySelectorAll("[data-pin]"))) {
+      btn.addEventListener("click", () => {
+        const row = pinRows[Number(btn.getAttribute("data-pin"))];
+        const target = L.runtimePinTarget(row, runtimeScope);
+        if (!target.ok) { toast(target.reason, "err"); return; }
+        const nextPinned = !row.pinned;
+        const submit = async () => {
+          btn.disabled = true; btn.textContent = "处理中…";
+          try {
+            await apiPost(`runtime/${runtimeScope}/pin`, { rootKey: target.rootKey, file: target.file, pinned: nextPinned });
+            toast(nextPinned ? "已标为关键（下次编译起始终优先入选）" : "已取消关键标记");
+            renderRuntimePage(); // 服务端已重编：重拉即见新产物与新候选清单
+          } catch (err) {
+            toast("关键标记保存失败：" + err.message, "err");
+            btn.disabled = false; btn.textContent = nextPinned ? "标为关键" : "取消关键标记";
+          }
+        };
+        if (nextPinned) { submit(); return; } // 加 pin 无风险，不打断
+        // 解 pin 是「可能被淘汰」的前置动作：预警文案固定口径（RUNTIME_UNPIN_WARNING），不静默
+        confirmDialog({
+          title: "取消关键标记",
+          body: `${esc(L.RUNTIME_UNPIN_WARNING)}\n\n条目：${esc(row.title)}`,
+          dangerText: "取消关键标记",
+          onConfirm: submit,
+        });
+      });
+    }
+  }
+
+  // ---- 淘汰候选（勾选 + 执行归档；§十二：点击后先刷新清单再提交） ----
+  const candCard = page.querySelector("[data-candCard]");
+  const skippedHtml = skippedRows && skippedRows.length > 0
+    ? `<div class="notice show err" style="margin:6px 0 0">上次归档有 ${skippedRows.length} 条未搬动：${skippedRows.map((r) => esc(`${r.file}（${r.text}）`)).join("；")}</div>`
+    : "";
+  candCard.innerHTML = `
+    <h3>淘汰候选 <span class="badge">${candRows.length}</span>
+      <span class="ops"><button class="btn sm danger" data-evict>执行归档</button></span>
+    </h3>
+    <div class="meta">编译时登记「装不进配额」的条目（只登记，不搬动）。执行归档 = 搬进 long-term 归档区并留手术式快照，<b>不是删除</b>，可从这里移回。</div>
+    ${skippedHtml}
+    ${candRows.length === 0 ? '<div class="meta">当前没有淘汰候选——配额装得下全部候选条目；或还没编译过。</div>' : `
+    <div class="tableScroll"><table class="preview">
+      <tr><th style="width:36px"><input type="checkbox" data-all title="全选/全不选"></th><th>条目</th><th style="width:150px">分类</th><th style="width:96px">字节</th><th style="width:90px">原因</th></tr>
+      ${candRows.map((r, i) => `<tr><td><input type="checkbox" data-ck="${i}"></td><td>${esc(r.title)}<div class="meta"><code class="k">${esc(r.file)}</code></div></td><td class="meta">${esc(r.category)}</td><td class="meta">${esc(r.sizeText)}</td><td class="meta">${esc(r.reasonText)}</td></tr>`).join("")}
+    </table></div>`}`;
+  const evictBtn = candCard.querySelector("[data-evict]");
+  const boxes = Array.from(candCard.querySelectorAll("[data-ck]"));
+  const allBox = candCard.querySelector("[data-all]");
+  // 初始态：无候选或未勾选都不可点（防误点触发空提交）
+  const syncEvictBtn = () => { evictBtn.disabled = boxes.length === 0 || checked.size === 0; };
+  syncEvictBtn();
+  for (const box of boxes) {
+    box.addEventListener("change", () => {
+      const key = candRows[Number(box.getAttribute("data-ck"))].key;
+      if (box.checked) checked.add(key); else checked.delete(key);
+      if (allBox) allBox.checked = boxes.length > 0 && checked.size === boxes.length;
+      syncEvictBtn();
+    });
+  }
+  if (allBox) allBox.addEventListener("change", () => {
+    for (const box of boxes) {
+      const key = candRows[Number(box.getAttribute("data-ck"))].key;
+      box.checked = allBox.checked;
+      if (allBox.checked) checked.add(key); else checked.delete(key);
+    }
+    syncEvictBtn();
+  });
+  if (evictBtn) evictBtn.addEventListener("click", () => {
+    const count = checked.size;
+    if (count === 0) return;
+    confirmDialog({
+      title: "执行归档",
+      body: `将把勾选的 ${count} 条候选搬进 long-term 归档区（不删除；归档前会留手术式快照，之后可从这里移回）。\n提交前会先刷新候选清单，已变化的条目自动跳过并如实报告。确定继续吗？`,
+      dangerText: "归档并移出编译池",
+      onConfirm: async () => {
+        evictBtn.disabled = true; evictBtn.textContent = "归档中…"; // 三段式 busy
+        try {
+          // 防过期（§十二）：先用最新 GET 刷新候选清单，再与勾选集求交提交；
+          // 刷新后已消失的条目不可能被归档（服务端也会按 skipped 兜底报），这里先如实拦下
+          const fresh = await api("runtime/" + runtimeScope);
+          const freshRows = L.runtimeCandidateRows(fresh?.evictCandidates);
+          const sel = L.runtimeEvictSelection(checked, freshRows);
+          if (sel.files.length === 0) {
+            runtimeSkippedNotice = { scope: runtimeScope, rows: sel.dropped.map((d) => ({ file: d.file, text: "条目已变化，已跳过" })) };
+            toast(`候选清单已变化：${sel.dropped.length} 条已不在清单，未提交任何归档`, "err");
+            renderRuntimePage();
+            return;
+          }
+          const out = await apiPost(`runtime/${runtimeScope}/evict`, { files: sel.files });
+          const outSkipped = L.runtimeSkippedRows(out?.skipped);
+          runtimeSkippedNotice = { scope: runtimeScope, rows: outSkipped };
+          toast(L.runtimeEvictToastText(out), outSkipped.length > 0 ? "err" : "ok");
+          renderRuntimePage();
+        } catch (err) {
+          toast("归档失败：" + err.message, "err");
+          evictBtn.disabled = false; evictBtn.textContent = "执行归档";
+        }
+      },
+    });
+  });
+
+  // ---- 从归档移回（§6.4：long-term 条目 → 按 origin 落回原位）----
+  const restoreHost = page.querySelector("[data-restoreHost]");
+  api("category/long-term")
+    .then((lt) => {
+      if (seq !== pageRenderSeq) return; // 旧渲染响应不得写入新页
+      const rows = L.runtimeRestoreRows(lt?.entries);
+      restoreHost.innerHTML = `
+        <div class="card"><h3>从归档移回 <span class="badge">long-term ${rows.length}</span></h3>
+          <div class="meta">${esc(L.RUNTIME_RESTORE_NOTE)}</div>
+          ${rows.length === 0 ? '<div class="meta">long-term 里暂无条目。</div>' : `
+          <div class="tableScroll"><table class="preview">
+            <tr><th>条目</th><th style="width:220px">文件</th><th style="width:110px">更新</th><th style="width:90px"></th></tr>
+            ${rows.map((r, i) => `<tr><td>${esc(r.title)}${r.description ? `<div class="meta">${esc(r.description)}</div>` : ""}</td><td class="meta"><code class="k">${esc(r.file)}</code></td><td class="meta">${esc(r.whenText)}</td><td><button class="btn sm" data-restore="${i}">移回</button></td></tr>`).join("")}
+          </table></div>`}
+        </div>`;
+      for (const btn of Array.from(restoreHost.querySelectorAll("[data-restore]"))) {
+        btn.addEventListener("click", () => {
+          const row = rows[Number(btn.getAttribute("data-restore"))];
+          confirmDialog({
+            title: "从归档移回",
+            body: `将把「${esc(row.title)}」按归档记录移回原位（恢复原分类/原属性；重名走 -2 避让），并重建索引。\n移回后该条目会重新进入编译候选池。确定继续吗？`,
+            dangerText: "移回原位",
+            onConfirm: async () => {
+              btn.disabled = true; btn.textContent = "处理中…";
+              try {
+                const out = await apiPost("runtime/global/archive/restore", { file: row.file });
+                toast(L.runtimeRestoreToastText(out));
+                renderRuntimePage();
+              } catch (err) {
+                toast("移回失败：" + err.message, "err");
+                btn.disabled = false; btn.textContent = "移回";
+              }
+            },
+          });
+        });
+      }
+    })
+    .catch((err) => {
+      if (seq !== pageRenderSeq) return;
+      restoreHost.innerHTML = `<div class="card"><h3>从归档移回</h3><div class="meta">归档条目暂不可读（${esc(err.message)}）。</div></div>`;
+    });
 }
 
 // ============ 页面：人设（左右分栏 + 五模板 + 恢复默认） ============
@@ -1783,9 +2099,12 @@ async function renderSettingsPage() {
   }
   if (seq !== pageRenderSeq) return;
   const s = data.settings ?? {};
+  // 总开关现值（三态 tolerant：后端字段优先 → 本会话回填 → 缺省关；见 L.runtimeEnabledOf）
+  const curRuntimeOn = L.runtimeEnabledOf(data.settings, runtimeEnabledLocal);
+  // 开关行：三开关是「缺省开」（!== false），运行时记忆是「缺省关」（=== true，规矩：开关默认关、可回滚）
   const switchRow = (key, label, hint) => `
     <div class="kv"><b>${label}</b>
-      <span class="switchWrap"><label class="switch"><input type="checkbox" data-sw="${key}" ${s[key] !== false ? "checked" : ""}><span class="slider"></span></label></span>
+      <span class="switchWrap"><label class="switch"><input type="checkbox" data-sw="${key}" ${key === "runtimeEnabled" ? (curRuntimeOn ? "checked" : "") : (s[key] !== false ? "checked" : "")}><span class="slider"></span></label></span>
       <span class="meta">${hint}</span>
     </div>`;
   const backups = backupsData.backups ?? [];
@@ -1810,6 +2129,7 @@ async function renderSettingsPage() {
       ${data.corrupt ? '<div class="notice show err" style="margin:6px 0 0">设置文件已损坏，已按缺省运行——请复查以下开关是否符合预期（改动任一项会重写修复该文件）。</div>' : ""}
       ${switchRow("projectMemory", "项目记忆", "关闭后不再注入/记录项目记忆")}
       ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
+      ${switchRow("runtimeEnabled", "运行时记忆（每轮注入的紧凑记忆层）", `${esc(L.RUNTIME_GUIDE_TEXT)}；开启后按配额编译 USER.md / MEMORY.md 注入，超出配额的条目进淘汰候选（只登记不搬动）。`)}
       <div class="meta" data-swHint>保存后下一轮对话生效。</div>
     </div>
     <div data-pipeHealth></div>
@@ -1880,7 +2200,12 @@ async function renderSettingsPage() {
       const key = input.getAttribute("data-sw");
       try {
         await apiPut("settings", { [key]: input.checked });
-        page.querySelector("[data-swHint]").textContent = "保存后下一轮对话生效。";
+        // runtimeEnabled 回填：/state 未带该字段（本批 settingsForClient 未接线）时，
+        // 页面据此记住用户的真实选择，不让界面在下次渲染回弹成关闭（谎报）
+        if (key === "runtimeEnabled") runtimeEnabledLocal = input.checked;
+        page.querySelector("[data-swHint]").textContent = key === "runtimeEnabled" && input.checked
+          ? "已开启：下一轮对话起注入 runtime 两段（产物在「运行时记忆」页可查看/整理）。"
+          : "保存后下一轮对话生效。";
         refreshCounts();
       } catch (err) {
         input.checked = !input.checked;
@@ -2088,6 +2413,7 @@ const ROUTES = {
   "category/current-focus": { title: "当前关注", cat: "current-focus" },
   "category/recent-activity": { title: "近期动态", cat: "recent-activity" },
   "long-term": { title: "长期记忆" },
+  "runtime": { title: "运行时记忆" },
   "persona": { title: "人设" },
   "addressing": { title: "称呼" },
   "projects": { title: "项目记忆" },
@@ -2107,6 +2433,7 @@ function render() {
   document.querySelectorAll("aside a").forEach((a) => a.classList.toggle("on", a.getAttribute("data-route") === route));
   if (cfg.cat) renderCategoryPage(cfg.cat, cfg.title);
   else if (route === "long-term") renderLongTermPage();
+  else if (route === "runtime") renderRuntimePage();
   else if (route === "persona") renderPersonaPage();
   else if (route === "addressing") renderAddressingPage();
   else if (route === "projects") renderProjectsPage();
@@ -2127,13 +2454,14 @@ function refreshCounts() {
       const key = el.getAttribute("data-cnt");
       // 写入安全面计数：/state.safety 缺失（旧版宿主）→ 0（面板 tolerant 消费）
       const n = key === "extraction-streak" ? streak
+        : key === "runtime" ? (runtimeBadgeCount ?? 0) // 运行时记忆：淘汰候选数（页面拉取时回填，0 不显示）
         : key === "projects" ? (data.counts ? data.counts.projects : 0)
         : key === "trash" ? L.safetyCountOf(data.safety, "trashPending")
         : key === "snapshots" ? L.safetyCountOf(data.safety, "surgicalBackups")
         : (byCat[key] || 0);
-      // 提取连击红徽标：0 时隐藏（不是计数语义）；其余计数 0 也显示 "0"，
+      // 提取连击红徽标 / 运行时候选徽标：0 时隐藏（不是计数语义）；其余计数 0 也显示 "0"，
       // 与"加载失败"的空态区分开（后者给可见提示态，不吞错）
-      el.textContent = key === "extraction-streak" ? (n > 0 ? String(n) : "") : String(n);
+      el.textContent = (key === "extraction-streak" || key === "runtime") ? (n > 0 ? String(n) : "") : String(n);
     });
     clearCountsError();
   }).catch(() => { markCountsError(); }); // 计数失败显式提示态（不静默吞错）

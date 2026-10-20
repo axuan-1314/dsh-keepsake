@@ -1,6 +1,6 @@
 # dsh-keepsake 路线图（ROADMAP）
 
-> 日期：2026-10-17。
+> 日期：2026-10-20。
 > 本文是 dsh-keepsake 的**公开路线图**：记录设计原则、已发布版本与下一版方向。
 > 一句话定位：做一个**本地优先**的 DSH 记忆插件——纯 markdown 落盘、可进 git、零运行时依赖、失败显式可见。
 
@@ -15,6 +15,7 @@
 
 | 版本 | 内容 | 状态 |
 |---|---|---|
+| **v0.6.0（已实现）** | 运行时记忆层（默认关，`runtimeEnabled` 走 `settings.json`）：条目编译成定长 `runtime/<scope>/USER.md`（≤4KB）/ `MEMORY.md`（≤10KB）+ `runtime.json` 清单（选条 / 淘汰候选 / `status` / `sourceHash`），随每轮注入（注入由四段变六段，persona/runtimeUser/runtimeMemory 为锁定段）；`pinned` frontmatter 优先入选、合计超配额 `overQuota` 可见告警；淘汰走「编译登记候选 + 面板确认归档」（锁 + 手术式快照 `backups/evict-*` + 持久审计 `evict-audit.jsonl` + 长记忆 origin 三字段 + 可移回）；面板「运行时记忆」页签 + runtime API 六端点 + `compile-journal.jsonl`；行为变化：long-term 退出注入索引、persona 上限 16000→8000 字符、`injectMaxTokens` 默认 16000→24000、`FORMAT_VERSION` 1→2（旧版读到自动只读） | 已实现（v0.6.0） |
 | **v0.5.0（已实现）** | 安全与成本收敛：内容脱敏（默认开，两道位置——提取提示词前 + 落盘前；内置 7 类固定模式，占位符 `[redacted]`，幂等；`redactionEnabled` 可关）+ 失败区间自动补提收口（默认开：会话关闭 / 轮次完成 / 启动清扫三触发面；只补 failed、abandoned 不自动重试；冷却 `autoRecoverCooldownMs` 默认 5 分钟；与手动按钮单飞互斥；`/state.recover` 增 auto* 四键）+ 注入 token 预算（`injectMaxTokens` 默认 16000、0=关，CJK 感知估算，与 `injectMaxChars` 双上限取严；召回块计入、主块让位；`/state.injection` 增 `lastTokens`/`totalTokens`，面板显示「最近 ≈X tokens / 上限 Y」）+ 提取触发门槛（打分门默认开、阈值 6：分数 = 用户词数 + 2×工具种类 + 2×真人轮次，不过门记 `skipped/thin-evidence`；空闲延迟默认 3000ms、0=立即，合并突发轮次、dispose flush 不丢；每会话上限默认 50、0=不限，只拦自动链路不碰手动补提；`/state.extractionConfig` 增五键）+ 样例 `injectMaxChars` 60000→30000 修漂移 | 已实现（v0.5.0） |
 | **v0.4.2（已实现）** | 注入同源替换（块首取代声明 + 变更节流 + `/state.injection.throttled`/`superseded` 观测，`injectMaxChars` 默认下调至 30000）+ 会话补提（面板逐条重跑未恢复/已放弃区间，超范围显式拒绝；`GET /sessions/pending`、`POST /sessions/recover` 202 异步、`/state.recover` 观测）+ 记忆整理建议（重复 / 久未更新 / 索引对账与「修复索引」，只动索引行、改前留快照；`GET /maintenance/suggestions`、`POST /maintenance/repair-index`）+ 防自食判据泛化（任意插件注入与 instruction/summary/tool 系统性消息一律按机器来源排除，真人消息含 steer/followup 永远算数）；提取日志轮转按留痕价值裁剪（skipped 先裁、failed/abandoned 优先保留）、出列判据收紧为整段覆盖；面板体验补齐（列表分页、焦点陷阱、alert 角色、设置诊断黄条） | 已实现（v0.4.2） |
 | **v0.4.1（已实现）** | 提取观测与续提：新增提取运行日志 `<storageRoot>/extraction-journal.jsonl`（每次结算留痕：written / zero-ops / skipped / failed / abandoned；超 2000 行轮转留尾 1000）+ cursor 随日志持久化、DSH 重启后**跨重启续提** + `/state.extractionLog`（`runs` / `unrecovered` / `abandoned`）+ 面板健康卡「最近提取记录」与「未恢复区间」红条双源、放弃区间留痕；安全面收口：面板手动保存条目**覆盖前留档**（成功响应带 `preSaveSnapshotId`）、`run_code` 里直写记忆目录的轮次也识别为直写轮并补 run_code 识别；设置页「保留策略」卡（回收站保留天数 / 快照保留份数 / 近期动态保留天数） | 已实现（v0.4.1） |
@@ -33,7 +34,7 @@ DSH 插件**不支持自动更新**——宿主插件管理器的官方口径是
 - **分发渠道**：GitHub 仓库 tag tarball（`.../archive/refs/tags/vX.Y.Z.tar.gz`，升级即换版本号）；本地 clone 仅作开发。**不发布 npm**（有意选择：零运行时依赖，tarball 直装即可，避免多一条供应链）。
 - **数据在包外**：记忆/开关/人设/备份全部落 `~/.dsh/memory/`，与插件包目录分离——卸载重装天然不影响用户数据。
 - **兼容声明**：`package.json` 的 `peerDependencies` 声明 DSH peer 范围，宿主在安装/启动时据此做版本检查（不匹配需用户显式 `allow-version` 豁免）。升级插件或升级宿主都会重新检查。
-- **降级保护**：存储格式版本闸（见 [FORMAT.md](FORMAT.md)）——数据被更新版插件写入时，旧版本自动转只读并显式报警，杜绝按旧规则误改新数据。格式版本自 v0.3.0 起未再变化，因此该闸不会在 v0.4.0 → 旧版之间触发；但从 v0.4.0 降级会失去其写入安全面（快照 / 回收站 / sha1 闸 / 写后校验），降级前建议先做一次全量备份。
+- **降级保护**：存储格式版本闸（见 [FORMAT.md](FORMAT.md)）——数据被更新版插件写入时，旧版本自动转只读并显式报警，杜绝按旧规则误改新数据。**v0.6.0 起 `FORMAT_VERSION=2`**：从 v0.6.0 降级到 v0.5.0 及更旧版本时该闸会触发（旧版读不懂 `pinned`，转只读后不会在覆写时把 pin 剥掉）；v0.4.0/v0.5.0 → v0.2.x 之间格式版本仍为 1，闸不触发，但降级会失去写入安全面（快照 / 回收站 / sha1 闸 / 写后校验），降级前建议先做一次全量备份。
 
 ## 未来方向（未承诺，按需推进）
 
@@ -56,7 +57,7 @@ DSH 插件**不支持自动更新**——宿主插件管理器的官方口径是
 
 - 适配宿主：**DSH 0.2.0-rc.2**（web / headless / desktop 三个 profile）。
 - 运行环境：**Node ≥ 18**。
-- 存储格式在 v0.x 内保持稳定；如有破坏性变更会 **`FORMAT_VERSION` +1**、在迁移位登记，并同步本文件与 [FORMAT.md](FORMAT.md)。
+- 存储格式在 v0.x 内保持稳定；如有破坏性变更会 **`FORMAT_VERSION` +1**、在迁移位登记，并同步本文件与 [FORMAT.md](FORMAT.md)。当前格式版本为 **2**（v0.6.0 起；v1→v2 为可选字段增量、无数据迁移）。
 
 ## 参与
 

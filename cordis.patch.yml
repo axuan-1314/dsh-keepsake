@@ -3,20 +3,26 @@
 # enabled 默认显式开：安装即启用；回滚 = 把 enabled 改 false
 # （生效方式分 profile：web 由 HMR 自动生效，desktop/headless 需重启对应实例）
 # 或 dsh plugin --profile <name> remove dsh-keepsake（整包卸载）。
-# 用户可感知开关（对话记忆/项目记忆/全局提取）不在此处——走
+# 用户可感知开关（对话记忆/项目记忆/全局提取/运行时记忆）不在此处——走
 # ~/.dsh/memory/settings.json（host 每轮读取，改完下一轮即生效，绕开 desktop 重启限制）。
+# 运行时记忆层（v0.6.0）的总开关 runtimeEnabled 也在 settings.json（默认关）：
+# 不在此文件加 config 键（config 是启动期一次性校验面，开关要能下一轮即生效）。
 - insert:
     - id: dsh-keepsake
       name: dsh-keepsake
       config:
         enabled: true
         # 注入通道（v0.2.0）：message=durable 用户消息通道（默认，全 preset 生效，
-        # 根治 minimal 预设 complete:true 静默丢注入）；section=旧四段 systemPrompt 注入（一键回滚）。
+        # 根治 minimal 预设 complete:true 静默丢注入）；section=旧 systemPrompt 注入
+        # （一键回滚；v0.6.0 起同样承载六段，含 runtime 两段）。
         injectChannel: message
         injectMaxChars: 30000
         # 注入总预算的 token 口径（CJK 感知估算，含召回块、主块让位，与 injectMaxChars 双上限取严者）。
         # 0 = 关闭 token 预算，退回纯字符口径。
-        injectMaxTokens: 16000
+        # 24000（v0.6.0，原 16000）：预算切分为「persona 8000 字符 ≈12000 tokens +
+        # runtime 两段常驻（USER.md 4KB + MEMORY.md 10KB ≈7170 tokens）」，合计约 19170
+        # 留出余量；persona 上限已降为 8000 字符，两项一起改才装得下运行时记忆层。
+        injectMaxTokens: 24000
         # 内容脱敏总开关（默认开）：提取提示词与落盘写入两道位置把密钥类内容替换为 [redacted]。
         # false = 完全不脱敏（回旧行为）。模式为内置 7 类固定清单，不支持自定义正则（防回溯）。
         redactionEnabled: true

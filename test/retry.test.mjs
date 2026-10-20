@@ -605,12 +605,12 @@ test("resolveConfig：8 新键矩阵（默认/显式/0 语义/边界/未知近�
       extractIdleDelayMs: cfg.extractIdleDelayMs, extractMaxRunsPerSession: cfg.extractMaxRunsPerSession,
     },
     {
-      redactionEnabled: true, autoRecoverEnabled: true, autoRecoverCooldownMs: 300000, injectMaxTokens: 16000,
+      redactionEnabled: true, autoRecoverEnabled: true, autoRecoverCooldownMs: 300000, injectMaxTokens: 24000,
       extractGateEnabled: true, extractGateMinScore: 6, extractIdleDelayMs: 3000, extractMaxRunsPerSession: 50,
     },
   );
   // 缺省 null 与 undefined 同义（回落默认）
-  assert.equal(resolveConfig({ ...base, injectMaxTokens: null }).injectMaxTokens, 16000);
+  assert.equal(resolveConfig({ ...base, injectMaxTokens: null }).injectMaxTokens, 24000);
   // nonNegInt：0 合法（三个键各自的 0 语义）
   const zeros = resolveConfig({ ...base, injectMaxTokens: 0, extractIdleDelayMs: 0, extractMaxRunsPerSession: 0 });
   assert.equal(zeros.injectMaxTokens, 0);

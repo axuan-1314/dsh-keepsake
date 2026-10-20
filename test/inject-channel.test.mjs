@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   INJECT_DROPPABLE_ORDER,
+  INJECT_LOCKED_SEGMENTS,
   INJECT_SEGMENT_ORDER,
   INJECT_SOURCE_KIND,
+  INJECT_TRUNCATION_ORDER,
   MEMORY_CONTEXT_FORM,
   MEMORY_CONTEXT_INTRO,
   MEMORY_CONTEXT_SUPERSEDE_NOTE,
@@ -27,9 +29,17 @@ import {
 test("常量：来源标识/ form / 顺序", () => {
   assert.equal(INJECT_SOURCE_KIND, "plugin:dsh-keepsake");
   assert.equal(MEMORY_CONTEXT_FORM, "memory-context");
-  assert.deepEqual(INJECT_SEGMENT_ORDER, ["persona", "globalIndex", "usage", "projectIndex"]);
+  // 六段（RUNTIME-FORMAT §10.1）：runtime 两段插在 persona 与 globalIndex 之间，现有四段相对序不动
+  assert.deepEqual(INJECT_SEGMENT_ORDER, ["persona", "runtimeUser", "runtimeMemory", "globalIndex", "usage", "projectIndex"]);
   assert.deepEqual(INJECT_DROPPABLE_ORDER, ["globalIndex", "projectIndex", "usage"]);
-  assert.ok(!INJECT_DROPPABLE_ORDER.includes("persona"), "persona 不参与丢弃");
+  for (const locked of ["persona", "runtimeUser", "runtimeMemory"]) {
+    assert.ok(!INJECT_DROPPABLE_ORDER.includes(locked), `${locked} 是锁定段，不参与丢弃`);
+  }
+  // 锁定段兜底截断顺序：从最低优先级开始（persona 最后）
+  assert.deepEqual(INJECT_TRUNCATION_ORDER, ["runtimeMemory", "runtimeUser", "persona"]);
+  // 现有四段相对顺序不动（usage 不前移）
+  const fourOld = INJECT_SEGMENT_ORDER.filter((name) => !["runtimeUser", "runtimeMemory"].includes(name));
+  assert.deepEqual(fourOld, ["persona", "globalIndex", "usage", "projectIndex"]);
 });
 
 test("① 全空段 → text 为空、不丢不截", () => {
@@ -591,3 +601,86 @@ test("㉙ 自定义 costOf 生效：按字数计价的口径下 ASCII 段同样�
   assert.deepEqual(dropped, ["globalIndex"], "自定义口径下丢段照常");
   assert.ok(charCost(text) <= 120, `自定义口径预算内（实际 ${charCost(text)}）`);
 });
+
+// ---- 锁定段语义（RUNTIME-FORMAT §七）----
+
+test("㉚ 锁定段永不进 dropped：预算再紧也只丢可丢段，锁定段只截不丢", () => {
+  const segments = {
+    persona: "人设" + "P".repeat(200),
+    runtimeUser: "USER-" + "R".repeat(200),
+    runtimeMemory: "MEM-" + "M".repeat(200),
+    globalIndex: "G".repeat(50),
+    usage: "S".repeat(50),
+    projectIndex: "J".repeat(50),
+  };
+  const full = buildMemoryContext(segments, { maxChars: 100000 });
+  assert.equal(full.truncated, false, "前置：宽松预算下六段全量");
+  // 预算远小于「三段锁定段 + 三个可丢段」→ 三个可丢段必须全丢；锁定段只截不丢
+  const maxChars = 600;
+  const { text, dropped, truncated } = buildMemoryContext(segments, { maxChars });
+  assert.deepEqual(dropped, ["globalIndex", "projectIndex", "usage"], "可丢段按序丢尽");
+  for (const locked of INJECT_LOCKED_SEGMENTS) {
+    assert.ok(!dropped.includes(locked), `${locked} 是锁定段，不得进 dropped`);
+  }
+  assert.equal(truncated, true);
+  assert.ok(text.includes("人设"), "persona 头部仍在（截而不丢）");
+  assert.ok(text.includes("USER-"), "runtimeUser 头部仍在（截而不丢）");
+  assert.ok(text.includes("MEM-"), "runtimeMemory 头部仍在（截而不丢）");
+  assert.ok(!text.includes("G".repeat(50)) && !text.includes("S".repeat(50)) && !text.includes("J".repeat(50)), "可丢段全文消失");
+  assert.match(text, /\[memory-context truncated: dropped globalIndex, projectIndex, usage/, "告警行列出全部丢弃与截断");
+  assert.ok(text.length <= maxChars, `预算内（${text.length} ≤ ${maxChars}）`);
+});
+
+test("㉛ 锁定段兜底截断顺序：runtimeMemory → runtimeUser → persona（persona 最后），每次带告警行", () => {
+  const persona = "P".repeat(600);
+  const runtimeUser = "U".repeat(600);
+  const runtimeMemory = "M".repeat(600);
+  const segments = { persona, runtimeUser, runtimeMemory };
+  // 只裁一轮（runtimeMemory）就够：budget 落在「三段全量」与「runtimeMemory 大截后」之间
+  const full = buildMemoryContext(segments, { maxChars: 100000 });
+  const budgetOne = full.text.length - 300; // 需要让出 ~300 字符
+  const one = buildMemoryContext(segments, { maxChars: budgetOne });
+  assert.equal(one.truncated, true);
+  assert.ok(one.text.includes(persona), "第一轮只动 runtimeMemory：persona 完整");
+  assert.ok(one.text.includes(runtimeUser), "第一轮只动 runtimeMemory：runtimeUser 完整");
+  assert.ok(!one.text.includes(runtimeMemory), "runtimeMemory 已被收短");
+  assert.match(one.text, /\[memory-context truncated: runtimeMemory truncated\]/, "只报 runtimeMemory 截断");
+  assert.ok(one.text.length <= budgetOne, `预算内（${one.text.length} ≤ ${budgetOne}）`);
+
+  // 更紧：runtimeMemory 收尽后轮到 runtimeUser，persona 仍不动
+  const budgetTwo = 780;
+  const two = buildMemoryContext(segments, { maxChars: budgetTwo });
+  assert.match(two.text, /runtimeMemory truncated, runtimeUser truncated/, "第二轮才动 runtimeUser");
+  assert.doesNotMatch(two.text, /persona truncated/, "persona 还没到截断的时候");
+  assert.ok(two.text.includes(persona.slice(0, 60)), "persona 头部仍在");
+  assert.ok(two.text.length <= budgetTwo, `预算内（${two.text.length} ≤ ${budgetTwo}）`);
+
+  // 极紧：两段都已收尽，才轮到 persona（顺序：runtimeMemory → runtimeUser → persona）
+  const tiny = buildMemoryContext(segments, { maxChars: 400 });
+  assert.equal(tiny.truncated, true);
+  assert.match(tiny.text, /runtimeMemory truncated, runtimeUser truncated, persona truncated/, "persona 最后被截");
+  assert.ok(tiny.text.length <= 400, `预算内（${tiny.text.length} ≤ 400）`);
+  assert.ok(tiny.text.startsWith("<memory-context>"));
+  assert.ok(tiny.text.endsWith("</memory-context>"));
+});
+
+test("㉜ 回归门（引擎侧）：六段调用中 runtime 两段为空 = 四段调用逐字节一致", () => {
+  const four = {
+    persona: "人设正文".repeat(30),
+    globalIndex: "全局索引行\n".repeat(20),
+    usage: "使用说明".repeat(30),
+    projectIndex: "- [P](p.md) — 项目条目".repeat(10),
+  };
+  const fourResult = buildMemoryContext(four, { maxChars: 30000, maxTokens: 24000 });
+  const sixResult = buildMemoryContext(
+    { ...four, runtimeUser: "", runtimeMemory: "" },
+    { maxChars: 30000, maxTokens: 24000 },
+  );
+  assert.equal(sixResult.text, fourResult.text, "空 runtime 段不产生任何输出差异");
+  assert.deepEqual(sixResult.dropped, fourResult.dropped);
+  assert.equal(sixResult.truncated, fourResult.truncated);
+  // undefined 与空串同义（接线层未赋值时也是同一形态）
+  const undefinedRuntime = buildMemoryContext({ ...four, runtimeUser: undefined, runtimeMemory: undefined }, { maxChars: 30000, maxTokens: 24000 });
+  assert.equal(undefinedRuntime.text, fourResult.text);
+});
+

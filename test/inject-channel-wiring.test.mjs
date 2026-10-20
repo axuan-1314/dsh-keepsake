@@ -380,12 +380,23 @@ test("injectMaxChars 预算触发整段丢弃 + 可见截断提示 + droppedSegm
   }
 });
 
-test("injectChannel=section → 不注册 pre-step，恢复旧四段", () => {
+test("injectChannel=section → 不注册 pre-step，注册六段（含 runtime 两段）", () => {
   const root = freshRoot();
   try {
     const { ctx, sections, handlers } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: root, injectChannel: "section" });
-    assert.equal(sections.length, 4);
+    assert.equal(sections.length, 6);
+    assert.deepEqual(
+      sections.map((s) => s.name),
+      [
+        "dsh-keepsake:persona",
+        "dsh-keepsake:runtime-user",
+        "dsh-keepsake:runtime-memory",
+        "dsh-keepsake:global-index",
+        "dsh-keepsake:instructions",
+        "dsh-keepsake:index",
+      ],
+    );
     assert.equal(handlers.has("agent/pre-step"), false, "section 模式不应注册 pre-step");
   } finally {
     rmSync(root, { recursive: true, force: true });

@@ -25,6 +25,32 @@ test("缺省：文件不存在 = 三开关全开", () => {
   }
 });
 
+test("runtimeEnabled：缺省关（只有显式 true 才开，与三开关的 !== false 反向）", () => {
+  const root = freshRoot();
+  try {
+    // 缺省（文件不存在）→ false
+    assert.equal(defaultSettings().runtimeEnabled, false, "defaultSettings 缺省 false");
+    assert.equal(readSettings(root).runtimeEnabled, false, "全新安装不打开 runtime");
+    // 缺键（旧 settings.json）→ false（不迁移、不 fail-open）
+    writeFileSync(settingsPath(root), JSON.stringify({ conversationMemory: true }), "utf8");
+    assert.equal(readSettings(root).runtimeEnabled, false, "旧 settings.json 缺键 = 关");
+    // 显式 true → true；非布尔（"true"/1/null）一律 false（严格 === true）
+    writeFileSync(settingsPath(root), JSON.stringify({ runtimeEnabled: true }), "utf8");
+    assert.equal(readSettings(root).runtimeEnabled, true);
+    for (const bogus of ["true", 1, null, {}]) {
+      writeFileSync(settingsPath(root), JSON.stringify({ runtimeEnabled: bogus }), "utf8");
+      assert.equal(readSettings(root).runtimeEnabled, false, `非布尔 ${JSON.stringify(bogus)} 按关处理`);
+    }
+    // patch 合并：未提及 → 保留现值；显式 false → 关
+    writeSettings(root, { runtimeEnabled: true });
+    assert.equal(readSettings(root).runtimeEnabled, true);
+    assert.equal(writeSettings(root, { conversationMemory: false }).runtimeEnabled, true, "未提及的 runtimeEnabled 保持现值");
+    assert.equal(writeSettings(root, { runtimeEnabled: false }).runtimeEnabled, false, "显式 false 生效");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("读取：显式 false 被保留，缺省键回填 true", () => {
   const root = freshRoot();
   try {
@@ -262,7 +288,8 @@ test("写入：合并式 patch（未提及键保持现值）", () => {
     // 落盘内容三键齐全 + version
     const onDisk = JSON.parse(readFileSync(settingsPath(root), "utf8"));
     // v0.4.0：安全面三项并入 settings（缺键走默认，旧 settings.json 无需迁移）
-    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "hardfactPolicy", "projectMemory", "surgicalKeep", "trashKeepDays", "version"]);
+    // 0.6.0：runtimeEnabled 并入（运行时记忆层总开关，缺省关）
+    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "hardfactPolicy", "projectMemory", "runtimeEnabled", "surgicalKeep", "trashKeepDays", "version"]);
     assert.equal(onDisk.version, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });

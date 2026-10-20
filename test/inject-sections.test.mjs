@@ -1,7 +1,8 @@
-// inject-sections：4990 人设段 / 4995 全局索引段渲染快照 + 四段开关矩阵。
+// inject-sections：4990 人设段 / 4995 全局索引段渲染快照 + 开关矩阵（含 runtime 两段 4992/4993）。
 //   开关语义：
-//     总开关关 = 四段全灭；projectMemory 关 = 5000/5001 灭（4990/4995 不受影响）；
-//     globalExtraction 关 = 四段不受影响（4995 跟随数据非空）。
+//     总开关关 = 全段全灭；projectMemory 关 = 5000/5001 灭 + runtime 两段灭（4990/4995 不受影响）；
+//     globalExtraction 关 = 全段不受影响（4995 跟随数据非空）；
+//     runtimeEnabled 关（缺省）= runtime 两段空 + globalIndex 三分类照旧渲染。
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,16 +39,18 @@ function freshRoot() {
   return mkdtempSync(join(tmpdir(), "dsh-keepsake-inject-"));
 }
 
-/** 起插件并返回四段 text 函数。 */
+/** 起插件并返回六段 text 函数（段序：persona / runtimeUser / runtimeMemory / globalIndex / instructions / index）。 */
 function setup(root) {
   const { ctx, sections } = fakeCtx();
   apply(ctx, { enabled: true, storageRoot: root, provider: "p", model: "m", injectChannel: "section" });
-  assert.equal(sections.length, 4);
+  assert.equal(sections.length, 6);
   return {
     persona: sections[0],
-    globalIndex: sections[1],
-    instructions: sections[2],
-    index: sections[3],
+    runtimeUser: sections[1],
+    runtimeMemory: sections[2],
+    globalIndex: sections[3],
+    instructions: sections[4],
+    index: sections[5],
   };
 }
 
@@ -171,13 +174,36 @@ test("4995：近期动态按时间倒序带年龄与过期倒计时", () => {
   }
 });
 
-test("4995：不依赖 cwd（无 cwd 会话同样注入，功能4 落点）", () => {
+test("4995：不依赖 cwd（无 cwd 会话同样注入）；long-term（归档区）无条件不渲染", () => {
   const root = freshRoot();
   try {
+    createEntry(root, "work-profile", { title: "W", content: "工" });
     createEntry(root, "long-term", { title: "L", content: "长" });
     const s = setup(root);
-    assert.match(s.globalIndex.text(NO_CTX), /### 长期记忆 \(long-term\)/);
-    assert.match(s.globalIndex.text({ agent: { session: { header: {} } } }), /### 长期记忆/);
+    assert.match(s.globalIndex.text(NO_CTX), /### 工作背景 \(work-profile\)/);
+    assert.match(s.globalIndex.text({ agent: { session: { header: {} } } }), /### 工作背景/);
+    // §10.3-1：归档区不进任何会话索引（不随 runtimeEnabled、不依赖产物状态）
+    assert.doesNotMatch(s.globalIndex.text(NO_CTX), /长期记忆|\[L\]\(l\.md\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("4995：runtimeEnabled 缺省关 → 三分类照旧渲染（fallback 全量索引，不静默失内容）", () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "user-profile", { title: "U", content: "用户" });
+    createEntry(root, "work-profile", { title: "W", content: "工" });
+    createEntry(root, "current-focus", { title: "C", content: "焦" });
+    const s = setup(root);
+    const text = s.globalIndex.text(NO_CTX);
+    assert.match(text, /### 用户个人背景 \(user-profile\)/);
+    assert.match(text, /### 工作背景 \(work-profile\)/);
+    assert.match(text, /### 当前关注 \(current-focus\)/);
+    assert.match(text, /- \[U\]\(u\.md\)/);
+    // runtime 两段在开关关时为空
+    assert.equal(s.runtimeUser.text(NO_CTX), "");
+    assert.equal(s.runtimeMemory.text(NO_CTX), "");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -257,27 +283,29 @@ test("开关矩阵：全开基线 = 4990/4995 非空", () => {
 });
 
 test("4995 两级注入预算：每类 22 行保最新 + 总预算不裁整类", () => {
-  // 相位 A（每类预算 + 保最新）：单类 50 条 → 只见 22 行（每类预算），且是**最新** 22 条（尾部保留）
+  // 相位 A（每类预算 + 保最新）：单类 50 条 → 只见 22 行（每类预算），且是**最新** 22 条（尾部保留）。
+  // 用 work-profile（long-term 归档区已无条件移出索引，不再适合做本用例的载体）。
   const rootA = freshRoot();
   try {
     for (let i = 0; i < 50; i += 1) {
-      createEntry(rootA, "long-term", { name: `pin-${String(i).padStart(3, "0")}.md`, title: `P-long-term-${i}`, content: "c" });
+      createEntry(rootA, "work-profile", { name: `pin-${String(i).padStart(3, "0")}.md`, title: `P-work-${i}`, content: "c" });
     }
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: rootA, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
-    const longTermLines = text.split("\n").filter((l) => l.includes("[P-long-term-"));
-    assert.equal(longTermLines.length, 22, "每类 22 行预算生效（50 条只见 22）");
-    assert.match(text, /\[P-long-term-49\]/, "保最新：最新一条仍在注入里");
-    assert.doesNotMatch(text, /\[P-long-term-0\]/, "保最新：最旧一条被裁掉（此前保头部会让新记忆消失）");
+    const workLines = text.split("\n").filter((l) => l.includes("[P-work-"));
+    assert.equal(workLines.length, 22, "每类 22 行预算生效（50 条只见 22）");
+    assert.match(text, /\[P-work-49\]/, "保最新：最新一条仍在注入里");
+    assert.doesNotMatch(text, /\[P-work-0\]/, "保最新：最旧一条被裁掉（此前保头部会让新记忆消失）");
     assert.doesNotMatch(text, /\[WARNING\]/, "单类 22 行未触总预算");
   } finally {
     rmSync(rootA, { recursive: true, force: true });
   }
-  // 相位 B（总预算）：五类各 40 条 → 每类裁到 22 行（按总闸 120 反推），五类段落头齐全、无整类被裁
+  // 相位 B（总预算）：四类各 40 条（long-term 已出索引，不参与）→ 每类裁到 22 行，
+  // 四类段落头齐全、无整类被裁；总闸 120 行仍富余（4 × 23 = 92）。
   const rootB = freshRoot();
   try {
-    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
+    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity"]) {
       for (let i = 0; i < 40; i += 1) {
         createEntry(rootB, cat, { name: `pin-${cat}-${String(i).padStart(3, "0")}.md`, title: `P-${cat}-${i}`, content: "c" });
       }
@@ -285,10 +313,10 @@ test("4995 两级注入预算：每类 22 行保最新 + 总预算不裁整类",
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: rootB, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
-    assert.doesNotMatch(text, /\[WARNING\]/, "每类 22 行 + 段落头应恰好落在总闸 120 行内");
+    assert.doesNotMatch(text, /\[WARNING\]/, "每类 22 行 + 段落头应落在总闸 120 行内");
     const entryLines = text.split("\n").filter((l) => /^- \[P-/.test(l));
-    assert.equal(entryLines.length, 110, `五类各 22 行应全部保留，实际 ${entryLines.length}`);
-    assert.equal((text.match(/^### /gm) ?? []).length, 5, "五类段落头齐全（不整类被裁）");
+    assert.equal(entryLines.length, 88, `四类各 22 行应全部保留，实际 ${entryLines.length}`);
+    assert.equal((text.match(/^### /gm) ?? []).length, 4, "四类段落头齐全（不整类被裁；long-term 不渲染）");
   } finally {
     rmSync(rootB, { recursive: true, force: true });
   }
@@ -298,7 +326,7 @@ test("4995 全局索引字符预算：超长钩子逐类收紧，段落头齐全
   const root = freshRoot();
   try {
     const longHook = "钩".repeat(400); // 单行约 400 字符 → 行预算装得下、字符闸装不下
-    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity", "long-term"]) {
+    for (const cat of ["work-profile", "user-profile", "current-focus", "recent-activity"]) {
       for (let i = 0; i < 22; i += 1) {
         createEntry(root, cat, { name: `pin-${cat}-${String(i).padStart(3, "0")}.md`, title: `P-${cat}-${i}`, description: longHook, content: "c" });
       }
@@ -306,7 +334,7 @@ test("4995 全局索引字符预算：超长钩子逐类收紧，段落头齐全
     const { ctx, sections } = fakeCtx();
     apply(ctx, { enabled: true, storageRoot: root, injectChannel: "section" });
     const text = sections.find((s) => s.name === "dsh-keepsake:global-index").text(NO_CTX);
-    assert.equal((text.match(/^### /gm) ?? []).length, 5, "超长钩子下五类段落头仍齐全（字符闸不掉头）");
+    assert.equal((text.match(/^### /gm) ?? []).length, 4, "超长钩子下四类段落头仍齐全（字符闸不掉头）");
     const contentLines = text.split("\n").filter((l) => l.trim().length > 0 && !l.startsWith("##") && !l.startsWith("###") && !l.startsWith("Global memory root:") && l !== "（空）");
     assert.ok(contentLines.length > 0, "仍有条目行");
     assert.ok(contentLines.every((l) => l.startsWith("- [")), "内容行均为完整条目行（无半行残片）");
@@ -341,7 +369,7 @@ test("token 预算接线钉：desiredMemoryContext 收 token 预算、主块为�
   assert.ok(/import \{ estimateTokens \} from "\.\/tokens\.js"/.test(src), "estimateTokens 引自强模块 lib/tokens.js");
 });
 
-test("token 预算配置流：resolveConfig 产出 injectMaxTokens（默认 16000 / 0=禁用）并进 configSummary 字段面", async () => {
+test("token 预算配置流：resolveConfig 产出 injectMaxTokens（默认 24000 / 0=禁用）并进 configSummary 字段面", async () => {
   // configSummary 是闭包递进 api 的——这里用源码钉字段全集更直白（api 侧透传另测）。
   const src = readFileSync(new URL("../lib/index.js", import.meta.url), "utf8");
   const anchor = src.indexOf("configSummary: () => ({");
@@ -354,7 +382,7 @@ test("token 预算配置流：resolveConfig 产出 injectMaxTokens（默认 1600
     assert.ok(region.includes(field), `configSummary 应含字段 ${field}`);
   }
   const { resolveConfig } = await import("../lib/index.js");
-  assert.equal(resolveConfig({ enabled: true }).injectMaxTokens, 16000);
+  assert.equal(resolveConfig({ enabled: true }).injectMaxTokens, 24000);
   assert.equal(resolveConfig({ enabled: true, injectMaxTokens: 0 }).injectMaxTokens, 0);
   assert.equal(resolveConfig({ enabled: true, injectMaxTokens: 4096 }).injectMaxTokens, 4096);
   // injectMaxChars 保留不动（字符口径并存）

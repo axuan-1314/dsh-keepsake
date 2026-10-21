@@ -23,7 +23,7 @@
 > 上图为界面示意（使用示例数据渲染）。最快上手（完整步骤见[快速开始](#快速开始)）：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.1.tar.gz
 ```
 
 ## 目录
@@ -108,9 +108,11 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 把条目文件**编译**成两份定长的紧凑记忆（`USER.md` 用户画像 + `MEMORY.md` 工作记忆），随每轮注入——不用等模型按索引主动 Read。默认关闭（`runtimeEnabled`），在面板「设置」页打开后下一轮生效。
 
 - **机制一句话**：条目 →（编译）`runtime/<scope>/USER.md` / `MEMORY.md` → 注入；真源永远是条目文件，产物可删可重建，手工改产物会被下次编译覆盖。
-- **配额**：`USER.md` ≤ **4096 字节**、`MEMORY.md` ≤ **10240 字节**（UTF-8 字节口径，含文件头声明与告警行）。pinned（`pinned: true`）条目优先入选、永不淘汰；合计超配额时不截断、不静默——清单 `status=overQuota`、面板红灯、注入块内可见告警行。
+- **配额**：`USER.md` ≤ **4096 字节**、`MEMORY.md` ≤ **10240 字节**（UTF-8 字节口径，含文件头声明与告警行），是**编译期常量**（面板与配置都不提供调高）。pinned（`pinned: true`）条目优先入选、永不淘汰；合计超配额时不截断、不静默——清单 `status=overQuota`、面板红灯、注入块内可见告警行。
+- **装不下的条目不静默消失**：顺序装填装不下即停，被淘汰的条目记进清单 `evictCandidates[]`，产物末尾留一行 `[runtime evicted: N entries …]` 提示；同时**只要该分类还有条目没进产物，这个分类就继续留在全局索引里**（去重按分类粒度，不是整类抹掉）——所以任何一条记忆至少有一个可见入口。
+- **项目条目也去重**：进了产物的项目条目不再在项目索引里重复出现一遍；`reference` 类型（不进产物）照旧留在索引。
 - **淘汰走「候选 + 确认」**：编译只把装不下的条目登记为**候选**，绝不搬文件；你在面板「运行时记忆」页勾选后点「执行归档」才真正搬进 `global/long-term/`（归档 ≠ 删除）。
-- **归档可逆**：搬动前对每个文件做**手术式快照**（`backups/evict-<ts>/`，保留最近 10 份），并追加**持久审计** `evict-audit.jsonl`（时间 / 原位置 / 新位置 / 快照 / 操作者）；面板「从归档移回」按条目里记录的出处（`originProject` / `originType` / `originSessionId`）落回原位并重编。也可手工把文件搬回原目录——路径集变化会自动触发重编。
+- **归档可逆**：搬动前对每个文件做**手术式快照**（`backups/evict-<ts>/`，保留最近 10 份），并追加**持久审计** `evict-audit.jsonl`（时间 / 原位置 / 新位置 / 快照 / 操作者）；面板「从归档移回」按条目里记录的出处（`originProject` / `originType` / `originSessionId`）落回原位并重编。这三个出处字段在面板编辑归档条目时**原样保留**——编辑一次不会让条目变成移不回去。也可手工把文件搬回原目录——路径集变化会自动触发重编。审计写入失败时本轮停止继续搬运并如实回报「已归档 N 条 / 未处理 M 条」，不会假装什么都没发生。
 - **预算**：persona 段上限 8000 字符（≈12000 tokens）+ runtime 两段常驻约 14336 字节（≈7170 tokens）≈ 19170 < `injectMaxTokens` **24000**；字符口径 8000 + 4779 ≈ 12779 < `injectMaxChars` **30000**。`injectChannel: "section"` 模式下同样承载这两段（插在人设与全局索引之间）。
 - **面板位置**：面板左侧「运行时记忆」页签（scope 可切全局/各项目；只读预览、用量条、候选清单、「重新编译」、「从归档移回」，以及条目列表上的「标为关键 / 取消关键标记」——即 `pinned` 切换）。
 - **如何回滚**：把「运行时记忆」开关关掉（或删掉 `settings.json` 里的 `runtimeEnabled`）即回到不注入 runtime 两段的旧形态，不编译、不写盘；已产生的 `runtime/` 目录可整目录删除，不损失任何记忆。
@@ -277,7 +279,7 @@ v0.4.1 让失败区间跨重启**看得见**（运行日志持久留痕），v0.
 **① GitHub tag tarball（推荐）** —— 从仓库 tag 直接安装，钉死版本：
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.0.tar.gz
+dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.1.tar.gz
 # profile 可选 web / headless / desktop
 ```
 
@@ -453,7 +455,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **提取**：`ctx.llm.stream` 单次调用——输入为增量 transcript 摘录 + 现有记忆 manifest（mtime 降序前 200，最近小文件附正文）+ 全局四分类索引现状，输出为 `Nothing to save.` 或一个 `{"ops":[...]}` JSON（ops 带 scope：`project` 缺省 / `global:<category>`）。摘录渲染与落盘写入两道位置都先过内容脱敏（`redactionEnabled`，见[「内容脱敏」](#内容脱敏密钥类内容进不了记忆与提示词)）。
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
 - **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值六段（4990 人设 / 4992 运行时用户画像 / 4993 运行时工作记忆 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引；runtime 两段为空即不产生输出），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首两行：先取代声明——本块是最新记忆快照、作废此前的同类块、多块只认最新；后免责/署名——记忆是参考上下文、非任务指令；subagent 会话不注入）。段序固定、`persona` / `runtimeUser` / `runtimeMemory` 为锁定段（不进丢弃序列，兜底截断优先级 persona > runtimeUser > runtimeMemory，每次截断带告警行）。发送与否经三态裁决：与视野内上次那块规范化后相同则跳过；变化太小（字符 bigram 相似度 ≥0.98，或字符差 ≤ max(200, 全长 1%)）被节流、先攒着不发，等下次大变更或 compaction/rewind 把旧块挤出视野后随全量块补发；相似度 <0.5 的整块改写直接放行。总预算双口径：字符 `injectMaxChars`（默认 30000）与 token `injectMaxTokens`（默认 24000；CJK 感知估算：CJK 字按 1.5 token/字、其余按 0.25 token/字）同时生效、取更严者，召回块计入其中且主块先为召回块让位（召回块自身不做裁剪）；`injectMaxTokens: 0` 退回纯字符口径（旧行为逐字节一致）。`injectChannel: "section"` 时同样按序注入六段 `ctx.systemPrompt.section`（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
-- **运行时记忆层**（可选，`runtimeEnabled`，默认关）：注入前按 `runtime.json.sourceHash` 比对候选池（路径 + mtimeMs + size + 配额 + 算法版本），一致用缓存、不一致懒编译。编译 = 选条（pinned 优先 → 权重/mtime 装填）→ 排序 → 渲染（`- 【关键|普通】[Title](相对路径) — 钩子`）→ 按字节配额裁剪 → 登记淘汰候选，产物原子写（tmp+rename）到 `runtime/<scope>/`。开启且产物 `status=ok` 时，`user-profile` / `work-profile` / `current-focus` 三分类退出全局索引渲染（内容已由 runtime 段承载，避免双份）；`long-term` 则**无条件**退出注入索引（不依赖开关或产物状态），仅提取 prompt 例外。失效面：写盘 / 删除 / 归档执行 / pin 变更 → 受影响 scope 缓存失效，下次注入或面板打开时重编；格式只读闸生效时不编译（有缓存用缓存、无缓存跳过 runtime 段并记 `[runtime readOnly]`）。
+- **运行时记忆层**（可选，`runtimeEnabled`，默认关）：注入前按 `runtime.json.sourceHash` 比对候选池（路径 + mtimeMs + size + 配额 + 算法版本），一致用缓存、不一致懒编译。编译 = 选条（pinned 优先 → 权重/mtime 装填）→ 排序 → 渲染（`- 【关键|普通】[Title](相对路径) — 钩子`）→ 按字节配额裁剪 → 登记淘汰候选（产物末尾留 `[runtime evicted: N …]` 提示），产物原子写（tmp+rename）到 `runtime/<scope>/`。开启且产物 `status=ok` 时，`user-profile` / `work-profile` / `current-focus` 三分类**在「该分类条目全部进了产物」时**才退出全局索引渲染（有任一条被配额淘汰则该分类继续渲染，避免条目两头不可见）；项目条目同理按「已进产物」剔出项目索引行；`long-term` 则**无条件**退出注入索引（不依赖开关或产物状态），仅提取 prompt 例外。候选池读取失败（权限/IO，非"目录不存在"）按编译失败处理：`status=error` + 保留上一版产物，绝不当成"分类空了"覆盖掉。失效面：写盘 / 删除 / 归档执行 / pin 变更 → 受影响 scope 缓存失效，下次注入或面板打开时重编（runtime 端点自己已完成失效重编，不再二次全清）；格式只读闸生效时不编译（有缓存用缓存、无缓存跳过 runtime 段并记 `[runtime readOnly]`）。
 - **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。此外还有三道成本闸门（打分门 / 空闲延迟合并 / 每会话上限，见[「提取触发门槛」](#提取触发门槛打分门空闲延迟与每会话上限)），不过闸的区间同样记 skip 并推进 cursor。
 - **模块清单**：`lib/redact.js`（脱敏纯函数，7 类固定模式，线性正则防回溯）、`lib/extract-gate.js`（打分门纯函数：`score = userWords + 2*toolKinds + 2*turns`）、`lib/tokens.js`（CJK 感知 token 估算）。

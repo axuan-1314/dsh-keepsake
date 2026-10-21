@@ -98,10 +98,12 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     assert.equal(status, 200);
     assert.equal(json.ok, true);
     // v0.4.0：settings 增写入安全面三项（surgicalKeep/trashKeepDays/hardfactPolicy）+ recentKeepDays
+    // v0.6.1：增 runtimeEnabled（面板开关状态的真相源；缺省关）
     assert.deepEqual(json.settings, {
       conversationMemory: true,
       projectMemory: true,
       globalExtraction: true,
+      runtimeEnabled: false,
       surgicalKeep: 30,
       trashKeepDays: 30,
       recentKeepDays: 30,

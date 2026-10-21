@@ -436,16 +436,19 @@ test("回归门：runtimeEnabled=true 且产物 ok 时，非 runtime 段的差�
   // ② 允许的差异只有一处：runtime 覆盖的三分类从 globalIndex 离场（内容已进 runtime 段）
   assert.match(withRuntime, /AUTO-GENERATED[\s\S]*\[UP\]/, "user-profile 条目改由 runtimeUser 段承载");
   assert.match(withoutRuntime, /### 用户个人背景 \(user-profile\)\n- \[UP\]\(up\.md\) — 用户画像/, "开关关时三分类照旧在 globalIndex");
-  // ③ 其余可比的非 runtime 段（persona / usage / projectIndex / recent-activity 行）逐字节一致
+  // ③ 其余可比的非 runtime 段（persona / usage / recent-activity 行）逐字节一致
   for (const anchor of [
     "## 用户为 DSH 设定的补充人设\n\n用户叫你「小助手」。\n\n回答要直接。",
     "## Persistent project memory",
-    "## Project memory index (MEMORY.md)\n\n- [P](p.md) — 项目条目",
     "### 近期动态 (recent-activity)\n- [Tick](tick.md) — 流水",
   ]) {
     assert.ok(withRuntime.includes(anchor), `开关开时该段原样保留：${anchor.split("\n")[0]}`);
     assert.ok(withoutRuntime.includes(anchor), `开关关时该段原样保留：${anchor.split("\n")[0]}`);
   }
+  // 项目段：开关开时项目条目已进产物 → 索引里剔掉该行；项目段整段消失属预期（只剩一个段标题没有意义）
+  assert.match(withoutRuntime, /## Project memory index \(MEMORY\.md\)\n\n- \[P\]\(p\.md\) — 项目条目/, "开关关：项目索引原样");
+  assert.match(withRuntime, /AUTO-GENERATED[\s\S]*\[P\]/, "开关开：项目条目改由 runtimeMemory 段承载");
+  assert.doesNotMatch(withRuntime, /## Project memory index \(MEMORY\.md\)\n\n- \[P\]\(p\.md\)/, "开关开：项目条目不在索引里重复出现");
 });
 
 // ---- persona 8000 截断 ----

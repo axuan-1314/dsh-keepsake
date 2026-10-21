@@ -214,7 +214,7 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 
 - `INJECT_SEGMENT_ORDER`（lib/inject-channel.js:16）扩为六段：`["persona", "runtimeUser", "runtimeMemory", "globalIndex", "usage", "projectIndex"]`——**现有四段相对顺序不动**（定案 10-20⑥：usage 不前移，runtime 两段插在 persona 与 globalIndex 之间）。
 - `INJECT_DROPPABLE_ORDER` 不变：`["globalIndex", "projectIndex", "usage"]`；runtime 段不进 droppable（§七锁定段）。
-- **总开关**：新增配置 `runtime.enabled`（默认 **false**，规矩：开关默认关、可回滚）。关闭时：不编译、不注入 runtime 段、globalIndex 的 runtime 去重不生效（§10.3）。
+- **总开关**：新增配置 `runtimeEnabled`（默认 **false**，规矩：开关默认关、可回滚）。关闭时：不编译、不注入 runtime 段、globalIndex 的 runtime 去重不生效（§10.3）。
 - **跟随现有闸**：`conversationMemory=false` → runtime 两段不注（与 persona/globalIndex 同闸）；`projectMemory=false` → runtime 两段**都不注**（保守口径：runtimeMemory 含项目条目、runtimeUser 可能含项目 user 条目，防项目内容经 runtime 绕过开关）。
 - **section 模式**（`injectChannel=section`，lib/index.js:174）：同样承载 runtime 两段（`ctx.systemPrompt.section` 同序追加，同样锁定）；召回块仍只走 message 通道（现状）。
 
@@ -229,13 +229,13 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 
 `renderGlobalIndex`（lib/index.js:451+，遍历 `CATEGORY_IDS`）改两处：
 
-1. **`long-term` 默认从渲染集移除**——注入面不随 `runtime.enabled`，**也不依赖产物状态**（status=error/产物缺失时同样剔除；§10.3-2 的 fallback 只回退三分类）。归档区条目不再注入任何会话；顺带修复「归档条目跨项目外溢」面。**唯一例外=提取 prompt**（`renderGlobalIndex({includeArchived:true})`，lib/index.js:938）：模型必须看得见归档区，否则会重复造已归档条目——该出口只服务提取，不得用于注入。这是 0.6.0 的独立行为变化，回归门差异白名单登记（§10.4）。
-2. `runtime.enabled && 该 scope 产物 `status=ok`：`user-profile/work-profile/current-focus` 三分类从渲染集移除（内容已由 runtime 段承载，双份消失、预算估算自然准确）。产物缺失或 `status=error` → 三分类照旧渲染（fallback 全量索引，不静默）+ usage 段记一行 `[runtime degraded: <reason>]`。
+1. **`long-term` 默认从渲染集移除**——注入面不随 `runtimeEnabled`，**也不依赖产物状态**（status=error/产物缺失时同样剔除；§10.3-2 的 fallback 只回退三分类）。归档区条目不再注入任何会话；顺带修复「归档条目跨项目外溢」面。**唯一例外=提取 prompt**（`renderGlobalIndex({includeArchived:true})`，lib/index.js:938）：模型必须看得见归档区，否则会重复造已归档条目——该出口只服务提取，不得用于注入。这是 0.6.0 的独立行为变化，回归门差异白名单登记（§10.4）。
+2. `runtimeEnabled && 该 scope 产物 `status=ok`：`user-profile/work-profile/current-focus` 三分类从渲染集移除（内容已由 runtime 段承载，双份消失、预算估算自然准确）。产物缺失或 `status=error` → 三分类照旧渲染（fallback 全量索引，不静默）+ usage 段记一行 `[runtime degraded: <reason>]`。
 3. `recent-activity` 照旧渲染（runtime 不覆盖）。
 
 ### 10.4 回归门（定案 10-20⑥）
 
-- **无 runtime 数据（或 `runtime.enabled=false`）时：`buildMemoryContext` 输出与 0.5.0 内容集合等价**——段集合 + 每段文本相等，**允许且仅允许两类已知差异**：① long-term 索引行移除（§10.3-1）；② 段序中 runtime 两段为空（空段=不存在，不产生输出差异）。
+- **无 runtime 数据（或 `runtimeEnabled=false`）时：`buildMemoryContext` 输出与 0.5.0 内容集合等价**——段集合 + 每段文本相等，**允许且仅允许两类已知差异**：① long-term 索引行移除（§10.3-1）；② 段序中 runtime 两段为空（空段=不存在，不产生输出差异）。
 - 不再承诺逐字节一致（long-term 剔除已使其不可能）。
 - 测试改法：`test/inject-channel.test.mjs`（段序常量）、`test/entry.test.mjs`（section order）等钉死测试同步改集合比对。
 
@@ -265,27 +265,29 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 
 - 「运行时记忆」页签：scope 切换（定案 10-19⑤）、USER.md/MEMORY.md 只读预览（带头声明）、用量进度条（越界红显）、淘汰候选列表（勾选 + 「执行归档」按钮 + 候选计数徽标）、「重新编译」按钮、「从归档移回」入口（§6.4）。
 - **执行归档前自动刷新候选清单**（防清单过期误操作；仍过期的走 §6.2-2 skipped[] 报告，文案给「条目已变化，已跳过」）。
-- 首次打开该页签且 `runtime.enabled=false`：一句引导「运行时记忆＝每轮注入的紧凑记忆层，默认关闭；开启后生效」（README 升级说明同步）。
-- 解 pin 时预警文案：「取消关键标记后，该条目可能在下次编译成为淘汰候选；如需保留可先处理淘汰候选或调高配额」。
-- overQuota 时给操作指引：解 pin / 调配额 / 处理淘汰候选。
+- 首次打开该页签且 `runtimeEnabled=false`：一句引导「运行时记忆＝每轮注入的紧凑记忆层，默认关闭；开启后生效」（README 升级说明同步）。
+- 解 pin 时预警文案：「取消关键标记后，该条目可能在下次编译成为淘汰候选；如需保留可先取消其他关键标记或把内容精简一些」。
+- overQuota 时给操作指引：解 pin / 精简条目 / 归档到 long-term。**不得指路「改配置文件调高配额」**——配额是编译期常量（`RUNTIME_QUOTAS`），那条路不可执行（0.6.1 订正）。
 - 归档成功 Toast：「已归档到 long-term，未删除；快照在 backups/evict-<ts>」。
 - `panel-drift.test.mjs` 只钉逻辑导出面，不钉 DOM 选择器/API 字段——施工补 API 字段级测试，别把 drift 测试当完整抓手。
 
-## 十三、随施工同步的登记清单〔核11：补漏；checkbox 供施工逐项勾〕
+## 十三、随施工同步的登记清单〔0.6.0 施工已全部落地，0.6.1 回勾〕
 
-- [ ] 1. FORMAT.md §一 文件布局：补 `runtime/`、`evict-audit.jsonl`、`backups/evict-*`（标注非真源、可重建语义）；
-- [ ] 2. FORMAT.md §二 字段表：补 `pinned`（全局+项目，可选）+ long-term 可选 origin 三字段；
-- [ ] 3. FORMAT.md §六：写明 pin 与产物行前缀**不参与跨 agent 互认**；
-- [ ] 4. FORMAT.md §七：非真源清单补 runtime/、compile-journal、evict-audit、evict 快照；**订正过时句**「面板手动删除不进回收站」（v0.4.1 起已进回收站，lib/api.js:1139-1215——勘误见复查记录§四.1）；
-- [ ] 5. FORMAT.md §八：`FORMAT_VERSION = 2` + 迁移位登记（补写标记、无数据迁移；lib/format.js:19 常量与迁移位同步改）；
-- [ ] 6. README.md / README.en.md：「四段注入」等表述全部更新（六段、锁定段、预算 24000、淘汰候选流程、`runtime.enabled` 默认关 + 升级说明）；
-- [ ] 7. ROADMAP.md（:36/:59 两处）+ 版本号 **0.6.0**（package.json / CHANGELOG，含行为变化：long-term 出索引、persona 上限 8000、injectMaxTokens 24000）；
-- [ ] 8. cordis.patch.yml：`injectMaxTokens` 默认 24000 + 注释同步；
-- [ ] 9. 测试面：段序/section order 钉死测试同步改；新增 `test/runtime-compile.test.mjs`（产物格式/overQuota/pinned 优先/候选登记/无 runtime 回归/内容等价门）。
+- [x] 1. FORMAT.md §一 文件布局：补 `runtime/`、`evict-audit.jsonl`、`backups/evict-*`（标注非真源、可重建语义）；
+- [x] 2. FORMAT.md §二 字段表：补 `pinned`（全局+项目，可选）+ long-term 可选 origin 三字段；
+- [x] 3. FORMAT.md §六：写明 pin 与产物行前缀**不参与跨 agent 互认**；
+- [x] 4. FORMAT.md §七：非真源清单补 runtime/、compile-journal、evict-audit、evict 快照；**订正过时句**「面板手动删除不进回收站」（v0.4.1 起已进回收站）；
+- [x] 5. FORMAT.md §八：`FORMAT_VERSION = 2` + 迁移位登记（补写标记、无数据迁移）；
+- [x] 6. README.md / README.en.md：六段注入、锁定段、预算 24000、淘汰候选流程、`runtimeEnabled` 默认关 + 升级说明；
+- [x] 7. ROADMAP.md + 版本号（package.json / CHANGELOG，含行为变化：long-term 出索引、persona 上限 8000、injectMaxTokens 24000）；
+- [x] 8. cordis.patch.yml：`injectMaxTokens` 默认 24000 + 注释同步；
+- [x] 9. 测试面：段序/section order 钉死测试同步改；新增 `test/runtime-compile.test.mjs`（产物格式/overQuota/pinned 优先/候选登记/无 runtime 回归/内容等价门）。
 
-## 十四、M1 验收判据（施工时可自动断言）
+> 注：本文 0.6.1 前全用 `runtime.enabled`（带点）指总开关，与实现开关名 `runtimeEnabled`（`settings.json` 键；`cordis.patch.yml`/entry config 不识别）不一致，已统一订正——按带点写法配置会被 entry config 校验拒绝。
 
-① `runtime.enabled=true` 且产物 ok：会话 `<memory-context>` 含 `runtimeUser`/`runtimeMemory` 两段，位置在 persona 后 globalIndex 前；
+## 十四、M1 验收判据（施工时可自动断言；0.6.1 起全部有测试钉住）
+
+① `runtimeEnabled=true` 且产物 ok：会话 `<memory-context>` 含 `runtimeUser`/`runtimeMemory` 两段，位置在 persona 后 globalIndex 前；
 ② 产物字节数 ≤ 配额；pinned 超限 → `status=overQuota` + 块内告警行（不截断、不静默）；
 ③ **候选池内** pinned 条目必在产物（reference/long-term/recent-activity 除外）；
 ④ 无 runtime 数据/开关关：输出与 0.5.0 内容集合等价（差异白名单=long-term 索引行）；
@@ -294,6 +296,16 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 ⑦ **归档执行**：lock 互斥（并发 evict 一成一 409）、快照可还原、`evict-audit.jsonl` 可查、执行后全部受影响 scope 重编且产物无断链；「从归档移回」后条目重新入选且 frontmatter 恢复原 schema；
 ⑧ 注入侧 `status=error` → runtime 段跳过 + usage 告警行（不 fail-open）；
 ⑨ 面板引用面（panel-drift）+ API 字段级测试同步。
+
+**0.6.1 追加判据**（`test/runtime-regress.test.mjs` 逐条钉住）：
+
+⑩ 淘汰条目在产物内必须留可见告警行（`[runtime evicted: N entries …]`），不得静默消失；
+⑪ globalIndex 去重是**分类粒度**：有淘汰条目的分类必须留在索引；项目条目按「已进产物」剔行、`reference` 照旧保留；
+⑫ 分类目录/条目读失败（非 ENOENT）→ `status=error` 且保留上一版产物，不得当空池覆盖；
+⑬ runtime 端点（pin/evict/restore）成功后产物必须仍在（写后失效不得删掉刚重编的结果），非 runtime 写路径照常全失效；
+⑭ 归档条目被普通编辑覆写时 origin 三字段保留（否则移回恒 400）；
+⑮ `GET /state.settings` 恒带 `runtimeEnabled`（面板开关状态的真相源）；
+⑯ 归档审计写失败时已归档条数如实回报、余下候选进 `skipped[reason=audit-failed]`（不静默中断）。
 
 ---
 

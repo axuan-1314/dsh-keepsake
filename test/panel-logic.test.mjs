@@ -1197,9 +1197,11 @@ test("runtimeStatusBadge：ok/overQuota/error 三态映射 + 缺失/未知→尚
   const over = runtimeStatusBadge("overQuota");
   assert.equal(over.level, "red");
   assert.equal(over.word, "超配额");
-  assert.equal(over.hint, RUNTIME_OVER_QUOTA_HINT, "overQuota 必须给操作指引（解 pin/处理候选/调配额指路）");
-  assert.match(over.hint, /取消关键标记/);
-  assert.match(over.hint, /淘汰候选/);
+  assert.equal(over.hint, RUNTIME_OVER_QUOTA_HINT, "overQuota 必须给操作指引（解 pin/精简/归档）");
+  assert.match(over.hint, /解 pin/);
+  assert.match(over.hint, /long-term/);
+  // 文案不得再指路「改配置文件调高配额」——配额是编译期常量，那条路不可执行
+  assert.doesNotMatch(over.hint, /改配置文件/);
   const err = runtimeStatusBadge("error");
   assert.equal(err.level, "red");
   assert.equal(err.word, "编译失败");
@@ -1211,7 +1213,7 @@ test("runtimeStatusBadge：ok/overQuota/error 三态映射 + 缺失/未知→尚
   }
   // §十二 固定文案常量在场（单一出处）
   assert.match(RUNTIME_GUIDE_TEXT, /运行时记忆＝每轮注入的紧凑记忆层，默认关闭；开启后生效/);
-  assert.match(RUNTIME_UNPIN_WARNING, /取消关键标记后，该条目可能在下次编译成为淘汰候选；如需保留可先处理淘汰候选或调高配额/);
+  assert.match(RUNTIME_UNPIN_WARNING, /取消关键标记后，该条目可能在下次编译成为淘汰候选/);
   assert.match(RUNTIME_READONLY_NOTE, /只读预览/);
 });
 
@@ -1312,7 +1314,7 @@ test("runtimeRestoreRows：单层 .md 名才收（端点只认单层）；嵌套
     { name: "nested/evil.md", title: "嵌套" },
     { name: "not-md.txt", title: "非 md" },
     null,
-  ]);
+  ], now);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].file, "archived.md");
   assert.equal(rows[0].title, "归档条目");

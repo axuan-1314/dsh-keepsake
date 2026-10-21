@@ -152,7 +152,14 @@ test("⑨ 免责/署名行：intro 在开标签后首行、计入预算；缺省
   // intro 计入预算：给刚够正文+包裹、不够 intro 的预算 → 触发 persona 截断
   const tight = buildMemoryContext({ persona: "A".repeat(50) }, { maxChars: 50, intro: MEMORY_CONTEXT_INTRO });
   assert.equal(tight.truncated, true);
-  assert.ok(tight.text.includes(MEMORY_CONTEXT_INTRO), "intro 仍在（先保 intro 再截正文）");
+  // 预算连「包裹 + intro + 提示行」都装不下时，锁定段会被截空 → 只剩零内容的壳块。
+  // 零内容 = 与「不注入」同义：按空文本返回（调用侧据此跳过），绝不占着预算发空壳。
+  assert.equal(tight.text, "", "内容段被截空 → 不发零内容空壳块");
+  // 预算够放包裹+intro+少量正文时：intro 与提示行都在，正文被截断且不越界
+  const roomy = buildMemoryContext({ persona: "A".repeat(400) }, { maxChars: 460, intro: MEMORY_CONTEXT_INTRO });
+  assert.equal(roomy.truncated, true);
+  assert.ok(roomy.text.includes(MEMORY_CONTEXT_INTRO), "intro 仍在（先保 intro 再截正文）");
+  assert.ok(roomy.text.length <= 460, `截断后仍在预算内（实际 ${roomy.text.length}）`);
 });
 
 test("⑩ stripMemoryMarkup：剥 <memory-context>/<memory-recall> 整段，保留其余", () => {

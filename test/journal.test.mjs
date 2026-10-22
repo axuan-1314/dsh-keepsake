@@ -717,3 +717,41 @@ test("journal：abandoned 行超上限时裁旧留新，计数经 sidecar 跨重
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- P2-b：sidecar 与主档同生命周期（2026-10-22 复查修复）----
+// 语境：FORMAT.md 承诺 extraction-journal.jsonl 可安全删除（删了不丢记忆），
+// 但 sidecar 不是 .jsonl、不会被一起删。若照旧从它加回计数，用户「按文档清一次日志」
+// 之后「已放弃 N 轮」会虚高且跨重启不消失。修法：主档不存在时 sidecar 视为过期，归零并清理。
+
+test("journal：主档被删后 sidecar 计数不得回灌（幽灵计数自愈）", async () => {
+  const root = tempRoot();
+  try {
+    const { log, calls } = spyLog();
+    const j = createJournal({ storageRoot: root, rotateAt: 60, keepOnRotate: 20, log });
+    for (let i = 0; i < 3000; i += 1) {
+      await j.recordRun({ sessionId: "s", from: i * 10, to: i * 10 + 10, cursorAfter: i * 10 + 10, outcome: "abandoned", reason: "no-cwd", at: 1700000000000 + i });
+    }
+    assert.equal(j.snapshot().abandonedCount, 3000);
+    const main = join(root, JOURNAL_FILE_NAME);
+    const sidecar = `${main}.abandoned-truncated.json`;
+    assert.equal(existsSync(sidecar), true, "轮转后应有 sidecar");
+    const before = JSON.parse(readFileSync(sidecar, "utf8")).truncated;
+    assert.ok(before > 0, "sidecar 应记录了被裁条数");
+
+    // 按文档承诺删主档（「可安全删除，不损失任何记忆」）
+    rmSync(main, { force: true });
+
+    const revived = createJournal({ storageRoot: root, rotateAt: 60, keepOnRotate: 20, log });
+    assert.equal(revived.snapshot().abandonedCount, 0, "主档已删：计数必须归零，不得从 sidecar 回灌");
+    assert.equal(existsSync(sidecar), false, "过期的 sidecar 应被顺手清理");
+    assert.ok(calls.info.some((m) => m.includes("放弃计数存档视为过期")), "清理要留痕（不静默）");
+
+    // 之后正常记录仍从 0 起算
+    for (let i = 0; i < 3; i += 1) {
+      await revived.recordRun({ sessionId: "s2", from: i, to: i + 1, cursorAfter: i + 1, outcome: "abandoned", reason: "x", at: 1800000000000 + i });
+    }
+    assert.equal(revived.snapshot().abandonedCount, 3, "新记录从 0 起算，不受历史幽灵值污染");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

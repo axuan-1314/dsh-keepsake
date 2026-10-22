@@ -746,3 +746,55 @@ test("提示行放不下时先退条目（记忆内容 > 提示详细度），�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- P2-a：退条目后提示行绝不能被清空（2026-10-22 复查修复）----
+// 语境：v0.6.3 遗留缺陷——剩余空间落在 [0, 短提示行) 且 rest 里有可退条目时，
+// 循环退掉真条目后仍放不下 → 旧写法 `fits(note) ? note : ""` 把提示清空。
+// 结果是「101 条没进来、一条能进来的也被退掉、产物一个字都没提」：
+// 代价付了、痕迹抹了。修法：只要发生过 retreat，提示行必须留（哪怕 status 变 overQuota）。
+
+test("P2-a：产物内 every 淘汰候选都必须有对应提示行或可见降级（不变量扫描）", () => {
+  // 不变量（不是某个特定构造）：只要 evictCandidates 非空，产物要么带 evicted 提示行，
+  // 要么 status=overQuota（可见降级），绝不允许「有淘汰、产物却一句不提」。
+  // 这条约束不依赖具体尺寸，能覆盖「退了条目但提示被清空」与「提示放不下且无处可退」两类。
+  const cases = [
+    { pinned: 0, pads: [400, 500, 600, 700, 800, 900, 1000, 1100, 1200] },
+    { pinned: 45, pads: [400, 600, 800, 1000] },
+    { pinned: 47, pads: [400, 600, 800, 1000, 1200] },
+    { pinned: 48, pads: [400, 800] },
+  ];
+  for (const { pinned, pads } of cases) {
+    for (const pad of pads) {
+      const root = freshRoot();
+      try {
+        for (let i = 0; i < pinned; i += 1) {
+          writeGlobalEntry(root, "work-profile", `p${String(i).padStart(2, "0")}.md`, {
+            title: `P${i}`, description: "d".repeat(150), pinned: true,
+          });
+        }
+        // 一条尺寸可调的普通条目 + 一批必然落选的大条目
+        writeGlobalEntry(root, "current-focus", "mid.md", { title: `M-${"Y".repeat(pad)}`, description: "t" });
+        for (let i = 0; i < 50; i += 1) {
+          writeGlobalEntry(root, "current-focus", `n${String(i).padStart(3, "0")}.md`, {
+            title: `N${i}-${"T".repeat(400)}`, description: "d".repeat(150),
+          });
+        }
+        const c = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+        if (c.evictCandidates.length === 0) continue;
+        const hasNote = /\[runtime evicted/.test(c.memory.text);
+        const visiblyDegraded = c.status === "overQuota";
+        assert.ok(
+          hasNote || visiblyDegraded,
+          `pinned=${pinned} pad=${pad}：有 ${c.evictCandidates.length} 条淘汰候选，但产物既无提示行也不是 overQuota（静默丢失）`,
+        );
+        // 被淘汰的条目不得同时标记 included
+        const includedFiles = new Set(c.memory.entries.filter((e) => e.included).map((e) => e.file));
+        for (const cand of c.evictCandidates) {
+          assert.ok(!includedFiles.has(cand.file), `pinned=${pinned} pad=${pad}：被淘汰的 ${cand.file} 不得同时 included`);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }
+});

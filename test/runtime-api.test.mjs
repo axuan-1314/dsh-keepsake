@@ -665,18 +665,18 @@ test("sweepTmpOrphans：认领 runtime/ 下 .tmp- 残留（根与 scope 目录�
     // 造残留：runtime 根（compile-journal 轮转 tmp）、global scope（原子写 tmp）、项目 scope
     // 2026-10-22：`.tmp-*` 改为到龄才清（防误删另一实例在途写入），故先造陈旧 mtime。
     const old = (Date.now() - 3 * 3_600_000) / 1000;
-    const tmp1 = join(root, "runtime", "compile-journal.jsonl.tmp-1-2");
-    const tmp2 = join(root, "runtime", "global", "runtime.json.tmp-3-4");
-    const tmp3 = join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5-6");
+    const tmp1 = join(root, "runtime", "compile-journal.jsonl.tmp-1234-1700000000000");
+    const tmp2 = join(root, "runtime", "global", "runtime.json.tmp-3456-1700000000002");
+    const tmp3 = join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5678-1700000000003");
     writeFileSync(tmp1, "half", "utf8");
     writeFileSync(tmp2, "half", "utf8");
     writeFileSync(tmp3, "half", "utf8");
     for (const f of [tmp1, tmp2, tmp3]) utimesSync(f, old, old);
     const removed = sweepTmpOrphans(root);
     assert.equal(removed, 3, "三处 runtime tmp 全部认领");
-    assert.equal(existsSync(join(root, "runtime", "compile-journal.jsonl.tmp-1-2")), false);
-    assert.equal(existsSync(join(root, "runtime", "global", "runtime.json.tmp-3-4")), false);
-    assert.equal(existsSync(join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5-6")), false);
+    assert.equal(existsSync(join(root, "runtime", "compile-journal.jsonl.tmp-1234-1700000000000")), false);
+    assert.equal(existsSync(join(root, "runtime", "global", "runtime.json.tmp-3456-1700000000002")), false);
+    assert.equal(existsSync(join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5678-1700000000003")), false);
     // 正常产物不被误删
     assert.ok(existsSync(join(root, "runtime", "global", "runtime.json")), "正常清单保留");
     assert.ok(existsSync(join(root, "runtime", "global", "MEMORY.md")), "正常产物保留");

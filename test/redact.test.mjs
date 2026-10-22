@@ -670,12 +670,18 @@ test("redactOps：name 字段里的密钥形态必须脱敏（不许带进文件
   assert.match(ops[0].name, /\[redacted\]/, "应替换为占位符");
 });
 
-test("redactOps：AWS AKIA 形态写在 name 里同样被脱敏", () => {
-  const { ops, count } = redactOps([
+test("redactOps：AWS AKIA 形态（大写）写在 name 里被脱敏；小写形态是已知边界", () => {
+  // 大写 AKIA 是模式 4 的定义形态 → 必须命中
+  const upper = redactOps([
+    { action: "write", name: "AKIAFAKEFAKEFAKEFAKE01", title: "T", description: "d", content: "正文" },
+  ]);
+  assert.ok(upper.count > 0, "大写 AKIA 形态必须命中脱敏");
+  assert.doesNotMatch(upper.ops[0].name, /AKIAFAKEFAKEFAKEFAKE01/, "密钥串不得留在 name 里");
+  // 小写不命中：模式大小写敏感，属已知边界（明确断言，不写恒真式）
+  const lower = redactOps([
     { action: "write", name: "akiaiosfodnn7example", title: "T", description: "d", content: "正文" },
   ]);
-  // AKIA 模式是大写敏感；小写形态不命中属预期（记录当前边界）
-  assert.equal(count >= 0, true);
+  assert.equal(lower.count, 0, "小写 AKIA 不命中是模式大小写敏感的已知边界");
 });
 
 test("redactOps：name 里没有敏感串时原样保留（不误伤普通文件名）", () => {
@@ -684,4 +690,41 @@ test("redactOps：name 里没有敏感串时原样保留（不误伤普通文件
   ]);
   assert.equal(count, 0, "普通文件名不得被误改");
   assert.equal(ops[0].name, "uses-pnpm.md");
+});
+
+// ---- P0：脱敏后的 name 必须单射（2026-10-22 复查修复）----
+// 语境：name 进脱敏列后，两条名字里各含不同密钥的条目都被替换成 `[redacted]`，
+// 经 sanitizeMemoryName 归一后同为 `redacted.md` —— 两条不同记忆合并成一条；
+// 更糟的是 delete 一条密钥名条目会命中盘上完全无关的 `redacted.md` 并把它移进回收站。
+// 修法：脱敏后追加「源名短指纹」，保证不同原名映射到不同结果。
+
+test("redactOps：两条不同密钥名的条目，脱敏后落盘名必须不同（不得合并成一条）", async () => {
+  const { sanitizeMemoryName } = await import("../lib/filename.js");
+  const { ops } = redactOps([
+    { action: "write", name: "sk-FAKE000000000000000000000002", title: "A", description: "d", content: "记忆A" },
+    { action: "write", name: "sk-FAKE000000000000000000000003", title: "B", description: "d", content: "记忆B" },
+  ]);
+  const n1 = sanitizeMemoryName(ops[0].name);
+  const n2 = sanitizeMemoryName(ops[1].name);
+  assert.ok(n1 !== null && n2 !== null, "脱敏后的名字仍必须是合法文件名");
+  assert.notEqual(n1, n2, "两条不同条目的落盘名必须不同（否则会合并成一条记忆）");
+  // 密钥原文不得残留
+  assert.doesNotMatch(ops[0].name, /sk-abcdefghij/, "密钥串不得留在 name");
+  assert.doesNotMatch(ops[1].name, /sk-zyxwvutsrq/);
+});
+
+test("redactOps：delete 一条密钥名条目，不得指向盘上无关的 redacted.md", async () => {
+  const { sanitizeMemoryName } = await import("../lib/filename.js");
+  const { ops } = redactOps([{ action: "delete", name: "sk-FAKE0000000000000000000000000004" }]);
+  const target = sanitizeMemoryName(ops[0].name);
+  assert.notEqual(target, "redacted.md", "delete 目标不得落到通用的 redacted.md（那会误删无关条目）");
+  assert.match(String(target), /^redacted-[0-9a-f]{8}\.md$/, "应是「占位符 + 指纹」形态");
+});
+
+test("redactOps：name 无敏感串时不被加指纹（不污染正常文件名）", () => {
+  const { ops, count } = redactOps([
+    { action: "write", name: "uses-pnpm.md", title: "T", description: "d", content: "正文" },
+  ]);
+  assert.equal(count, 0);
+  assert.equal(ops[0].name, "uses-pnpm.md", "普通文件名必须原样保留，不得加后缀");
 });

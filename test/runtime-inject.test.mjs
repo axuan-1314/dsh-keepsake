@@ -4,6 +4,9 @@
 //       status=error 可见降级、三开关矩阵（runtimeEnabled × conversationMemory × projectMemory）、
 //       persona 8000 截断、写盘失效接线，以及回归门「无 runtime 数据时与旧四段内容集合等价」。
 import assert from "node:assert/strict";
+// 关闭 runtime 求值记忆化：让「compile/写盘后注入能否看到新内容」成为可判定的行为
+// （默认 2000ms TTL 会遮蔽，等 2 秒既慢又受 CI 抖动影响）。apply() 在调用时才读 env。
+process.env.DSH_KEEPSAKE_RUNTIME_MEMO_TTL_MS = "0";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +16,7 @@ import { createEntry, writeAddressing, writePersona } from "../lib/global-store.
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
 import { scopeDir } from "../lib/runtime.js";
+import { forceCompile } from "../lib/runtime-archive.js";
 import { __resetMetricsForTest } from "../lib/metrics.js";
 import { MEMORY_CONTEXT_INTRO, MEMORY_CONTEXT_SUPERSEDE_NOTE } from "../lib/inject-channel.js";
 import { FORMAT_VERSION } from "../lib/format.js";
@@ -603,7 +607,7 @@ test("renderGlobalIndex：单行超长挤掉同类其它行时必须留可见提
     const out = renderGlobalIndex(root, { perCategoryChars: 1200 });
     const body = out.text;
     // 只能保下超长那条（装不下别的），但必须告知这一点
-    assert.match(body, /另有 \d+ 条因单条过长未进注入/, "单行超长挤掉其它行时必须留可见提示");
+    assert.match(body, /另有 \d+ 条因过长未进注入/, "单行超长挤掉其它行时必须留可见提示");
     assert.match(body, /Huge/, "超长那条本身仍在（保最新）");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -620,7 +624,7 @@ test("renderGlobalIndex：正常裁剪（无超长行）不出现该提示", asy
     for (let i = 0; i < 20; i += 1) lines.push(`- [W${i}](w${i}.md) — 正常描述 ${i} ${"d".repeat(50)}`);
     writeFileSync(join(catDir, "MEMORY.md"), lines.join("\n") + "\n", "utf8");
     const out = renderGlobalIndex(root, { perCategoryChars: 600 });
-    assert.doesNotMatch(out.text, /因单条过长未进注入/, "正常裁剪（多条能装下）不该出这条提示");
+    assert.doesNotMatch(out.text, /因过长未进注入/, "正常裁剪（多条能装下）不该出这条提示");
     // 仍然做了裁剪（不是全留）
     assert.ok((out.text.match(/- \[W\d+\]/g) ?? []).length < 20, "预算生效，确实裁掉了一部分");
   } finally {
@@ -659,6 +663,99 @@ test("runtimeMemo 行为面：TTL 内结果稳定、越过 TTL 必须看到盘�
     await new Promise((r) => setTimeout(r, 2200)); // > RUNTIME_MEMO_TTL_MS(2000)
     const third = await injectText();
     assert.match(third, /BBBB/, "越过 TTL 必须看到盘上新内容（记忆会过期，不是永久钉死）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P3-b：oversized 判据不得漏掉「大行未超预算但仍挤掉同类」（2026-10-22 复查修复）----
+// 语境：旧判据 `kept.length===1 && kept[0].length+1 > maxChars` 只在「单行真的超预算」时报。
+// 实测 2199 字符（未超 2200）或 kept=2 时零提示，用仍然被挤掉 7-8 条、用户无从解释。
+// 新判据：保下来的行平均长度达到丢弃行的 3 倍以上 → 是被大行挤的（不是按新旧裁的）。
+
+test("P3-b：尾部大行未超预算但挤掉多条同类时，仍必须留可见提示", () => {
+  const cases = [3000, 2199, 2150];
+  for (const tailLen of cases) {
+    __resetMetricsForTest();
+    const root = freshRoot();
+    try {
+      const catDir = join(root, "global", "work-profile");
+      mkdirSync(catDir, { recursive: true });
+      const lines = [];
+      for (let i = 0; i < 8; i += 1) lines.push(`- [W${i}](w${i}.md) — 正常描述 ${i} ${"d".repeat(50)}`);
+      lines.push(`- [Huge](huge.md) — ${"X".repeat(tailLen)}`);
+      writeFileSync(join(catDir, "MEMORY.md"), lines.join("\n") + "\n", "utf8");
+      const out = renderGlobalIndex(root, { perCategoryChars: 2200 });
+      assert.match(out.text, /另有 \d+ 条因过长未进注入/, `tailLen=${tailLen}：被大行挤掉时必须留提示`);
+      assert.match(out.text, /Huge/, "大行本身仍在（保最新）");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("P3-b：正常等长行按预算裁剪时不误报（不出现过长提示）", () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    const lines = [];
+    for (let i = 0; i < 30; i += 1) lines.push(`- [W${i}](w${i}.md) — 正常描述 ${i} ${"d".repeat(50)}`);
+    writeFileSync(join(catDir, "MEMORY.md"), lines.join("\n") + "\n", "utf8");
+    const out = renderGlobalIndex(root, { perCategoryChars: 800 });
+    assert.doesNotMatch(out.text, /因过长未进注入/, "等长行按预算裁是正常行为，不得误报");
+    assert.ok((out.text.match(/- \[W\d+\]/g) ?? []).length < 30, "预算生效，确实裁掉了一部分");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 行为测试（2026-10-22 复查后补）：memo 链路端到端 ----
+// 复查指出的最大测试缺口：compile 端点只测了「回调被调用」（计数），
+// 「memo 真的被清」在 1067 条测试里是空白——影子 Map / clear 变空操作 /
+// 失效函数整体空转三种退化都能全部通过通过。
+// 这里用 `runtimeMemoTtlMs: 0` 关闭记忆化（测试专用注入点），让记忆化不再遮蔽，
+// 任何「本该清却没清」的退化都会暴露为「注入看不到新内容」。
+
+test("行为面：compile 后注入必须看到新产物（TTL=0 直读，不经记忆化）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    writeSettings(root, { runtimeEnabled: true });
+    createEntry(root, "work-profile", { title: "Before", description: "旧", content: "a" });
+    const { injectText } = startMessage(root);
+    const t1 = await injectText();
+    assert.match(t1, /\[Before\]/);
+    assert.doesNotMatch(t1, /\[After\]/);
+
+    // 直接落盘后强制重编（等价于面板「重新编译」；不经 API 层以隔离出编译+注入链路本身）
+    createEntry(root, "work-profile", { title: "After", description: "新", content: "b" });
+    forceCompile(root, "global", { trigger: "test", log: { warn: () => {}, error: () => {}, info: () => {} } });
+
+    const t2 = await injectText();
+    assert.match(t2, /\[After\]/, "重编后注入必须看到新产物（memo 必须不遮蔽）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("行为面：写盘后注入必须看到新条目（写盘失效接线端到端）", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    writeSettings(root, { runtimeEnabled: true });
+    createEntry(root, "work-profile", { title: "First", description: "旧", content: "a" });
+    const { injectText } = startMessage(root);
+    const t1 = await injectText();
+    assert.match(t1, /\[First\]/);
+    assert.doesNotMatch(t1, /\[Second\]/);
+
+    // 直接写盘（模拟外部写入；不走 API 的 onGlobalWrite）
+    createEntry(root, "work-profile", { title: "Second", description: "新", content: "b" });
+
+    const t2 = await injectText();
+    assert.match(t2, /\[Second\]/, "写盘后注入必须看到新条目（sourceHash 变化应触发重编）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -351,3 +351,54 @@ test("global 覆盖写数字远值替换（346→412）不误报：与 project �
     rmSync(projectRoot, { recursive: true, force: true });
   }
 });
+
+// ---- P2-d：全局同批同名重复写第二条必须被拦（2026-10-22 复查修复）----
+// 语境：硬事实比对拿的是「批前原文」。若同批第二条 write 直通覆盖第一条写入的新值，
+// 就绕过了整套判据（block 策略可被最普通的「写两次」绕过、drops 漏计）。
+// project 侧对同批同名是 fail-closed 跳过；全局侧此前只堵了「预扫时不存在」那一半。
+
+test("global 同批同名覆盖既有条目：第二条必须被跳过（不绕过硬事实比对）", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "projects", "p1", "memory");
+  try {
+    const catDir = join(root, "global", "work-profile");
+    // 既有条目（批前就存在）
+    seedMemory(catDir, "dup.md", "端口 8443，共 269 个文件。");
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      { action: "write", name: "dup.md", scope: "global:work-profile", title: "第一次", description: "d", content: "端口 8434，共 267 个文件。" },
+      { action: "write", name: "dup.md", scope: "global:work-profile", title: "第二次", description: "d", content: "端口 9999，共 111 个文件。" },
+    ], { originSessionId: "s-1", log: silentLog });
+    assert.equal(result.writes, 1, "只应写成功一条");
+    assert.equal(result.skipped, 1, "第二条必须被 fail-closed 跳过");
+    assert.equal(result.blockedDestructiveOps, 1, "跳过计入 blockedDestructiveOps");
+    // 硬事实必须检出（第一条相对批前原文丢了 8443/269）
+    assert.equal(result.hardfactDrops, 2, "第一条的硬事实丢失必须被检出，不得因第二条覆盖而漏计");
+    // 盘上是第一条的内容（第二条没写进去）
+    const body = readFileSync(join(catDir, "dup.md"), "utf8");
+    assert.match(body, /8434/, "盘上应是第一条写入的值");
+    assert.doesNotMatch(body, /9999/, "第二条不得落盘");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("global 同批同名 but 目标纯新增：仍走既有的「并发建出」闸（两条都不重复写）", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "projects", "p1", "memory");
+  try {
+    mkdirSync(join(root, "global", "work-profile"), { recursive: true });
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      { action: "write", name: "new.md", scope: "global:work-profile", title: "A", description: "d", content: "第一次" },
+      { action: "write", name: "new.md", scope: "global:work-profile", title: "B", description: "d", content: "第二次" },
+    ], { originSessionId: "s-1", log: silentLog });
+    assert.equal(result.writes, 1, "纯新增同名双写：只写第一条");
+    assert.equal(result.skipped, 1);
+    const body = readFileSync(join(root, "global", "work-profile", "new.md"), "utf8");
+    assert.match(body, /第一次/, "保留第一条");
+    assert.doesNotMatch(body, /第二次/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});

@@ -362,16 +362,16 @@ test("sweepTmpOrphans：staging-* 与 .tmp-* 同用「到龄才清」判法（�
     utimesSync(staleStaging, old / 1000, old / 1000);
     // 一个到龄的 .tmp-* 孤儿（writeAtomic 中断残留）+ 一个在途的（另一实例正在写）
     mkdirSync(join(root, "global", "long-term"), { recursive: true });
-    writeFileSync(join(root, "global", "long-term", "x.md.tmp-1-1"), "半截", "utf8");
-    utimesSync(join(root, "global", "long-term", "x.md.tmp-1-1"), old / 1000, old / 1000);
-    const inflight = join(root, "global", "long-term", "y.md.tmp-2-2");
+    writeFileSync(join(root, "global", "long-term", "x.md.tmp-1234-1700000000000"), "半截", "utf8");
+    utimesSync(join(root, "global", "long-term", "x.md.tmp-1234-1700000000000"), old / 1000, old / 1000);
+    const inflight = join(root, "global", "long-term", "y.md.tmp-5678-1700000000001");
     writeFileSync(inflight, "在途", "utf8");
     const removed = sweepTmpOrphans(root);
     assert.equal(removed, 2, "到龄的 staging-* + 到龄的 .tmp-* 孤儿");
     assert.equal(existsSync(freshStaging), true, "在途 staging（mtime 新鲜）不清");
     assert.equal(existsSync(freshStagingP), true, "在途 projects.staging（mtime 新鲜）不清");
     assert.equal(existsSync(staleStaging), false, "mtime 超 1 小时的 staging-* 被清扫");
-    assert.equal(existsSync(join(root, "global", "long-term", "x.md.tmp-1-1")), false, "到龄的 .tmp-* 孤儿被清扫");
+    assert.equal(existsSync(join(root, "global", "long-term", "x.md.tmp-1234-1700000000000")), false, "到龄的 .tmp-* 孤儿被清扫");
     assert.equal(existsSync(inflight), true, "在途 .tmp-*（mtime 新鲜）绝不清——防误删另一实例正在写的文件");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -443,6 +443,80 @@ test("restoreBackup：两段都换入成功但退役目录清理失败 → 不�
     const rescues = readdirSync(root).filter((n) => n.startsWith("global.retired-"));
     assert.equal(rescues.length, 1, "清理中断的退役目录必须留在盘上（供人工核实）");
     assert.ok(warns.some((w) => w.includes("退役目录清理未完成")), "必须 warn 留痕（不静默）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P2-c：成功恢复顺手清理历史 retired-* 残留（2026-10-22 复查修复）----
+// 语境：失败路径保留 retired-* 是对的（最后一份好数据），但 sweepTmpOrphans 的红线
+// 对 retired-* 永久豁免——没有任何自动回收路，每失败一次就永留一份完整数据副本。
+// 修法：恢复**全程成功**时顺手清掉「历史遗留」的 retired-*（本次两份已由成功路径处理）。
+
+test("restoreBackup：成功恢复时清理历史遗留的 retired-* 残留", () => {
+  const root = freshRoot();
+  try {
+    const backupId = makeBackup(root);
+    mutateLive(root);
+    // 造两份「历史失败残留」
+    mkdirSync(join(root, "global.retired-999-111"), { recursive: true });
+    writeFileSync(join(root, "global.retired-999-111", "stale.md"), "旧残留", "utf8");
+    mkdirSync(join(root, "projects.retired-888-222"), { recursive: true });
+    writeFileSync(join(root, "projects.retired-888-222", "stale2.md"), "旧残留2", "utf8");
+    assert.equal(leftovers(root).length, 2, "前置：两份历史残留");
+
+    assert.equal(restoreBackup(root, backupId), true);
+    // 成功恢复后历史残留应被清掉，且本次产生的退役副本也已被 cleanupRetired 拿走
+    assert.deepEqual(leftovers(root), [], "成功恢复后不应残留任何 retired-*/staging");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("restoreBackup：失败时不清理历史残留（保留全部材料供人工判断）", () => {
+  const root = freshRoot();
+  try {
+    const backupId = makeBackup(root);
+    mutateLive(root);
+    mkdirSync(join(root, "global.retired-777-333"), { recursive: true });
+    writeFileSync(join(root, "global.retired-777-333", "keep.md"), "历史材料", "utf8");
+    const stagingPrefix = join(root, "projects.staging-");
+    const copyFn = (src, dest, opts) => {
+      if (String(dest).startsWith(stagingPrefix)) throw new Error("模拟失败");
+      return cpSync(src, dest, opts);
+    };
+    assert.throws(() => restoreBackup(root, backupId, { copyFn }), (e) => e.code === "RESTORE_FAILED");
+    // 失败时历史残留必须原样保留（连同本次的 retired）
+    assert.equal(existsSync(join(root, "global.retired-777-333", "keep.md")), true, "失败时历史残留不得被清");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P3-a：空 global 目录不得被误报「清理中断，完整性未确认」（2026-10-22 复查修复）----
+// 语境：全新安装后 global/ 存在但为空；备份恢复时 projects 段失败 → 外层 catch 检查
+// 退役目录：空目录被判为 suspect → 消息说「清理中断，完整性未确认（切勿删除）」。
+// 但实际上根本没走到 cleanupRetired（本批已把清理挪到两段成功后），且空目录无数据可恢复。
+
+test("restoreBackup：空 global 目录导致失败时，消息不得误报「完整性未确认」", () => {
+  const root = freshRoot();
+  try {
+    // 造一份 global 为空的备份：直接建目录、不写条目
+    mkdirSync(join(root, "global"), { recursive: true });
+    mkdirSync(join(root, "projects", "proj-a", "memory"), { recursive: true });
+    writeFileSync(join(root, "projects", "proj-a", "memory", "one.md"), "项目", "utf8");
+    const backupId = createBackup(root, "manual");
+    // 让 projects 段拷贝失败
+    const stagingPrefix = join(root, "projects.staging-");
+    const copyFn = (src, dest, opts) => {
+      if (String(dest).startsWith(stagingPrefix)) throw new Error("模拟 projects 失败");
+      return cpSync(src, dest, opts);
+    };
+    let thrown = null;
+    assert.throws(() => restoreBackup(root, backupId, { copyFn }), (e) => { thrown = e; return e.code === "RESTORE_FAILED"; });
+    // 空目录不得被说成「完整性未确认」
+    assert.doesNotMatch(thrown.message, /完整性未确认/, "空目录无数据可恢复，不得报完整性未确认");
+    assert.match(thrown.message, /为空|无可恢复内容/, "应如实说明该侧为空");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

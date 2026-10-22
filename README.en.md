@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.6.3 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.6.4 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -122,7 +122,7 @@ Entry files are **compiled** into two fixed-size compact memory files (`USER.md`
 Conversations occasionally contain API keys, tokens or internal addresses that should not be recorded. Redaction is on by default (`redactionEnabled`, default **true**) and intercepts at two points:
 
 - **First pass (before the extraction prompt)**: the transcript excerpt is redacted before truncation, at four render points (user message / assistant reply / tool call / tool result). The order is deliberate — redact first, clip second — so a truncated-in-half secret cannot slip through the patterns. The model sees, and extraction runs on, redacted text.
-- **Second pass (before write-back, defense in depth)**: extraction-produced write/delete operations pass another redaction before any memory file is written; only string content fields are processed — filenames, paths, entry ids and op kinds are untouched. The hit count lands in the run log's `redacted` field (written only when non-zero), visible in the panel's "recent extraction records".
+- **Second pass (before write-back, defense in depth)**: extraction-produced write/delete operations pass another redaction before any memory file is written; string content fields **and the filename (`name`)** are processed — a secret written into a filename would be persisted, indexed and injected every turn, so it is redacted too; a hit in the filename gets a short fingerprint suffix (`[redacted]-<8 hex>`) so distinct entries never collide. Path separators, sha1 and op kinds are untouched. The hit count lands in the run log's `redacted` field (written only when non-zero), visible in the panel's "recent extraction records".
 
 The built-in list is **7 fixed patterns** (the list is fixed; user-supplied regexes are not supported — this keeps regex backtracking from ever stalling the host process):
 
@@ -282,7 +282,7 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
 **② Local clone (development / self-use)** — source edits take effect live:
 
 ```bash
-dsh plugin --profile web add <path to your clone>   # or a git URL
+dsh plugin --profile web add "<path to your clone>"   # or a git URL
 ```
 
 Verify the entry is in the tree: `dsh --profile web --dump-config`.

@@ -596,16 +596,16 @@ test("sweepTmpOrphans：到龄的 .tmp-* 孤儿与陈旧 staging 清扫", () => 
     const sRoot = root;
     const gDir = globalRoot(root);
     mkdirSync(join(gDir, "long-term"), { recursive: true });
-    writeFileSync(join(gDir, "long-term", "a.md.tmp-1-2"), "x", "utf8");
-    writeFileSync(join(sRoot, "settings.json.tmp-1-2"), "x", "utf8");
+    writeFileSync(join(gDir, "long-term", "a.md.tmp-1234-1700000000000"), "x", "utf8");
+    writeFileSync(join(sRoot, "settings.json.tmp-1234-1700000000000"), "x", "utf8");
     // 2026-10-22：`.tmp-*` 改为到龄才清（此前无条件删 → 会误删其它实例在途写入的 tmp）
-    ageFile(join(gDir, "long-term", "a.md.tmp-1-2"), 2 * 3600_000);
-    ageFile(join(sRoot, "settings.json.tmp-1-2"), 2 * 3600_000);
+    ageFile(join(gDir, "long-term", "a.md.tmp-1234-1700000000000"), 2 * 3600_000);
+    ageFile(join(sRoot, "settings.json.tmp-1234-1700000000000"), 2 * 3600_000);
     mkdirSync(join(sRoot, "global.staging-1-2"), { recursive: true });
     const removed = sweepTmpOrphans(sRoot);
     assert.ok(removed >= 2);
-    assert.ok(!existsSync(join(gDir, "long-term", "a.md.tmp-1-2")));
-    assert.ok(!existsSync(join(sRoot, "settings.json.tmp-1-2")));
+    assert.ok(!existsSync(join(gDir, "long-term", "a.md.tmp-1234-1700000000000")));
+    assert.ok(!existsSync(join(sRoot, "settings.json.tmp-1234-1700000000000")));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -758,6 +758,64 @@ test("sweepTmpOrphans：用户手建的 `<名>.tmp-notes.md` 不被当原子写�
     sweepTmpOrphans(root);
     assert.equal(existsSync(userFile), true, "含 .tmp- 但不是原子写形态的文件必须保留");
     assert.equal(readFileSync(userFile, "utf8"), "用户手建的正经条目");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P3-c/d：tmp 判据与扫描面（2026-10-22 复查修复）----
+
+test("sweepTmpOrphans：backups/ 下中断的原子写 tmp 也要清（它不是留档本体）", () => {
+  const root = freshRoot();
+  try {
+    const bDir = join(root, "backups", "backup-1700000000000-1234");
+    mkdirSync(bDir, { recursive: true });
+    const orphan = join(bDir, "backup-meta.json.tmp-1234-1700000000000");
+    writeFileSync(orphan, "半截", "utf8");
+    ageFile(orphan, 5 * 3600_000);
+    // 同目录的正常留档文件必须保留
+    const keep = join(bDir, "backup-meta.json");
+    writeFileSync(keep, "{}", "utf8");
+    ageFile(keep, 5 * 3600_000);
+    sweepTmpOrphans(root);
+    assert.equal(existsSync(orphan), false, "backups 里的原子写中断 tmp 应被清扫");
+    assert.equal(existsSync(keep), true, "留档本体文件必须保留");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：日期式命名 `report.tmp-2026-10-22` 不得被当孤儿删（ts 非 13 位）", () => {
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    const userFile = join(catDir, "report.tmp-2026-10-22");
+    writeFileSync(userFile, "用户手建", "utf8");
+    ageFile(userFile, 5 * 3600_000);
+    sweepTmpOrphans(root);
+    assert.equal(existsSync(userFile), true, "日期式命名不是原子写形态，必须保留");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：真实原子写形态（pid-13位ts[-后缀]）能被认出并到龄清理", () => {
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    // 各模块真实形态：<pid>-<Date.now()> 与 <pid>-<Date.now()>-<base36>
+    const names = ["a.md.tmp-1234-1700000000000", "b.md.tmp-5678-1700000000001-ab12cd", "c.md.tmp-9999-1700000000002-0"];
+    for (const n of names) {
+      const f = join(catDir, n);
+      writeFileSync(f, "x", "utf8");
+      ageFile(f, 5 * 3600_000);
+    }
+    sweepTmpOrphans(root);
+    for (const n of names) {
+      assert.equal(existsSync(join(catDir, n)), false, `真实原子写形态 ${n} 应被清理`);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

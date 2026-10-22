@@ -325,3 +325,56 @@ test("renderMemoryFile：description 含裸 \r / CRLF 时必须压成单行（�
   const front = parseFrontmatterHead(raw);
   assert.equal(front.description, "第一段 第二段 第三段", "读回必须拿到完整描述，不是 undefined");
 });
+
+// ---- P0-B：终态必须按「执行结果」而非「op 意图」判定（2026-10-22 复查修复）----
+// 语境：v0.6.2 把终态改成「按 ops 数组里最后一次出现的 action」——那是**意图**。
+// op 被闸拦下（锁被占 / 快照失败 / 回收站移入失败 / sha1 不符）时意图不变但事实没变：
+//   · delete 被拦、文件还在盘上 → 索引行被删 → 该记忆此后每轮注入看不见，面板却列着它；
+//   · write 被拦、文件已不在 → 索引留悬挂行 → 模型被指去 Read 不存在的文件。
+// 修法：终态只看「真成功执行的那次动作」（touched / deletedNames 都是执行结果）。
+
+test("P0-B：delete 被锁阻断（文件仍在盘上）时索引行必须保留", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {}, error: () => {} };
+    applyOps(root, [{ action: "write", name: "keep.md", type: "project", title: "Keep", description: "要保留", content: "正文" }], { originSessionId: "s1", log });
+    assert.match(readFileSync(join(root, "MEMORY.md"), "utf8"), /- \[Keep\]\(keep\.md\)/);
+
+    // lockHeld=true 模拟「锁被别的实例占着」→ delete 被阻断
+    const r = applyOps(root, [{ action: "delete", name: "keep.md" }], { originSessionId: "s2", log, storageRoot: root, lockHeld: true });
+    assert.equal(r.deletes, 0, "delete 应被阻断");
+    assert.ok(r.skipped >= 1, "应计跳过");
+    // 文件还在
+    assert.ok(existsSync(join(root, "keep.md")), "文件必须还在");
+    // 索引行必须也还在（否则记忆对注入面静默消失）
+    const index = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.match(index, /- \[Keep\]\(keep\.md\)/, "delete 被阻断时索引行必须保留（文件与索引不能各说一半）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("P0-B：delete 成功 + 同批 write 被 sha1 闸拒（文件已删）时不得留悬挂行", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {}, error: () => {} };
+    applyOps(root, [{ action: "write", name: "a.md", type: "project", title: "A", description: "旧", content: "旧正文" }], { originSessionId: "s1", log });
+    assert.match(readFileSync(join(root, "MEMORY.md"), "utf8"), /- \[A\]\(a\.md\)/);
+
+    // 同批：先 delete（成功进回收站）→ 再 write 带错误 sha1（被闸拒）
+    const r = applyOps(root, [
+      { action: "delete", name: "a.md" },
+      { action: "write", name: "a.md", type: "project", title: "A2", description: "新", content: "新正文", sha1: "deadbeef" },
+    ], { originSessionId: "s2", log, storageRoot: root });
+    assert.equal(r.deletes, 1, "delete 应成功");
+    assert.equal(r.expectedSha1Mismatches, 1, "write 应被 sha1 闸拒");
+    assert.equal(r.writes, 0);
+    // 文件已不在（delete 成功、write 被拒）
+    assert.equal(existsSync(join(root, "a.md")), false);
+    // 索引不得留悬挂行
+    const index = existsSync(join(root, "MEMORY.md")) ? readFileSync(join(root, "MEMORY.md"), "utf8") : "";
+    assert.doesNotMatch(index, /\(a\.md\)/, "文件已删：索引不得留悬挂行");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

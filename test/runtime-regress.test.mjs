@@ -17,7 +17,7 @@ import { createEntry, renderGlobalEntry, updateEntry } from "../lib/global-store
 import { apply, renderGlobalIndex, runtimeCoveredCategoriesOf, runtimeCoveredProjectFilesOf } from "../lib/index.js";
 import { __resetMetricsForTest } from "../lib/metrics.js";
 import { projectMemoryPaths } from "../lib/paths.js";
-import { compileScope, ensureCompiled, scopeDir } from "../lib/runtime.js";
+import { compileScope, ensureCompiled, readRuntimeManifest, scopeDir } from "../lib/runtime.js";
 import { evictEntries, restoreArchivedEntry } from "../lib/runtime-archive.js";
 import { resetSettingsCache, writeSettings } from "../lib/settings.js";
 
@@ -172,10 +172,16 @@ test("② 只读态 stale 清单：降级期间新增的条目不得因整类去
   const root = freshRoot();
   try {
     writeGlobalEntry(root, "user-profile", "u.md", { title: "OldUser" });
-    const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+    // 必须**真落盘**一份清单：本用例要咬的是注入侧「清单指纹 vs 盘上候选池指纹」的比对分支，
+    // 而 compileScope 是纯内存编译（不写 runtime.json）——用它会让 readRuntimeManifest
+    // 返回 null、走「无缓存」早退分支，指纹比对代码根本不执行，测试变成自证式
+    // （变异：删掉指纹守卫仍全部通过，2026-10-22 复查实证）。
+    ensureCompiled({ storageRoot: root, scope: "global", trigger: "test", log: silentLog });
     // 模拟「降级只读期间新增条目」：盘上清单还是老的（只有 u.md），盘上却多了一条
     writeGlobalEntry(root, "user-profile", "new.md", { title: "NewUser" });
-    const stale = runtimeCoveredCategoriesOf(compiled);
+    const cached = readRuntimeManifest(root, "global");
+    assert.ok(cached !== null, "清单必须已落盘（否则本用例咬不到指纹比对分支）");
+    const stale = runtimeCoveredCategoriesOf(cached);
     assert.ok(stale.includes("user-profile"), "清单自述全覆盖");
     // 关键：注入侧绝不能只信「status=ok + 三分类全覆盖」就摘掉整个分类——
     // 那会让 NewUser 既不在产物（清单旧）也不在索引（整类被去重），彻底不可见。

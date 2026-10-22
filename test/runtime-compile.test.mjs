@@ -620,3 +620,129 @@ test("invalidateRuntimeCache：删产物目录但保留 compile-journal；scope=
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- ②b pinnedOver + 普通条目并存：候选 reason 与提示行（2026-10-22 补）----
+// 语境：pinned 已把配额撑爆时，普通条目一条也装不进。它们**不是**「因配额淘汰」——
+// 真因是 pinned，归档它们无效（下轮照样 overQuota、候选原样复现）。
+// 且产物必须留下「另有 N 条没进来」的痕迹，否则面板候选清单与产物数字对不上。
+
+test("pinnedOver + 普通条目：候选 reason=pinned-overflow（不是 quota），产物留 evicted 提示行", () => {
+  const root = freshRoot();
+  try {
+    // 22 条 pinned 各约 500 字节 → 合计约 11KB，必超 10240
+    for (let i = 0; i < 22; i += 1) {
+      writeGlobalEntry(root, "work-profile", `pin-${i}.md`, {
+        title: `P-${i}-${"T".repeat(300)}`,
+        description: "d".repeat(150),
+        pinned: true,
+      });
+    }
+    // 3 条普通条目（必然一条也装不进）
+    for (let i = 0; i < 3; i += 1) {
+      writeGlobalEntry(root, "current-focus", `n-${i}.md`, { title: `N-${i}`, description: "普通条目" });
+    }
+    const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+    assert.equal(compiled.status, "overQuota", "pinned 撑爆配额");
+    assert.ok(compiled.evictCandidates.length > 0, "普通条目必须登记为候选");
+    // 全部候选的 reason 必须是 pinned-overflow（不是 quota——归档无效会误导用户）
+    assert.ok(
+      compiled.evictCandidates.every((c) => c.reason === "pinned-overflow"),
+      `pinnedOver 时 reason 必须是 pinned-overflow，实际：${JSON.stringify(compiled.evictCandidates.map((c) => c.reason))}`,
+    );
+    // 产物必须留可见痕迹（否则面板有 N 条候选、产物里一句不提）
+    assert.match(compiled.memory.text, /\[runtime evicted: \d+ /, "pinnedOver 时也必须写淘汰提示行");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("正常配额淘汰（无 pinned）：reason 仍是 quota，提示行照旧", () => {
+  const root = freshRoot();
+  try {
+    // 无 pinned，纯普通条目撑爆配额 → 走顺序装填「装不下即停」分支
+    for (let i = 0; i < 25; i += 1) {
+      writeGlobalEntry(root, "work-profile", `w-${i}.md`, {
+        title: `W-${i}-${"T".repeat(280)}`,
+        description: "d".repeat(150),
+      });
+    }
+    const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+    assert.ok(compiled.evictCandidates.length > 0, "应有淘汰候选");
+    assert.ok(
+      compiled.evictCandidates.every((c) => c.reason === "quota"),
+      "无 pinned 时真淘汰，reason 必须是 quota",
+    );
+    assert.match(compiled.memory.text, /\[runtime evicted: \d+ /);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- H2 配额预留（2026-10-22 补，v0.6.1 自称修掉但无测试）----
+// 语境：淘汰提示行的字节必须计入配额。早先实现是「先装填完再事后追加提示行」，
+// 会产出 bytes > quota 却 status=ok 的产物（面板用量条爆红 + 状态绿灯，自相矛盾）。
+// 11e0915 改成「装填时为提示行预留字节」，但**没有任何测试钉住**它——
+// 变异（删掉预留、恢复事后追加）全部通过（2026-10-22 对抗复查实测）。
+
+test("淘汰提示行必须计入配额：任何装填边界下 status=ok 都不得 bytes > quota", () => {
+  // 实测定位的临界点（2026-10-22）：16 条固定宽度条目 + 第 17 条宽度 500/1100/1200 的 pads
+  // 恰好把装填量顶到配额边缘；事后追加提示行的实现会产出 bytes>quota 却 status=ok。
+  // 逐个 pad 覆盖——任何一处越界都算回归（不许只挑一个刚好过得去的用例）。
+  for (const pad of [400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300]) {
+    const root = freshRoot();
+    try {
+      for (let i = 0; i < 16; i += 1) {
+        writeGlobalEntry(root, "work-profile", `f-${String(i).padStart(2, "0")}.md`, {
+          title: `F-${i}-${"T".repeat(400)}`,
+          description: "d".repeat(150),
+        });
+      }
+      writeGlobalEntry(root, "work-profile", "g.md", {
+        title: `G-${"Z".repeat(pad)}`,
+        description: "d".repeat(150),
+      });
+      const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+      const quota = compiled.memory.quotaBytes;
+      const bytes = compiled.memory.bytes;
+      assert.equal(bytes, Buffer.byteLength(compiled.memory.text, "utf8"), `pad=${pad}：bytes 必须与产物文本逐字节一致`);
+      // 核心不变量：status=ok 就必须真的没超配额（提示行也占字节，不许事后追加越界）
+      if (compiled.status === "ok") {
+        assert.ok(bytes <= quota, `pad=${pad}：status=ok 时产物必须 ≤ 配额（实际 ${bytes} > ${quota}）——提示行必须在装填时预留字节`);
+      }
+      // 有淘汰候选就必有提示行
+      if (compiled.evictCandidates.length > 0) {
+        assert.match(compiled.memory.text, /\[runtime evicted: \d+ /, `pad=${pad}：有淘汰候选就必须留可见痕迹`);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("提示行放不下时先退条目（记忆内容 > 提示详细度），退完仍不越界", () => {
+  const root = freshRoot();
+  try {
+    // 极端构造：装填刚好填满，提示行放不下 → 必须退掉尾部条目腾地方
+    for (let i = 0; i < 40; i += 1) {
+      writeGlobalEntry(root, "work-profile", `x-${String(i).padStart(2, "0")}.md`, {
+        title: `X-${i}-${"B".repeat(250)}`,
+        description: "z".repeat(140),
+      });
+    }
+    const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
+    assert.ok(compiled.evictCandidates.length > 0, "必然有淘汰");
+    assert.match(compiled.memory.text, /\[runtime evicted: \d+ /, "必须留下提示行");
+    // 提示行占字节后仍不得越界（status 与 bytes 必须自洽）
+    if (compiled.status === "ok") {
+      assert.ok(compiled.memory.bytes <= compiled.memory.quotaBytes, "退条目后必须回到配额内");
+      // 被退的条目必须出现在淘汰清单里（不能凭空消失）
+      const evictedFiles = new Set(compiled.evictCandidates.map((c) => c.file));
+      const includedFiles = new Set(compiled.memory.entries.filter((e) => e.included).map((e) => e.file));
+      for (const f of evictedFiles) {
+        assert.ok(!includedFiles.has(f), `被退条目 ${f} 不得同时标记为 included`);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

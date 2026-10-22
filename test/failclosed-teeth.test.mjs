@@ -280,3 +280,74 @@ test("hardfact-drop 的 detail 被截到 ≤2048 且剥净 CR/LF（防注入假�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 全局侧硬事实比对（2026-10-22 补：此前只有 project 侧有）----
+// 约定：全局四分类（user-profile/work-profile/current-focus/long-term）的覆盖写
+// 必须与 project 侧同纪律——数字/版本号/十六进制标识被静默改错要有告警与留痕，
+// hardfactPolicy=block 时要回滚。此处两条用例都按「摘掉修复必须变红」写。
+
+test("global 覆盖写硬事实丢失：必须计 hardfactDrops 并把 diff 落 extraction-errors.log", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "projects", "p1", "memory");
+  try {
+    const catDir = join(root, "global", "work-profile");
+    const original = seedMemory(catDir, "stats.md", "端口是 8443，共 269 个文件。");
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      // 带正确 sha1（盲写会被降级成追加，不走硬事实比对分支）
+      { action: "write", name: "stats.md", scope: "global:work-profile", title: "S", description: "d", content: "端口是 8434，共 267 个文件。", sha1: sha1Short(original) },
+    ], { originSessionId: "s-1", log: silentLog });
+    assert.equal(result.writes, 1, "默认 warn 策略不阻断写入");
+    assert.equal(result.hardfactDrops, 2, "两个数字丢失都要检出（269 与 8443）");
+    // diff 片段必须落盘（否则用户无从知道改错了什么）
+    const logPath = join(root, ERROR_LOG_NAME);
+    assert.equal(existsSync(logPath), true, "必须有 extraction-errors.log");
+    const text = readFileSync(logPath, "utf8");
+    assert.match(text, /hardfact-drop/, "必须记 hardfact-drop");
+    assert.match(text, /8443/, "diff 里必须看得到旧值 8443");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("global 覆盖写硬事实丢失 + hardfactPolicy=block：必须回滚旧文并计 hardfactBlocks", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "projects", "p1", "memory");
+  try {
+    const catDir = join(root, "global", "work-profile");
+    const original = seedMemory(catDir, "stats.md", "端口是 8443。");
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      { action: "write", name: "stats.md", scope: "global:work-profile", title: "S", description: "d", content: "端口是 8434。", sha1: sha1Short(original) },
+    ], { originSessionId: "s-1", settings: { hardfactPolicy: "block" }, log: silentLog });
+    assert.equal(result.hardfactBlocks, 1, "block 必须计 hardfactBlocks");
+    assert.equal(result.writes, 0, "block 策略下该 op 不得计写成功");
+    // 旧文必须原子换回（不是被新文覆盖）
+    const body = readFileSync(join(catDir, "stats.md"), "utf8");
+    assert.match(body, /8443/, "block：旧文必须被换回");
+    assert.doesNotMatch(body, /8434/, "block：新文不得留在盘上");
+    // 索引行回到批前状态：按旧文 frontmatter 重建该行（不是残留新文行）
+    const index = readFileSync(join(catDir, "MEMORY.md"), "utf8");
+    assert.match(index, /\[stats\]\(stats\.md\)/, "回滚后索引按旧文重建该行");
+    assert.doesNotMatch(index, /8434/, "索引里不得出现新文的值");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("global 覆盖写数字远值替换（346→412）不误报：与 project 侧同判据", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "projects", "p1", "memory");
+  try {
+    const catDir = join(root, "global", "current-focus");
+    const original = seedMemory(catDir, "n.md", "测试共 346 例全部通过。");
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      { action: "write", name: "n.md", scope: "global:current-focus", title: "N", description: "d", content: "测试共 412 例全部通过。", sha1: sha1Short(original) },
+    ], { originSessionId: "s-1", log: silentLog });
+    assert.equal(result.writes, 1);
+    assert.equal(result.hardfactDrops, 0, "远值替换是有意更新，不得误报");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});

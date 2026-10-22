@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.6.0 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.6.2 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -23,7 +23,7 @@ Design informed by the project-memory subsystems of comparable agents; v1 uses a
 > Screenshots show the UI with sample data. Fastest path (full steps in [Quick start](#quick-start)):
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.1.tar.gz
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v<版本号>.tar.gz"   # 版本号见 Releases
 ```
 
 ## Contents
@@ -275,7 +275,7 @@ Pick one of two channels (**zero runtime dependencies**, no `npm install` at any
 **① GitHub tag tarball (recommended)** — install straight from a repo tag, pinned to a version:
 
 ```bash
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.6.1.tar.gz
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v<版本号>.tar.gz"   # 版本号见 Releases
 # profile: web / headless / desktop
 ```
 
@@ -297,7 +297,7 @@ DSH's plugin manager **does not support automatic updates** (the official UI sta
 
 ```bash
 # tag tarball channel: upgrading = re-run with the target version (see Releases or CHANGELOG.md)
-dsh plugin --profile web add https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/<new-version>.tar.gz
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v<new-version>.tar.gz"
 # local-clone channel: git pull; no reinstall needed (symlink takes effect)
 ```
 

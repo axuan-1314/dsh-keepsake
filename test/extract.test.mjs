@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { NOTHING_TO_SAVE, applyOps, isValidModelIndexLine, parseExtractionOutput, renderMemoryFile } from "../lib/extract.js";
+import { parseFrontmatterHead } from "../lib/manifest.js";
 
 test("isValidModelIndexLine：格式/长度/文件名一致性", () => {
   assert.equal(isValidModelIndexLine("- [Uses pnpm](uses-pnpm.md) — 包管理器选择", "uses-pnpm.md"), true);
@@ -101,6 +102,69 @@ test("applyOps: 同批 write+delete 同名按终态对账，索引不留悬挂�
     const indexPath = join(root, "MEMORY.md");
     const index = existsSync(indexPath) ? readFileSync(indexPath, "utf8") : "";
     assert.doesNotMatch(index, /foo\.md/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOps: 同批 delete→write 同名，索引必须保留该行（文件已重建，不得两头不见）", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {} };
+    // 先建一条，再在同一批里先 delete 后 write（「忘掉旧结论、换成新结论」的常见形态）。
+    // 旧实现终态对账无条件让 delete 赢 → 索引行被删，而 write 已把文件重建：
+    // 文件在盘上、索引无行，此后每轮注入都看不见它，面板文件列表却列着它。
+    applyOps(
+      root,
+      [{ action: "write", name: "old.md", type: "project", title: "Old", description: "旧结论", content: "old body" }],
+      { originSessionId: "s1", log },
+    );
+    const result = applyOps(
+      root,
+      [
+        { action: "delete", name: "old.md" },
+        { action: "write", name: "old.md", type: "project", title: "New", description: "新结论", content: "new body" },
+      ],
+      { originSessionId: "s2", log },
+    );
+    assert.equal(result.writes, 1);
+    assert.equal(result.deletes, 1);
+    // 磁盘上文件在（write 是末次动作）
+    assert.ok(existsSync(join(root, "old.md")), "delete→write 后文件必须存在");
+    // 索引行在，且指向新标题（不是被 deletedNames 剔掉）
+    const index = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.match(index, /- \[New\]\(old\.md\) — 新结论/, "delete→write 的终态是 write：索引保留该行");
+    assert.doesNotMatch(index, /\[Old\]/, "索引行须更新为新标题，不残留旧行");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOps: 同批 delete→write→delete 三连，终态取最后一次动作", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-test-"));
+  try {
+    const log = { warn: () => {} };
+    applyOps(
+      root,
+      [{ action: "write", name: "a.md", type: "project", title: "A", description: "初值", content: "b" }],
+      { originSessionId: "s1", log },
+    );
+    // 三连：写→删→写→删，末次是 delete → 文件与索引都不该有
+    const result = applyOps(
+      root,
+      [
+        { action: "write", name: "a.md", type: "project", title: "A2", description: "二值", content: "c" },
+        { action: "delete", name: "a.md" },
+        { action: "write", name: "a.md", type: "project", title: "A3", description: "三值", content: "d" },
+        { action: "delete", name: "a.md" },
+      ],
+      { originSessionId: "s2", log },
+    );
+    assert.equal(result.deletes, 2);
+    assert.equal(result.writes, 2);
+    assert.equal(existsSync(join(root, "a.md")), false, "末次 delete：文件应已入回收站/不存在");
+    const index = readFileSync(join(root, "MEMORY.md"), "utf8");
+    assert.doesNotMatch(index, /a\.md/, "末次 delete：索引不留悬挂行");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -237,4 +301,27 @@ test("applyOps: MEMORY.md 本体不可被模型写", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---- frontmatter 换行转义：三种渲染器同口径（2026-10-22 补，0.6.1 漏改的第三处）----
+// 语境：`esc` 只压 `\n` 时，值里带裸 `\r` 会在 frontmatter 里撑出跨行字段，
+// 而读侧只取首行 → description 静默截断/变空。0.6.1 声称「两处渲染器已统一」，
+// 实际只改了 renderGlobalEntry 与 renderArchivedEntry；renderMemoryFile
+// （项目条目写盘路径，pin 端点亦复用）漏改。此用例专钉 renderMemoryFile。
+
+test("renderMemoryFile：description 含裸 \r / CRLF 时必须压成单行（读回不丢内容）", () => {
+  const raw = renderMemoryFile({
+    name: "cr",
+    description: "第一段\r第二段\r\n第三段",
+    type: "project",
+    originSessionId: "s1",
+    content: "正文",
+  });
+  const head = raw.split("\n---")[0];
+  const descLine = head.split("\n").find((l) => l.startsWith("description:"));
+  assert.ok(descLine !== void 0, "description 行必须存在");
+  assert.doesNotMatch(descLine, /\r/, "description 行不得含裸 CR（否则撑出跨行、读侧截断）");
+  assert.match(descLine, /第一段 第二段 第三段/, "CR/LF 应被压成空格且内容完整");
+  const front = parseFrontmatterHead(raw);
+  assert.equal(front.description, "第一段 第二段 第三段", "读回必须拿到完整描述，不是 undefined");
 });

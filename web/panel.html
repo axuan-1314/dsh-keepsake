@@ -243,12 +243,19 @@ $("backBtn").addEventListener("click", () => {
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+/** 把响应体挂到 Error 上（半完成态端点用：archived/skipped/snapshotDir 要能被界面消费）。 */
+function withDetails(err, body) {
+  if (body && typeof body === "object") err.details = body;
+  return err;
+}
 async function api(path, options) {
   const res = await fetch("/dsh-keepsake/api/" + path, options);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // 优先后端补的中文 message，回落到错误码 body.error（旧宿主只有 error）
-    throw new Error(body.message || body.error || "HTTP " + res.status);
+    // 优先后端补的中文 message，回落到错误码 body.error（旧宿主只有 error）。
+    // 半完成态端点（如归档审计失败）会把 archived/skipped/snapshotDir 一起回传到
+    // err.details——调用方（归档流程）据此展示「哪几条没动、快照在哪」。
+    throw withDetails(new Error(body.message || body.error || "HTTP " + res.status), body);
   }
   return body;
 }
@@ -1107,7 +1114,13 @@ async function renderRuntimePage() {
           toast(L.runtimeEvictToastText(out), outSkipped.length > 0 ? "err" : "ok");
           renderRuntimePage();
         } catch (err) {
+          // 半完成态（归档审计失败）：服务端带回 archived/skipped/snapshotDir，页内如实展示
+          // 哪几条没动、快照在哪——不让「失败」只剩一句不知道发生了什么的话。
+          const d = err?.details;
+          const rows = Array.isArray(d?.skipped) ? L.runtimeSkippedRows(d.skipped) : [];
+          runtimeSkippedNotice = { scope: runtimeScope, rows };
           toast("归档失败：" + err.message, "err");
+          renderRuntimePage();
           evictBtn.disabled = false; evictBtn.textContent = "执行归档";
         }
       },

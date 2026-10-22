@@ -12,11 +12,14 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { test } from "node:test";
 import { API_PREFIX, makeApiRoutes } from "../lib/api.js";
+import { FORMAT_VERSION } from "../lib/format.js";
 import { createEntry, renderGlobalEntry, updateEntry } from "../lib/global-store.js";
-import { renderGlobalIndex, runtimeCoveredCategoriesOf, runtimeCoveredProjectFilesOf } from "../lib/index.js";
+import { apply, renderGlobalIndex, runtimeCoveredCategoriesOf, runtimeCoveredProjectFilesOf } from "../lib/index.js";
+import { __resetMetricsForTest } from "../lib/metrics.js";
+import { projectMemoryPaths } from "../lib/paths.js";
 import { compileScope, ensureCompiled, scopeDir } from "../lib/runtime.js";
-import { evictEntries } from "../lib/runtime-archive.js";
-import { resetSettingsCache } from "../lib/settings.js";
+import { evictEntries, restoreArchivedEntry } from "../lib/runtime-archive.js";
+import { resetSettingsCache, writeSettings } from "../lib/settings.js";
 
 const silentLog = { info() {}, warn() {}, error() {} };
 const FIXED_NOW = Date.UTC(2026, 9, 20, 12, 0, 0);
@@ -24,6 +27,64 @@ const FIXED_NOW = Date.UTC(2026, 9, 20, 12, 0, 0);
 function freshRoot() {
   resetSettingsCache();
   return mkdtempSync(join(tmpdir(), "dsh-keepsake-runtime-regress-"));
+}
+
+/** 最小宿主 ctx（与 runtime-inject.test.mjs 同构）：只为把 apply() 真跑起来。
+ *  **webServer.register 会把路由留在 registered 里**——这样测试能打到 apply() 真实接线的 API 面
+ *  （含 lib/index.js 里那个 onGlobalWrite 守卫），而不是自建一份「长得像」的接线。 */
+function fakeCtx() {
+  const sections = [];
+  const handlers = new Map();
+  const registered = [];
+  return {
+    ctx: {
+      logger: { info() {}, warn() {}, error() {} },
+      on(event, handler) { handlers.set(event, handler); return () => {}; },
+      effect() {},
+      inject(_deps, setup) {
+        setup({
+          effect(fn) { fn(); },
+          webServer: { register(route) { registered.push(route); return () => {}; } },
+        });
+      },
+      systemPrompt: { section(section) { sections.push(section); return () => {}; } },
+      llm: { stream() { throw new Error("不应调用"); } },
+    },
+    sections,
+    handlers,
+    registered,
+  };
+}
+
+const userMsg = (text) => ({ role: "user", content: [{ type: "text", text }] });
+
+/** 起 message 模式插件，返回「求一次注入文本」的求值器 + apply() 注册的真实 API 路由。 */
+function startMessage(root) {
+  const { ctx, handlers, registered } = fakeCtx();
+  apply(ctx, { enabled: true, storageRoot: root });
+  const handler = handlers.get("agent/pre-step");
+  assert.equal(typeof handler, "function", "message 模式应注册 pre-step");
+  return {
+    registered,
+    handler,
+    async injectTextNoCwd() {
+      const agent = { session: { header: { cwd: void 0 }, surface: { nodes: [] }, eventAt() {} } };
+      const messages = [userMsg("正常 用户 一句话")];
+      const decision = { kind: "enter", messages };
+      const out = await handler({ agent, messages, step: 1, signal: { aborted: false } }, async () => decision);
+      const injected = out.messages.find((m) => m.source?.form === "memory-context");
+      return injected === void 0 ? "" : injected.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    },
+  };
+}
+
+/** 在 apply() 注册的真实路由里找前缀路由并打一次请求（走真实 onGlobalWrite 接线）。 */
+async function callApplyApi(registered, { method, path, body }) {
+  const prefixRoute = registered.find((r) => r.kind === "prefix");
+  assert.ok(prefixRoute, "apply 应注册前缀路由");
+  const res = mockRes();
+  await prefixRoute.handler(mockReq({ method, url: path, body }), res);
+  return { status: res.status, json: res.body ? JSON.parse(res.body) : null };
 }
 
 /** 写一条全局条目（frontmatter 形态同 renderGlobalEntry）。 */
@@ -107,20 +168,41 @@ test("② runtimeCoveredCategoriesOf：只有全覆盖的分类才算覆盖；�
   }
 });
 
-test("② 只读态 stale 清单：降级期间新增的条目不得因整类去重而彻底不可见", () => {
+test("② 只读态 stale 清单：降级期间新增的条目不得因整类去重而彻底不可见", async () => {
   const root = freshRoot();
   try {
     writeGlobalEntry(root, "user-profile", "u.md", { title: "OldUser" });
     const compiled = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
     // 模拟「降级只读期间新增条目」：盘上清单还是老的（只有 u.md），盘上却多了一条
     writeGlobalEntry(root, "user-profile", "new.md", { title: "NewUser" });
-    const covered = runtimeCoveredCategoriesOf(compiled);
-    assert.ok(covered.includes("user-profile"), "清单自述全覆盖");
-    // 结论边界：清单是唯一事实源时，新条目只能靠下一次可写态编译补上；此处钉住的是
-    // 「去重判据必须来自清单自身」这一契约——不因 status=ok 就假定三分类全覆盖。
-    const other = compileScope({ storageRoot: root, scope: "global", now: FIXED_NOW });
-    assert.ok(runtimeCoveredCategoriesOf(other).includes("user-profile"));
-    assert.match(other.user.text, /NewUser/, "可写态重编后新条目进产物");
+    const stale = runtimeCoveredCategoriesOf(compiled);
+    assert.ok(stale.includes("user-profile"), "清单自述全覆盖");
+    // 关键：注入侧绝不能只信「status=ok + 三分类全覆盖」就摘掉整个分类——
+    // 那会让 NewUser 既不在产物（清单旧）也不在索引（整类被去重），彻底不可见。
+    // 故注入侧必须用「清单指纹 == 盘上候选池指纹」来判定，不一致就保守不摘（用 apply 跑真实注入链路）。
+    writeSettings(root, { runtimeEnabled: true });
+    resetSettingsCache();
+    writeFileSync(join(root, "keepsake-format.json"), JSON.stringify({ formatVersion: FORMAT_VERSION + 1 }) + "\n", "utf8");
+    const { injectTextNoCwd } = startMessage(root);
+    const text = await injectTextNoCwd();
+    assert.match(text, /### 用户个人背景 \(user-profile\)/, "只读态 + stale 清单 → 索引照旧渲染（不整类摘掉）");
+    assert.match(text, /\[NewUser\]/, "stale 清单期间新增的条目在索引里可见（不两头不可见）");
+    assert.match(text, /\[runtime readOnly/, "只读态照常记告警");
+    // 反向：指纹一致时（无外部改动）覆盖集照常生效——三分类不重复渲染
+    const root2 = freshRoot();
+    try {
+      writeGlobalEntry(root2, "user-profile", "u.md", { title: "OnlyUser" });
+      ensureCompiled({ storageRoot: root2, scope: "global", trigger: "test", log: silentLog });
+      writeSettings(root2, { runtimeEnabled: true });
+      resetSettingsCache();
+      writeFileSync(join(root2, "keepsake-format.json"), JSON.stringify({ formatVersion: FORMAT_VERSION + 1 }) + "\n", "utf8");
+      const { injectTextNoCwd: inject2 } = startMessage(root2);
+      const text2 = await inject2();
+      assert.match(text2, /\[OnlyUser\]/, "指纹一致 → 条目由产物承载");
+      assert.doesNotMatch(text2, /### 用户个人背景 \(user-profile\)/, "指纹一致 → 索引不重复渲染（去重生效）");
+    } finally {
+      rmSync(root2, { recursive: true, force: true });
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -148,28 +230,33 @@ test("③ 分类目录读失败 → status=error 且保留上一版产物（不�
   }
 });
 
+// 单条读失败的独立场景在本机造不出来（Windows 上 chmod 无效、目录占位会被 isFile() 过滤掉，
+// 走不到 readEntryFile），故该分支由上面那条目录级 ENOTDIR 用例覆盖——两者都会上抛并让
+// compileScope 走 status=error。readEntryFile 里只放行 ENOENT 的判据由代码注释与本文件
+// 「读失败不得静默」的总体约束守住。
+
 // ---- ④ runtime 端点成功后产物必须还在 ----
 
 test("④ pin 成功后产物仍在（写后全失效不得删掉刚重编的结果）", async () => {
+  __resetMetricsForTest();
   const root = freshRoot();
   try {
+    writeSettings(root, { runtimeEnabled: true });
     writeGlobalEntry(root, "user-profile", "u.md", { title: "U" });
-    ensureCompiled({ storageRoot: root, scope: "global", trigger: "test", log: silentLog });
-    // 复刻真实接线：runtimeHandled 时不得再全量失效
-    const onGlobalWrite = (opts) => {
-      if (opts?.runtimeHandled !== true) {
-        rmSync(join(root, "runtime"), { recursive: true, force: true });
-      }
-    };
-    const pin = await callApi(root, {
+    // 先让注入链路编译一次产物
+    const plugin = startMessage(root);
+    await plugin.injectTextNoCwd();
+    assert.ok(existsSync(join(scopeDir(root, "global"), "USER.md")), "前置：产物已生成");
+    // 打 apply() 注册的真实路由：若 lib/index.js 的 runtimeHandled 守卫被摘掉，
+    // 它会真的执行 invalidateRuntimeAfterApiWrite（删产物），下面两条断言随即变红。
+    const pin = await callApplyApi(plugin.registered, {
       method: "POST",
       path: `${API_PREFIX}runtime/global/pin`,
       body: { rootKey: "global:user-profile", file: "u.md", pinned: true },
-      onGlobalWrite,
     });
-    assert.equal(pin.status, 200);
-    assert.ok(existsSync(join(scopeDir(root, "global"), "USER.md")), "pin 后产物必须还在");
-    const got = await callApi(root, { method: "GET", path: `${API_PREFIX}runtime/global` });
+    assert.equal(pin.status, 200, "pin 应成功");
+    assert.ok(existsSync(join(scopeDir(root, "global"), "USER.md")), "pin 后产物必须还在（守卫真的生效）");
+    const got = await callApplyApi(plugin.registered, { method: "GET", path: `${API_PREFIX}runtime/global` });
     assert.equal(got.status, 200, "面板随后 GET 必须拿得到产物（不能 404）");
     assert.match(got.json.user.text, /【关键】/, "pin 结果体现在产物里");
   } finally {
@@ -224,6 +311,30 @@ test("⑤ 归档条目被面板覆写：origin 三字段保留，仍可移回（
     createEntry(root, "work-profile", { title: "Normal", name: "n.md", content: "x" });
     updateEntry(root, "work-profile", "n.md", { content: "y" });
     assert.doesNotMatch(readFileSync(join(root, "global", "work-profile", "n.md"), "utf8"), /originProject/);
+
+    // 真跑一次「从归档移回」：证明被编辑过之后 origin 仍可用（不是只断言字段文本）
+    const restored = restoreArchivedEntry({ storageRoot: root, file: "archived.md", log: silentLog, now: FIXED_NOW });
+    assert.match(restored.to, /projects\/demo-0123456789abcdef\/memory\//, "按 originProject 落回原项目");
+    const back = readFileSync(join(root, ...restored.to.split("/")), "utf8");
+    assert.match(back, /新正文/, "移回保留编辑后的正文");
+    assert.doesNotMatch(back, /originProject/, "移回后剥掉 origin（恢复原 schema）");
+    assert.equal(existsSync(join(dir, "archived.md")), false, "归档副本已移走");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("⑤ 普通条目移入 long-term 时补写 origin（否则日后移回恒 400）", () => {
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "要归档的", name: "to-archive.md", content: "正文" });
+    const moved = updateEntry(root, "work-profile", "to-archive.md", { toCategoryId: "long-term" });
+    assert.notEqual(moved, null);
+    const archived = readFileSync(join(root, "global", "long-term", moved.name), "utf8");
+    assert.match(archived, /originType: "work-profile"/, "记下原分类");
+    // 由此可移回（不再因缺 origin 报 400）
+    const restored = restoreArchivedEntry({ storageRoot: root, file: moved.name, log: silentLog, now: FIXED_NOW });
+    assert.match(restored.to, /global\/work-profile\//, "移回原分类");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -247,11 +358,12 @@ test("⑥ GET state 必带 settings.runtimeEnabled；盘上开启时如实回显
 
 // ---- ⑦ 项目条目去重（§10.3 项目侧） ----
 
-test("⑦ 项目条目：已进产物的索引行被剔除；未进产物的（reference）照旧留在索引", () => {
+test("⑦ 项目条目：已进产物的索引行被剔除；未进产物的（reference）照旧留在索引（走真实注入链路）", async () => {
+  __resetMetricsForTest();
   const root = freshRoot();
   try {
-    const scope = "projects/demo-0123456789abcdef";
-    const memoryDir = join(root, ...scope.split("/"), "memory");
+    // 让 cwd 落进这个项目目录，注入侧才会走项目 scope（projectMemoryPaths 按 cwd 算 slug+hash）
+    const { memoryDir } = projectMemoryPaths(root, root);
     mkdirSync(memoryDir, { recursive: true });
     const writeEntry = (name, type, title) => writeFileSync(
       join(memoryDir, `${name}.md`),
@@ -265,19 +377,24 @@ test("⑦ 项目条目：已进产物的索引行被剔除；未进产物的（r
       "- [项目决策](proj.md) — 钩子\n- [参考链接](ref.md) — 钩子\n",
       "utf8",
     );
-    const compiled = compileScope({ storageRoot: root, scope, now: FIXED_NOW });
-    const covered = runtimeCoveredProjectFilesOf(compiled);
-    assert.deepEqual(covered, ["proj.md"], "只有进了产物的条目算覆盖（reference 不进正文）");
-    // 索引侧过滤：proj 行消失、ref 行留下（同 indexTextFor 的剔行口径）
-    const remaining = "- [项目决策](proj.md) — 钩子\n- [参考链接](ref.md) — 钩子\n"
-      .split("\n")
-      .filter((line) => {
-        const matched = line.match(/^\s*-\s*\[[^\]]*\]\(([^)]+\.md)\)/i);
-        return matched === null || !covered.includes(matched[1].trim());
-      })
-      .join("\n");
-    assert.match(remaining, /\[参考链接\]\(ref\.md\)/, "reference 条目必须留在索引（去重不等于消失）");
-    assert.doesNotMatch(remaining, /proj\.md/, "已进产物的条目不重复出现");
+    writeSettings(root, { runtimeEnabled: true });
+    resetSettingsCache();
+    const plugin = startMessage(root);
+    // 用 cwd=root 触发项目 scope（与 index.js 的 runtimeScopeFor/memoryDirFor 同口径）
+    const agent = { session: { header: { cwd: root }, surface: { nodes: [] }, eventAt() {} } };
+    const handler = plugin.handler;
+    const messages = [userMsg("正常 用户 一句话")];
+    const out = await handler({ agent, messages, step: 1, signal: { aborted: false } }, async () => ({ kind: "enter", messages }));
+    const injected = out.messages.find((m) => m.source?.form === "memory-context");
+    assert.ok(injected, "应注入记忆块");
+    const text = injected.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+
+    // 产物承载 proj（进了 MEMORY.md 段）；索引里不该再出现 proj 行
+    assert.match(text, /\[项目决策\]/, "proj 条目由 runtime 段承载");
+    const indexSection = text.split("## Project memory index (MEMORY.md)")[1] ?? "";
+    assert.doesNotMatch(indexSection, /\[项目决策\]\(proj\.md\)/, "已进产物的项目条目不在索引里重复出现");
+    // reference 不进产物 → 必须留在索引（去重不等于消失）
+    assert.match(indexSection, /\[参考链接\]\(ref\.md\)/, "reference 条目照旧留在索引");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -287,12 +404,19 @@ test("⑦ 项目条目：已进产物的索引行被剔除；未进产物的（r
 
 test("⑧ buildMemoryContext：内容段全被截空时返回空文本（不发只剩声明+告警的 500 字符壳）", async () => {
   const { buildMemoryContext, MEMORY_CONTEXT_INTRO, MEMORY_CONTEXT_SUPERSEDE_NOTE } = await import("../lib/inject-channel.js");
-  const tiny = buildMemoryContext(
-    { persona: "A".repeat(3000) },
-    { maxChars: 400, intro: MEMORY_CONTEXT_INTRO, supersedeNote: MEMORY_CONTEXT_SUPERSEDE_NOTE },
-  );
+  const opts = { intro: MEMORY_CONTEXT_INTRO, supersedeNote: MEMORY_CONTEXT_SUPERSEDE_NOTE };
+  const tiny = buildMemoryContext({ persona: "A".repeat(3000) }, { ...opts, maxChars: 400 });
   assert.equal(tiny.text, "", "零内容 = 不注入（调用侧靠 text==='' 判）");
   assert.equal(tiny.truncated, true, "仍如实标记「截过」");
+  assert.equal(tiny.tokens, 0, "不注入的东西不该记 token");
+  // 边界：预算恰好只够截出「…」时也不能当有内容（否则会漏出一个含 intro+提示行、
+  // 却没有任何记忆的块——正是这条判断要消灭的东西）。逐个预算扫一遍，全不许出现「只有省略号」的块。
+  for (let maxChars = 401; maxChars <= 470; maxChars += 1) {
+    const out = buildMemoryContext({ persona: "A".repeat(3000) }, { ...opts, maxChars });
+    if (out.text === "") continue;
+    const body = out.text.replace(/<memory-context>|<\/memory-context>/g, "").replace(MEMORY_CONTEXT_INTRO, "").replace(MEMORY_CONTEXT_SUPERSEDE_NOTE, "");
+    assert.ok(/[^…\s]/.test(body), `maxChars=${maxChars} 时不应发出只剩省略号的空壳块`);
+  }
 });
 
 // ---- ⑨ 归档审计失败不得让余下候选静默失踪 ----
@@ -326,6 +450,15 @@ test("⑨ 审计写失败：已归档条数如实回报，余下候选进 skippe
     assert.equal(thrown.details.skipped.length, 2, "余下 2 条必须进 skipped（不静默失踪）");
     assert.ok(thrown.details.skipped.every((s) => s.reason === "audit-failed"));
     assert.ok(thrown.details.snapshotDir !== null, "快照目录信息随错误带回");
+    // 最关键的一条：被报为 skipped 的条目**源文件必须还在原处**。
+    // （0.6.1 首版把守卫放在搬移之后，导致「已搬走、源已删」的条目被报成 skipped——进度谎报。）
+    const workDir = join(root, "global", "work-profile");
+    for (const s of thrown.details.skipped) {
+      assert.ok(existsSync(join(workDir, s.file)), `skipped 的 ${s.file} 源文件必须仍在原位`);
+    }
+    const archivedFile = candidates.find((c) => !thrown.details.skipped.some((s) => s.file === c.file));
+    assert.ok(archivedFile, "应有且只有一条真正归档");
+    assert.equal(existsSync(join(workDir, archivedFile.file)), false, "已归档的那条源文件应已移走");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

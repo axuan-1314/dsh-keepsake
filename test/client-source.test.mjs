@@ -278,7 +278,12 @@ test("结构钉：坏时间戳不渲染「null 天后过期」——recentExpire
 });
 
 test("结构钉：api() 报错优先取后端 message（fallback 到 error）", () => {
-  assert.match(panelSrc, /throw new Error\(body\.message \|\| body\.error/, "优先展示中文 message，回落错误码");
+  // 允许外层包一层（withDetails 把半完成态端点的 archived/skipped 挂到 err.details），
+  // 但「message 优先、error 回落」这个取值顺序必须原样保留。
+  assert.match(panelSrc, /new Error\(body\.message \|\| body\.error/, "优先展示中文 message，回落错误码");
+  assert.match(panelSrc, /throw .*new Error\(body\.message \|\| body\.error/, "该 Error 必须被 throw 出去");
+  // 半完成态端点的明细不能丢：details 必须挂到抛出的 Error 上（面板据此展示 skipped）
+  assert.match(panelSrc, /err\.details = body/, "响应体挂到 Error.details");
 });
 
 test("结构钉：危险/耗时按钮 busy 态（保存人设/导出/清空/恢复）", () => {

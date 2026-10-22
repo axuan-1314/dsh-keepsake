@@ -305,7 +305,16 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 ⑬ runtime 端点（pin/evict/restore）成功后产物必须仍在（写后失效不得删掉刚重编的结果），非 runtime 写路径照常全失效；
 ⑭ 归档条目被普通编辑覆写时 origin 三字段保留（否则移回恒 400）；
 ⑮ `GET /state.settings` 恒带 `runtimeEnabled`（面板开关状态的真相源）；
-⑯ 归档审计写失败时已归档条数如实回报、余下候选进 `skipped[reason=audit-failed]`（不静默中断）。
+⑯ 归档审计写失败时已归档条数如实回报、余下候选进 `skipped[reason=audit-failed]`（不静默中断），且**被跳过条目的源文件必须仍在原位**（守卫在循环最前，不许出现「已搬走却报 skipped」的谎报）。
+
+**0.6.1 第二轮复查追加**（同样有测试钉住，且 11 项变异全部被抓住）：
+
+⑰ **淘汰留痕行计入配额**：`bytes` 必须 ≤ 配额；详细行放不下先降级为短行（`[runtime evicted: N over quota; see keepsake panel]`），短行仍放不下才退条目——记忆内容永远优先于提示的详细程度；
+⑱ **只读态按指纹校验**：盘上清单 `sourceHash` 与当前候选池一致才信任其覆盖集；不一致（降级期间有外部改动）→ 不做去重 + usage 记 `[runtime readOnly, stale artifacts: index not deduplicated]`；
+⑲ **移入归档区必写 origin**：手工/面板把条目移进 `long-term` 时记下原分类（否则日后移回恒 400）；移出时剥掉；
+⑳ **`runtimeHandled` 端点仍清进程内 memo**（产物不动，但注入侧不得在 TTL 内拿旧文本/旧覆盖集）；
+㉑ **零内容壳块连「只剩省略号」一起判空**（逐预算扫描 401..470 不得出现无记忆块）；
+㉒ **frontmatter 单行值转义覆盖 `\r`**（两处渲染器口径统一为 `[\r\n]+`），避免跨行字段被读侧截断。
 
 ---
 

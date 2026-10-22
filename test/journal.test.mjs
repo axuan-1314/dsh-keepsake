@@ -676,3 +676,44 @@ test("journal：redacted 脏值归一（负/小数/NaN/非数字 → 0 即不写
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- P3-a abandoned 行封顶（2026-10-22 补）----
+// 语境：abandoned 行原「永不裁」→ 主档在 rotateAt 之外无限增长（protectedCount 越大，
+// 触发线越高，但每次触发仍是整档读+写）。修法：盘上只留最近 200 条 abandoned 行，
+// 更旧的裁掉并把计数写进 sidecar，保证「已放弃 N 轮」跨重启不缩水。
+
+test("journal：abandoned 行超上限时裁旧留新，计数经 sidecar 跨重启不丢", async () => {
+  const root = tempRoot();
+  try {
+    const { log } = spyLog();
+    // rotateAt 设小，逼出轮转；abandoned 上限是模块常量 200，故造 260 条
+    const journal = createJournal({ storageRoot: root, rotateAt: 60, keepOnRotate: 20, log });
+    for (let i = 0; i < 260; i += 1) {
+      await journal.recordRun({
+        sessionId: "s1",
+        from: i * 10,
+        to: i * 10 + 10,
+        cursorAfter: i * 10 + 10,
+        outcome: "abandoned",
+        reason: "no-cwd",
+        at: 1700000000000 + i * 1000,
+      });
+    }
+    const total = journal.snapshot().abandonedCount;
+    assert.equal(total, 260, "运行期累计计数必须准确");
+    // 盘上 abandoned 行数应被限到 200（不是 260）
+    const abandonedOnDisk = lines(root).filter((l) => l.includes('"abandoned"'));
+    // 上限语义是「至少裁过一次后不再无限增长」：两次轮转之间会再长一段（触发线 = rotateAt+protected），
+    // 故合法上界 = 200 + 一个触发周期的余量，绝不是原样 260。
+    assert.ok(abandonedOnDisk.length < 260, `必须真的裁掉过（否则档无限长），实际 ${abandonedOnDisk.length}`);
+    assert.ok(abandonedOnDisk.length <= 200 + 60, `裁后行数受上限约束（200 + 一个轮转周期），实际 ${abandonedOnDisk.length}`);
+    // sidecar 必须存在
+    assert.equal(existsSync(join(root, `${JOURNAL_FILE_NAME}.abandoned-truncated.json`)), true, "裁掉的行数必须存档");
+
+    // 重启（新实例重放）：计数不得缩水
+    const revived = createJournal({ storageRoot: root, rotateAt: 60, keepOnRotate: 20, log });
+    assert.equal(revived.snapshot().abandonedCount, 260, "重启后「已放弃 N 轮」不得因裁行而缩水");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

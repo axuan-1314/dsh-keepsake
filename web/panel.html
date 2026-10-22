@@ -883,13 +883,17 @@ async function renderRuntimePage() {
   const opts = L.runtimeScopeOptions(st.projects);
   // 选中 scope 已消失（项目被清掉/切换后残留）→ 先回落全局再拉产物（不拿必 404 的 scope 打空转）
   if (!opts.some((o) => o.scope === runtimeScope)) runtimeScope = L.RUNTIME_GLOBAL_SCOPE;
-  // 产物读取：404（尚未编译/未失效重建）与真错误都如实显示服务端 message，不冒充成功
+  // 产物读取：404（尚未编译/未失效重建）与真错误都如实显示服务端 message，不冒充成功。
+  // 「未编译过」是正常初态而非故障：单独给一句人话引导，别把 code 式 message 直接拼在
+  // 「未能读取产物：」后面（那会读成「未能读取产物：无编译产物」，绕且像是出错）。
   let data = null;
   let loadError = "";
+  let notCompiledYet = false;
   try {
     data = await api("runtime/" + runtimeScope);
   } catch (err) {
     loadError = err.message;
+    notCompiledYet = err.code === "E_NO_ARTIFACTS" || /无编译产物/.test(String(err.message ?? ""));
   }
   if (seq !== pageRenderSeq) return;
   const badge = L.runtimeStatusBadge(data ? data.status : null);
@@ -952,8 +956,10 @@ async function renderRuntimePage() {
       <div class="card"><h3>MEMORY.md <span class="badge">只读</span></h3>
         <div class="meta">${esc(L.RUNTIME_READONLY_NOTE)}</div>
         <pre class="codeBox">${esc(data.memory?.text ?? "")}</pre></div>
-    </div>` : `<div class="card"><h3>编译产物</h3><div class="empty">未能读取产物：${esc(loadError || "未知错误")}</div>
-      <div class="meta">点上方「重新编译」可立即生成；未编译过属正常态（注入前会懒触发编译）。</div></div>`}
+    </div>` : `<div class="card"><h3>编译产物</h3><div class="empty">${notCompiledYet
+      ? "该范围尚未编译——点上方「重新编译」立即生成（不开运行时记忆层也不影响：注入前会懒触发编译）"
+      : `未能读取产物：${esc(loadError || "未知错误")}`}</div>
+      <div class="meta">${notCompiledYet ? "" : "点上方「重新编译」可再试一次；若持续失败，请查看服务端日志。"}</div></div>`}
     <div class="card" data-pinCard></div>
     <div class="card" data-candCard></div>
     <div data-restoreHost></div>`;

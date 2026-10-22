@@ -582,3 +582,84 @@ test("提取侧口径：renderGlobalIndex 默认剔除归档，includeArchived=t
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- P2-d 单行超长挤掉同类其它行必须可见（2026-10-22 补）----
+// 语境：每类字符预算裁剪（clipLinesToChars）是「从尾部往前装、装不下即停」。
+// 若某条索引行本身超预算（如描述极长），保它就必然丢掉前面所有能装下的行——
+// 用户看到某分类只剩 1 条、面板里却有 8 条，无从解释。修法：追加可见提示行。
+
+test("renderGlobalIndex：单行超长挤掉同类其它行时必须留可见提示", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    // 8 条正常行 + 1 条超长行（尾部，保最新会优先保它）
+    const lines = [];
+    for (let i = 0; i < 8; i += 1) lines.push(`- [W${i}](w${i}.md) — 正常描述 ${i}`);
+    lines.push(`- [Huge](huge.md) — ${"X".repeat(3000)}`);
+    writeFileSync(join(catDir, "MEMORY.md"), lines.join("\n") + "\n", "utf8");
+
+    const out = renderGlobalIndex(root, { perCategoryChars: 1200 });
+    const body = out.text;
+    // 只能保下超长那条（装不下别的），但必须告知这一点
+    assert.match(body, /另有 \d+ 条因单条过长未进注入/, "单行超长挤掉其它行时必须留可见提示");
+    assert.match(body, /Huge/, "超长那条本身仍在（保最新）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("renderGlobalIndex：正常裁剪（无超长行）不出现该提示", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    const lines = [];
+    for (let i = 0; i < 20; i += 1) lines.push(`- [W${i}](w${i}.md) — 正常描述 ${i} ${"d".repeat(50)}`);
+    writeFileSync(join(catDir, "MEMORY.md"), lines.join("\n") + "\n", "utf8");
+    const out = renderGlobalIndex(root, { perCategoryChars: 600 });
+    assert.doesNotMatch(out.text, /因单条过长未进注入/, "正常裁剪（多条能装下）不该出这条提示");
+    // 仍然做了裁剪（不是全留）
+    assert.ok((out.text.match(/- \[W\d+\]/g) ?? []).length < 20, "预算生效，确实裁掉了一部分");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- runtimeMemo.clear 的行为面测试（2026-10-22 补，替代纯源码正则）----
+// 语境：此前只有 `assert.match(src, /runtimeMemo\.clear\(\)/)` 这种「文本里有这串字符」的测试——
+// 把该语句删掉/挪进永不执行的分支，正则仍绿而行为已坏（对抗复查实测 M16d 存活）。
+//
+// 设计承诺（RUNTIME-FORMAT §八）：同 scope 短 TTL 记忆 RUNTIME_MEMO_TTL_MS=2000，
+// 写盘路径显式清记忆；**外部改动最多滞后一个 TTL**（这是设计内取舍，不是缺陷）。
+// 故本用例按设计承诺测两件事：
+//   ① 同一 TTL 窗口内（不经过写盘接线）返回一致结果 —— 记忆化生效、不抖动；
+//   ② 越过 TTL 后必须重新求值、看到盘上新内容 —— 记忆会过期而不是永久钉死。
+// 「清 memo 后立即可见」由写盘路径（invalidateRuntimeAfterWrite）保证，其源码钉
+// 在上一例；此处不重复断言设计外的承诺。
+
+test("runtimeMemo 行为面：TTL 内结果稳定、越过 TTL 必须看到盘上新内容", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    createEntry(root, "work-profile", { title: "Same", description: "AAAA", content: "正文" });
+    writeSettings(root, { runtimeEnabled: true });
+    const { injectText } = startMessage(root);
+    const first = await injectText();
+    assert.match(first, /AAAA/, "首轮应含旧钩子");
+
+    // TTL 内：再注入一次应命中记忆（同一份旧文本）——记忆化确实生效
+    const second = await injectText();
+    assert.match(second, /AAAA/, "TTL 窗口内允许滞后（设计承诺），不得抖动成空");
+
+    // 等长改写 + 越过 TTL：必须重新求值并看到新钩子
+    createEntry(root, "work-profile", { title: "Same", description: "BBBB", content: "正文" });
+    await new Promise((r) => setTimeout(r, 2200)); // > RUNTIME_MEMO_TTL_MS(2000)
+    const third = await injectText();
+    assert.match(third, /BBBB/, "越过 TTL 必须看到盘上新内容（记忆会过期，不是永久钉死）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

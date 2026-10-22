@@ -253,7 +253,7 @@ test("顺序装填：装不下即停（后续小条目也不再装）+ 淘汰候
     for (const entry of evicted) {
       assert.equal(entry.rootKey, "global:work-profile");
       assert.equal(entry.reason, "quota");
-      assert.equal(entry.firstSeenAt, compiled.compiledAt);
+      assert.equal(entry.lastSeenAt, compiled.compiledAt);
       assert.ok(entry.bytes > 0);
     }
     // 淘汰候选每次编译全量重算（不是累积）

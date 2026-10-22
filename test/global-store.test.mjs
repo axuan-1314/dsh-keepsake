@@ -590,7 +590,7 @@ test("persona：损坏回退出厂 + corrupt 标记 + 写前备份", () => {
   }
 });
 
-test("sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
+test("sweepTmpOrphans：到龄的 .tmp-* 孤儿与陈旧 staging 清扫", () => {
   const root = freshRoot();
   try {
     const sRoot = root;
@@ -598,11 +598,32 @@ test("sweepTmpOrphans：.tmp 孤儿与陈旧 staging 清扫", () => {
     mkdirSync(join(gDir, "long-term"), { recursive: true });
     writeFileSync(join(gDir, "long-term", "a.md.tmp-1-2"), "x", "utf8");
     writeFileSync(join(sRoot, "settings.json.tmp-1-2"), "x", "utf8");
+    // 2026-10-22：`.tmp-*` 改为到龄才清（此前无条件删 → 会误删其它实例在途写入的 tmp）
+    ageFile(join(gDir, "long-term", "a.md.tmp-1-2"), 2 * 3600_000);
+    ageFile(join(sRoot, "settings.json.tmp-1-2"), 2 * 3600_000);
     mkdirSync(join(sRoot, "global.staging-1-2"), { recursive: true });
     const removed = sweepTmpOrphans(sRoot);
     assert.ok(removed >= 2);
     assert.ok(!existsSync(join(gDir, "long-term", "a.md.tmp-1-2")));
     assert.ok(!existsSync(join(sRoot, "settings.json.tmp-1-2")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：在途 .tmp-*（mtime 新鲜）绝不被清扫——多实例共用 storageRoot 时不误删", () => {
+  const root = freshRoot();
+  try {
+    const gDir = globalRoot(root);
+    mkdirSync(join(gDir, "long-term"), { recursive: true });
+    // 模拟另一实例**正在写**的临时档：名字带 .tmp-<pid>-<ts>，mtime 是现在
+    const inflight = join(gDir, "long-term", "b.md.tmp-99999-" + Date.now());
+    writeFileSync(inflight, "在途内容，不得删除", "utf8");
+    const before = existsSync(inflight);
+    sweepTmpOrphans(root);
+    assert.equal(before, true);
+    assert.equal(existsSync(inflight), true, "在途 tmp（未到龄）绝不能被清扫删掉");
+    assert.equal(readFileSync(inflight, "utf8"), "在途内容，不得删除");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -720,6 +741,23 @@ test("未来时间戳条目不再永生（prune 判龄同源 recentTsOf）", () 
     const { removed, kept } = pruneRecentActivity(root, { keepCount: 30, keepDays: 30 });
     assert.equal(removed, 1);
     assert.equal(kept, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：用户手建的 `<名>.tmp-notes.md` 不被当原子写孤儿删掉", () => {
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    // 用户/用户工具手建的正常条目，名字里恰含 .tmp-（不是原子写中间档）
+    const userFile = join(catDir, "draft.tmp-notes.md");
+    writeFileSync(userFile, "用户手建的正经条目", "utf8");
+    ageFile(userFile, 5 * 3600_000); // 即使很老也不该被删
+    sweepTmpOrphans(root);
+    assert.equal(existsSync(userFile), true, "含 .tmp- 但不是原子写形态的文件必须保留");
+    assert.equal(readFileSync(userFile, "utf8"), "用户手建的正经条目");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

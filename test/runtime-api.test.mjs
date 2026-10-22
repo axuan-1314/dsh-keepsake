@@ -3,7 +3,7 @@
 // 与 test/runtime-compile.test.mjs 分层：那边验编译器纯函数与产物落盘；这边验端点契约与
 // 「搬移唯一入口」（lib/runtime-archive.js）的全序列副作用——快照/审计/索引对账/重编无断链。
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -663,9 +663,15 @@ test("sweepTmpOrphans：认领 runtime/ 下 .tmp- 残留（根与 scope 目录�
     writeProjectEntry(root, PROJECT_SCOPE, "p.md", { title: "P", description: "d" });
     ensureCompiled({ storageRoot: root, scope: PROJECT_SCOPE });
     // 造残留：runtime 根（compile-journal 轮转 tmp）、global scope（原子写 tmp）、项目 scope
-    writeFileSync(join(root, "runtime", "compile-journal.jsonl.tmp-1-2"), "half", "utf8");
-    writeFileSync(join(root, "runtime", "global", "runtime.json.tmp-3-4"), "half", "utf8");
-    writeFileSync(join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5-6"), "half", "utf8");
+    // 2026-10-22：`.tmp-*` 改为到龄才清（防误删另一实例在途写入），故先造陈旧 mtime。
+    const old = (Date.now() - 3 * 3_600_000) / 1000;
+    const tmp1 = join(root, "runtime", "compile-journal.jsonl.tmp-1-2");
+    const tmp2 = join(root, "runtime", "global", "runtime.json.tmp-3-4");
+    const tmp3 = join(root, "runtime", ...PROJECT_SCOPE.split("/"), "USER.md.tmp-5-6");
+    writeFileSync(tmp1, "half", "utf8");
+    writeFileSync(tmp2, "half", "utf8");
+    writeFileSync(tmp3, "half", "utf8");
+    for (const f of [tmp1, tmp2, tmp3]) utimesSync(f, old, old);
     const removed = sweepTmpOrphans(root);
     assert.equal(removed, 3, "三处 runtime tmp 全部认领");
     assert.equal(existsSync(join(root, "runtime", "compile-journal.jsonl.tmp-1-2")), false);
@@ -689,7 +695,9 @@ test("restoreBackup 成功后 runtime 全失效（备份项目集与现存集可
     const backupId = createBackup(root, "test");
     assert.equal(restoreBackup(root, backupId), true);
     assert.equal(existsSync(runtimeManifest), false, "备份恢复后 runtime 全部失效");
-    assert.ok(existsSync(join(root, "runtime", "compile-journal.jsonl")) || true); // journal 若存在也不受影响
+    // compile-journal 在 runtime 根（不在 scope 目录内），全失效只清 scope 目录 → 观测日志保留。
+    // 这是真实不变量（此前写成 `|| true` 恒真断言，等于没测）。
+    assert.ok(existsSync(join(root, "runtime", "compile-journal.jsonl")), "scope 失效不删编译观测日志（它在 runtime 根）");
     // 自愈：下一次 ensureCompiled 重编
     const manifest = ensureCompiled({ storageRoot: root, scope: "global" });
     assert.equal(manifest.status, "ok");

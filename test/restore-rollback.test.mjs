@@ -126,10 +126,13 @@ test("restoreBackup：projects 拷贝中途失败 → 本体未被换动，恢�
     });
     // 拷贝失败只污染 staging：projects/ 本体从未被改名换动，逐字节完好
     assert.equal(sameTree(join(root, "projects"), live.projects), true, "projects/ 必须完整保留恢复前内容");
-    // staging 是拷贝中转，失败后被清；没有 retired 副本可保留
-    assert.deepEqual(leftovers(root), [], "回滚成功后不得遗留 staging/retired 目录");
-    // 消息如实：没有 retired 副本可保留，就不许谎称「已保留」
-    assert.doesNotMatch(thrown.message, /已保留/);
+    // staging 是拷贝中转，失败后被清；global 的 retired 必须保留（2026-10-22 订正：
+    // global 段已换入成功，那份 retired 是恢复前全局数据的唯一副本，提前清掉会让
+    // 用户在「global 已变、projects 还是旧的」的半途态里无材料可回滚）。
+    assert.deepEqual(leftovers(root).filter((n) => n.includes(".staging-")), [], "staging 中转目录必须清干净");
+    assert.equal(leftovers(root).filter((n) => n.startsWith("global.retired-")).length, 1, "global.retired-* 必须保留");
+    // 消息如实：确实留下了 retired 副本，就必须说「已保留」（不许漏报）
+    assert.match(thrown.message, /已保留/, "已留下 retired 副本时错误消息必须如实点名");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -156,7 +159,12 @@ test("restoreBackup：projects 换入 rename 失败且回滚也失败 → retire
     assert.equal(rescues.length, 1, "回滚 rename 失败时必须保留唯一的 projects.retired-* 好副本");
     assert.ok(sameTree(join(root, rescues[0]), live.projects), "retired 副本内容必须与恢复前一致");
     assert.equal(existsSync(pRoot), false, "projects/ 本体不得残留半成品");
-    assert.deepEqual(leftovers(root), rescues, "只允许遗留 retired 抢救副本，staging 必须清掉");
+    // 2026-10-22 订正：global 段本轮已换入成功，按新语义其 retired 也保留（半途态可回滚），
+    // 故允许两个 retired-*；staging 中转仍必须清干净。
+    const remaining = leftovers(root);
+    assert.deepEqual(remaining.filter((n) => n.includes(".staging-")), [], "staging 中转必须清掉");
+    assert.equal(remaining.filter((n) => n.startsWith("projects.retired-")).length, 1, "projects.retired-* 必须保留");
+    assert.equal(remaining.filter((n) => n.startsWith("global.retired-")).length, 1, "global.retired-* 也必须保留（半途态回滚材料）");
     assert.ok(thrown.message.includes(rescues[0]), "错误消息必须点名保留目录");
     assert.match(thrown.message, /切勿删除/);
     assert.match(thrown.message, /已保留/);
@@ -165,9 +173,9 @@ test("restoreBackup：projects 换入 rename 失败且回滚也失败 → retire
   }
 });
 
-// ---- 退役副本清理中断：绝不回滚（否则会把删残的副本换回本体），消息如实 ----
+// ---- 半途态 / 清理中断：绝不回滚删数据，消息如实 ----
 
-test("restoreBackup：退役副本清理中途失败 → 绝不回滚删数据，后续失败时消息如实称「完整性未确认」", () => {
+test("restoreBackup：global 换入成功后 projects 失败 → global.retired 完整保留，消息称「已保留」", () => {
   const root = freshRoot();
   try {
     const backupId = makeBackup(root);
@@ -198,9 +206,10 @@ test("restoreBackup：退役副本清理中途失败 → 绝不回滚删数据�
     assert.deepEqual(listEntries(root, "long-term").map((e) => e.title), ["备份全局"], "global/ 本体应为恢复后的备份内容");
     const rescues = readdirSync(root).filter((n) => n.startsWith("global.retired-"));
     assert.equal(rescues.length, 1, "清理失败的退役副本必须保留在盘上（未被回滚删掉）");
-    // 消息如实：清理中断/完整性未确认，绝不谎称「已保留」
-    assert.match(thrown.message, /清理中断|完整性未确认/);
-    assert.doesNotMatch(thrown.message, /已保留/);
+    // 2026-10-22 订正语义：清理已挪到「两段都换入成功之后」，故 projects 拷贝失败时
+    // 压根没走到 cleanupRetired——global.retired 是**完整未动**的（不是清理中断的残档），
+    // 消息按「已保留」如实报告才对；此前的「完整性未确认」是旧时序下的产物。
+    assert.match(thrown.message, /已保留/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -340,7 +349,7 @@ test("sweepTmpOrphans：名字解析不出时间戳的 retired-* 保守保留（
   }
 });
 
-test("sweepTmpOrphans：staging-*（拷贝中转、新建目录）维持 mtime 判法；.tmp-* 孤儿照清", () => {
+test("sweepTmpOrphans：staging-* 与 .tmp-* 同用「到龄才清」判法（在途一律不动）", () => {
   const root = freshRoot();
   try {
     const freshStaging = join(root, `global.staging-${process.pid}-${Date.now()}`);
@@ -351,15 +360,89 @@ test("sweepTmpOrphans：staging-*（拷贝中转、新建目录）维持 mtime �
     mkdirSync(staleStaging, { recursive: true });
     const old = Date.now() - 3 * 3_600_000;
     utimesSync(staleStaging, old / 1000, old / 1000);
-    // 顺带一个 .tmp-* 孤儿（writeAtomic 中断残留）
+    // 一个到龄的 .tmp-* 孤儿（writeAtomic 中断残留）+ 一个在途的（另一实例正在写）
     mkdirSync(join(root, "global", "long-term"), { recursive: true });
     writeFileSync(join(root, "global", "long-term", "x.md.tmp-1-1"), "半截", "utf8");
+    utimesSync(join(root, "global", "long-term", "x.md.tmp-1-1"), old / 1000, old / 1000);
+    const inflight = join(root, "global", "long-term", "y.md.tmp-2-2");
+    writeFileSync(inflight, "在途", "utf8");
     const removed = sweepTmpOrphans(root);
-    assert.equal(removed, 2, "mtime 超 1 小时的 staging-* + .tmp-* 孤儿");
+    assert.equal(removed, 2, "到龄的 staging-* + 到龄的 .tmp-* 孤儿");
     assert.equal(existsSync(freshStaging), true, "在途 staging（mtime 新鲜）不清");
     assert.equal(existsSync(freshStagingP), true, "在途 projects.staging（mtime 新鲜）不清");
     assert.equal(existsSync(staleStaging), false, "mtime 超 1 小时的 staging-* 被清扫");
-    assert.equal(existsSync(join(root, "global", "long-term", "x.md.tmp-1-1")), false, ".tmp-* 孤儿被清扫");
+    assert.equal(existsSync(join(root, "global", "long-term", "x.md.tmp-1-1")), false, "到龄的 .tmp-* 孤儿被清扫");
+    assert.equal(existsSync(inflight), true, "在途 .tmp-*（mtime 新鲜）绝不清——防误删另一实例正在写的文件");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P2-b 两段半途态：global 换入成功后 projects 失败，global 的 retired 必须还在 ----
+// 语境：早先 global 换入成功即刻 cleanupRetired(global.retired-*)，若随后 projects 段
+// 拷贝/换入失败，恢复前的 global 数据已被删——回滚无材料，而错误消息仍宣称「已保留」。
+// 修法：两段都换入成功后才统一清理退役副本。
+
+test("restoreBackup：global 换入成功但 projects 拷贝失败 → global.retired-* 必须保留（不许提前清）", () => {
+  const root = freshRoot();
+  try {
+    const backupId = makeBackup(root);
+    mutateLive(root);
+    const stagingPrefix = join(root, "projects.staging-");
+    // global 段照常；projects 段的 staging 拷贝一拷就抛
+    const copyFn = (src, dest, opts) => {
+      if (String(dest).startsWith(stagingPrefix)) throw new Error("模拟 projects 拷贝失败");
+      return cpSync(src, dest, opts);
+    };
+    let thrown = null;
+    assert.throws(() => restoreBackup(root, backupId, { copyFn }), (err) => {
+      thrown = err;
+      assert.equal(err.code, "RESTORE_FAILED");
+      return true;
+    });
+    // 关键：global.retired-* 必须还在（那是恢复前的原始全局数据，唯一一份）
+    const retiredGlobal = readdirSync(root).filter((n) => n.startsWith("global.retired-"));
+    assert.equal(retiredGlobal.length, 1, `global.retired-* 必须保留，实际：${JSON.stringify(readdirSync(root))}`);
+    // 且其中含恢复前的全局内容（非空、非残档）
+    const inside = snapshot(join(root, retiredGlobal[0]));
+    assert.ok(Object.keys(inside).length > 0, "retired 副本必须非空（含恢复前数据）");
+    // 错误消息必须如实点名「已保留」
+    assert.match(thrown.message, /已保留/, "错误消息必须说明恢复前数据已保留");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 两段都成功后的清理中断：绝不回滚（回滚会把删残副本换回本体），消息如实 ----
+// 语境：cleanupRetired 单列 try/catch 只 warn；清理删一半失败会让该目录残缺，
+// 故失败消息必须说「完整性未确认」而非「已保留」（谎称完整比不说更糟）。
+
+test("restoreBackup：两段都换入成功但退役目录清理失败 → 不回滚、消息称「完整性未确认」", () => {
+  const root = freshRoot();
+  try {
+    const backupId = makeBackup(root);
+    mutateLive(root);
+    // global.retired 的 rm 删掉一个子项后抛错（模拟 Windows 递归 rm 半途 EPERM）
+    const rmFn = (target, opts) => {
+      if (String(target).includes("global.retired-")) {
+        let children = [];
+        try { children = readdirSync(target); } catch { children = []; }
+        if (children.length > 0) rmSync(join(target, children[0]), { recursive: true, force: true });
+        throw new Error("EPERM: 模拟清理中途失败");
+      }
+      return rmSync(target, opts);
+    };
+    // 两段数据都换入成功，最后 runtime 失效阶段之后才抛（用 copyFn 不介入、让清理抛错）
+    // cleanupRetired 自己吞错只 warn，故 restoreBackup 应正常返回 true——但目录残缺已留痕。
+    const warns = [];
+    const ok = restoreBackup(root, backupId, { rmFn, log: { warn: (m) => warns.push(String(m)) } });
+    assert.equal(ok, true, "清理失败不推翻已成功的恢复");
+    // 恢复后的数据是备份内容
+    assert.deepEqual(listEntries(root, "long-term").map((e) => e.title), ["备份全局"]);
+    // 残缺的 global.retired-* 仍在盘上（删了一半，不是全删）——绝不因清理异常回滚/清空
+    const rescues = readdirSync(root).filter((n) => n.startsWith("global.retired-"));
+    assert.equal(rescues.length, 1, "清理中断的退役目录必须留在盘上（供人工核实）");
+    assert.ok(warns.some((w) => w.includes("退役目录清理未完成")), "必须 warn 留痕（不静默）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

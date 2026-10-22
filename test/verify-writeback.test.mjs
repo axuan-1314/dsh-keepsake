@@ -1,7 +1,7 @@
 // verify-writeback：写后读校验失败 → 从快照回滚旧文 + 新档留标本 + 计数。
 // 约定：只用临时 storageRoot（os.tmpdir 下自建），绝不读写 ~/.dsh/memory。
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -492,6 +492,50 @@ test("project 同批同名双写：第二个写前发现已建出被跳过，第
     // 纯新增批不产生快照；warn 留痕说明写前发现已被建出
     assert.equal(result.snapshotId, null, "纯新增批不应触发快照");
     assert.equal(warns.some((w) => w.includes("写前") && w.includes("dup.md")), true, "必须 warn 留痕");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- P2-a 同批两侧快照互杀（2026-10-22 补）----
+// 语境：同一批既有 global 又有 project 破坏性 op 时，两侧各建一份手术快照、各 prune 一次。
+// surgicalKeep 调小（如 1）时，后一次 prune 会把前一次刚建的那份顶掉——用户丢掉本批的
+// 一半回滚材料（面板「快照」页只剩一份，另一侧覆盖后无法回滚）。
+// 修法：prune 接受 protectIds，本批新建的两份都豁免。
+
+test("同批 global+project 破坏性写：surgicalKeep=1 时两份预映像都必须保留", () => {
+  const root = freshRoot();
+  const projectRoot = join(root, "memory");
+  try {
+    // 各建一条既有条目（都已有旧文 → 两侧都会建快照）
+    const catDir = join(root, "global", "work-profile");
+    mkdirSync(catDir, { recursive: true });
+    mkdirSync(projectRoot, { recursive: true });
+    const globalOriginal = seed(catDir, "g.md", "全局旧正文", "全局条目");
+    const projectOriginal = seed(projectRoot, "p.md", "项目旧正文", "项目条目");
+
+    const result = applyScopedOps({ storageRoot: root, projectRoot }, [
+      { action: "write", name: "g.md", scope: "global:work-profile", title: "G", description: "全局条目", content: "全局新正文", sha1: sha1Short(globalOriginal) },
+      { action: "write", name: "p.md", scope: "project", title: "P", description: "项目条目", content: "项目新正文", sha1: sha1Short(projectOriginal) },
+    ], { originSessionId: "s-1", settings: { surgicalKeep: 1 }, log: silent });
+
+    // 两份快照必须都在（keep=1 也不许互杀）
+    const snaps = listSurgicalSnapshots(root);
+    assert.equal(snaps.length, 2, `keep=1 时同批两份预映像都必须保留，实际 ${snaps.length} 份`);
+    // 且每份真的含对应旧文（不是空壳）
+    const names = [];
+    for (const s of snaps) {
+      const dir = join(surgicalRoot(root), s.id, "files");
+      const walk = (d) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          if (e.isDirectory()) walk(join(d, e.name));
+          else names.push(e.name);
+        }
+      };
+      if (existsSync(dir)) walk(dir);
+    }
+    assert.ok(names.some((n) => n.includes("g.md")), "global 侧预映像必须在");
+    assert.ok(names.some((n) => n.includes("p.md")), "project 侧预映像必须在");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

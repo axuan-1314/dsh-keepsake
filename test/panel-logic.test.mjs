@@ -1219,7 +1219,7 @@ test("runtimeStatusBadge：ok/overQuota/error 三态映射 + 缺失/未知→尚
 
 test("runtimeCandidateRows：标题/分类/字节/稳定 key；global:<category> 与 project 分类文案分列；坏项跳过", () => {
   const rows = runtimeCandidateRows([
-    { rootKey: "global:work-profile", file: "big.md", bytes: 620, reason: "quota", firstSeenAt: "2026-10-20T12:00:00.000Z" },
+    { rootKey: "global:work-profile", file: "big.md", bytes: 620, reason: "quota", lastSeenAt: "2026-10-20T12:00:00.000Z" },
     { rootKey: "project", file: "deep/nested.md", bytes: 300, reason: "quota" },
     null,
     { rootKey: "global:user-profile" }, // 缺 file → 跳过

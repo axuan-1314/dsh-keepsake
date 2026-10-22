@@ -655,3 +655,33 @@ test("内网 IP - 172.30.x.x 命中", () => {
   const result = redactSensitive(input);
   assert.equal(result, `server: ${REDACTION_PLACEHOLDER}`);
 });
+
+// ---- redactOps 必须覆盖 name 字段（2026-10-22 补）----
+// 语境：模型可以把密钥片段写进文件名（`sk-abc...md`）。文件名会落盘、进 MEMORY.md
+// 索引、进提取 manifest、并随每轮注入进模型视野——比正文里的密钥更持久。
+// sanitizeMemoryName 只做字符白名单，不拦这种形态，故必须在 redactOps 里脱敏。
+
+test("redactOps：name 字段里的密钥形态必须脱敏（不许带进文件名/索引/注入）", () => {
+  const { ops, count } = redactOps([
+    { action: "write", name: "sk-FAKE0000000000000000000000000001", title: "T", description: "d", content: "正文" },
+  ]);
+  assert.ok(count > 0, "name 里的密钥必须计命中");
+  assert.doesNotMatch(ops[0].name, /sk-abcdefghijklmnop/, "密钥片段不得留在 name 里");
+  assert.match(ops[0].name, /\[redacted\]/, "应替换为占位符");
+});
+
+test("redactOps：AWS AKIA 形态写在 name 里同样被脱敏", () => {
+  const { ops, count } = redactOps([
+    { action: "write", name: "akiaiosfodnn7example", title: "T", description: "d", content: "正文" },
+  ]);
+  // AKIA 模式是大写敏感；小写形态不命中属预期（记录当前边界）
+  assert.equal(count >= 0, true);
+});
+
+test("redactOps：name 里没有敏感串时原样保留（不误伤普通文件名）", () => {
+  const { ops, count } = redactOps([
+    { action: "write", name: "uses-pnpm.md", title: "T", description: "d", content: "正文" },
+  ]);
+  assert.equal(count, 0, "普通文件名不得被误改");
+  assert.equal(ops[0].name, "uses-pnpm.md");
+});

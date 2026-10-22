@@ -139,3 +139,74 @@ test("写后校验口径：嵌套条目 name 与真实相对路径逐字一致�
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- writeEntryDirect 的 origin 三字段保留（2026-10-22 补测试）----
+// 语境：v0.6.1 修了「归档 origin 三字段被普通编辑剥掉」，updateEntry 路径有测试，
+// 但 writeEntryDirect（导入覆盖 / 提取覆写全局走它）当时无测试——摘掉其 origin 保留
+// 测试仍全部通过（对抗复查实测 M5' 存活）。此用例专钉该路径。
+
+test("writeEntryDirect：覆写 long-term 条目必须保留 origin 三字段（否则移回恒 400）", async () => {
+  const { writeEntryDirect, readEntry } = await import("../lib/global-store.js");
+  const { resetFormatCache } = await import("../lib/format.js");
+  resetFormatCache();
+  const root = freshRoot();
+  try {
+    const catDir = join(root, "global", "long-term");
+    mkdirSync(catDir, { recursive: true });
+    // 一条带 origin 的归档条目（归档时的形态）
+    writeFileSync(
+      join(catDir, "archived.md"),
+      `---
+name: "archived"
+title: "归档条目"
+description: "原始描述"
+metadata:
+  type: global
+node_type: "memory"
+originProject: "projects/p-0123456789abcdef"
+originType: "project"
+originSessionId: "sess_orig"
+---
+
+归档正文
+`,
+      "utf8",
+    );
+    // 走 writeEntryDirect（导入覆盖 / 提取覆写全局的路径）覆写它
+    const written = writeEntryDirect(root, "long-term", {
+      name: "archived.md",
+      title: "归档条目",
+      description: "改过的描述",
+      content: "改过的正文",
+    });
+    assert.ok(written !== null, "覆写应成功");
+    const raw = readFileSync(join(catDir, "archived.md"), "utf8");
+    // 三个 origin 字段必须原样保留（否则「从归档移回」端点拿不到目标位置，恒 400）
+    assert.match(raw, /originProject: "projects\/p-0123456789abcdef"/, "originProject 必须保留");
+    assert.match(raw, /originType: "project"/, "originType 必须保留");
+    assert.match(raw, /originSessionId: "sess_orig"/, "originSessionId 必须保留");
+    assert.match(raw, /改过的正文/, "正文应被更新");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writeEntryDirect：非 long-term 分类不会凭空长出 origin 字段", async () => {
+  const { writeEntryDirect } = await import("../lib/global-store.js");
+  const { resetFormatCache } = await import("../lib/format.js");
+  resetFormatCache();
+  const root = freshRoot();
+  try {
+    writeEntryDirect(root, "work-profile", {
+      name: "plain.md",
+      title: "普通条目",
+      description: "d",
+      content: "正文",
+    });
+    const raw = readFileSync(join(root, "global", "work-profile", "plain.md"), "utf8");
+    assert.doesNotMatch(raw, /originProject/, "非归档分类不得有 originProject");
+    assert.doesNotMatch(raw, /originType/, "非归档分类不得有 originType");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

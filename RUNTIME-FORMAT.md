@@ -99,7 +99,7 @@ L0 = 每轮注入的定长紧凑记忆（`USER.md` 用户画像 + `MEMORY.md` �
     "entries": [{ "rootKey": "global:user-profile", "file": "foo.md", "pinned": true, "included": true, "bytes": 0 }]
   },
   "memory": { "quotaBytes": 10240, "bytes": 0, "entries": [] },
-  "evictCandidates": [{ "rootKey": "project", "file": "bar.md", "bytes": 620, "reason": "quota", "firstSeenAt": "2026-10-20T12:00:00.000Z" }]
+  "evictCandidates": [{ "rootKey": "project", "file": "bar.md", "bytes": 620, "reason": "quota", "lastSeenAt": "2026-10-20T12:00:00.000Z" }]
 }
 ```
 
@@ -147,6 +147,7 @@ pinned 能否存活取决于**所有覆写路径透传**。现状字段集封闭
 7. **失效+全量重编**：归档了全局条目 → 所有 scope 缓存失效；归档了项目条目 → 该 scope 失效（防跨 scope 断链〔核4〕——执行是单点串行的，重编后所有产物链接重新指向新位置）；
 8. 释放锁，返回 `{ archived: n, skipped: [...], snapshotDir }`；
 9. **滚动清理（尾部执行）**〔B-P0 修〕：`backups/evict-*` 保留最近 **10** 份（按 ts 排序裁旧）；`evict-audit.jsonl` 达 **5000** 行轮转留尾 **2500**（审计比 compile-journal 重要，容量放大；「持久」指不随 runtime/ 删除，非无限增长）。
+   > 已知取舍：审计保留 2500 行、快照只留 10 份——第 11 份以前的审计行其 `snapshot` 字段会指向已轮转清理的目录。**不丢记忆**（`long-term` 里的归档副本仍是活的真源），只是少了那一层「手术式快照」保险；面板不展示审计记录，故无 UI 误导面。如需长期追溯，请在归档后自行备份 `backups/evict-*`。
 
 ### 6.3 归档条目格式（long-term schema 扩展，定案 10-20②）〔核3〕
 

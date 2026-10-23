@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   decideLadderTier,
+  EXTRACTION_REASON_LABELS,
   extractionNoticeText,
   extractionRangeText,
   extractionStreakOf,
@@ -16,6 +17,7 @@ import {
   injectionSummary,
   formatNoticeText,
   ladderNoteOf,
+  reasoningDegradedText,
 } from "../lib/panel-logic.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -169,7 +171,7 @@ test("防漂移：streak 归一兜底 extractionStreakOfFallback 与实现一致
 });
 
 test("防漂移：红条文案兜底 extractionNoticeTextFallback 与实现表驱动一致（streak 0/1/10、字段缺失、旧数字形态）", () => {
-  const fn = extractFactoryFn(clientSrc, "extractionNoticeTextFallback", "efRaw");
+  const fn = extractFactoryFn(clientSrc, "extractionNoticeTextFallback", "efRaw", ["extractionReasonLabelFallback"]);
   const cases = [
     null, void 0, 0, 3, // 旧数字形态
     { streak: 0 }, { streak: 1 }, { streak: 10 },
@@ -184,6 +186,22 @@ test("防漂移：红条文案兜底 extractionNoticeTextFallback 与实现表�
   for (const c of cases) {
     assert.equal(fn(c), extractionNoticeText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
   }
+  // 原因中文化：兜底侧内联映射表必须与 panel-logic 单一表逐 key 同义（双表漂移即红）
+  const labelFn = extractFactoryFn(clientSrc, "extractionReasonLabelFallback", "token");
+  for (const [token, zh] of Object.entries(EXTRACTION_REASON_LABELS)) {
+    assert.equal(labelFn(token), zh, `兜底映射表与 EXTRACTION_REASON_LABELS 不一致：${token}`);
+  }
+  // 未收录原因走兜底美化（连字符/下划线转空格），不原样露出下划线串
+  assert.equal(labelFn("some-future-reason"), "some future reason");
+  assert.equal(labelFn("some_future_reason"), "some future reason");
+  assert.equal(labelFn(""), "—");
+  assert.equal(labelFn(null), "—");
+  // 红条输出不得出现英文枚举（用户看不懂也不知道该做什么）
+  for (const reason of ["no-route", "llm-error", "parse-error", "io-error", "no-cwd"]) {
+    const text = fn({ streak: 2, recent: [{ reason, model: "acme/chat" }] });
+    assert.doesNotMatch(text, /\b(no-route|llm-error|parse-error|io-error|no-cwd)\b/, `兜底文案不得露英文枚举：${text}`);
+  }
+  assert.match(fn({ streak: 2, recent: [{ reason: "no-route", model: "acme/chat" }] }), /无模型路由/);
   // 模板锚（任何一边改文案，另一边立刻失去一致性被上一循环抓住；此处再钉模板本身）
   assert.ok(clientSrc.includes("`自动提取失败 ${streak} 次 · 最近：${reason}（${model}）`"));
   assert.ok(clientSrc.includes("`记忆自动提取最近连续失败 ${streak} 次，期间对话内容可能未被记录——可在记忆管理面板复制诊断信息（含 /state 快照）反馈给开发者。`"));
@@ -228,6 +246,37 @@ test("结构钉：面板健康卡消费 panel-logic + data-pipe-health 锚（消
   assert.match(panelSrc, /extraction-errors\.log/, "失败日志路径行在位（路径展示）");
   assert.match(panelSrc, /title="\$\{esc\(msg\)\}"/, "recent[].message 不可信——全量必须进 title 且过 esc()");
   assert.match(panelSrc, /msg\.length > 60 \? msg\.slice\(0, 60\)/, "message 摘要截 60 字符");
+});
+
+test("结构钉：思考档降级与截断标记上用户面（truncatedParse / reasoningDegraded 不再只进 journal）", () => {
+  // ① reasoningDegraded 摘要：面板健康卡 + 门牌都渲染（双端），走共享纯函数
+  assert.match(panelSrc, /L\.reasoningDegradedText\(efRaw\)/, "健康卡必须渲染思考档降级摘要");
+  assert.match(clientSrc, /reasoningDegradedText\(efRaw\)/, "门牌必须渲染思考档降级摘要");
+  assert.match(clientSrc, /LOGIC \? LOGIC\.reasoningDegradedText/, "门牌降级摘要必须经 panel-logic 优先分发");
+  // ② 截断标记：written 行的标签由 extractionRunLabel 附「（输出被截断，可能少存）」
+  //    ——双端共用同一纯函数（extractionRunLines 内部调 extractionRunLabel），此处钉消费锚
+  assert.match(panelSrc, /L\.extractionRunLines\(data\.extractionLog\)/, "最近提取记录必须走 extractionRunLines（截断标记随行标签出）");
+  // ③ 面板不得直接自造截断/降级文案（必须走纯函数，防双端漂移）
+  assert.doesNotMatch(panelSrc, /输出被截断[^"']*（?!esc）/);
+});
+
+test("防漂移：思考档降级兜底 reasoningDegradedTextFallback 与实现表驱动一致", () => {
+  const fn = extractFactoryFn(clientSrc, "reasoningDegradedTextFallback", "efRaw");
+  const cases = [
+    null, void 0, 0, 2, {}, { reasoningDegraded: 0 }, { reasoningDegraded: 1 }, { reasoningDegraded: 42 },
+    { streak: 2 }, { reasoningDegraded: -1 }, { reasoningDegraded: "x" }, { reasoningDegraded: 2.9 },
+    { reasoningDegraded: null },
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), reasoningDegradedText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  // 摘要必须含「降级」字样（用户面测试关键词），零值/缺失 → null
+  assert.match(fn({ reasoningDegraded: 3 }), /思考档降级 3 次/);
+  assert.match(fn({ reasoningDegraded: 3 }), /降级/);
+  assert.equal(fn({ reasoningDegraded: 0 }), null, "零值不渲染");
+  assert.equal(fn(null), null, "旧宿主无字段不渲染");
+  // 模板锚（任何一边改文案，另一边立刻失去一致性被上一循环抓住）
+  assert.ok(clientSrc.includes("`思考档降级 ${Math.floor(n)} 次（该路由不支持所配档位，已按模型默认档重发；换一个该路由支持的档位可免掉这些额外往返）`"));
 });
 
 test("结构钉：立即重试三段式——retry 只在 click handler、busy disabled、轮询只 GET state", () => {

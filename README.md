@@ -177,7 +177,10 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 设置页的「自动提取管道」健康卡让你一眼看出记忆提取是否健康：
 
 - **三态灯**：绿 = 最近无失败（折叠为一行摘要）；黄 = 近期有过失败但已自动恢复；红 = 当前连续失败（同因连击数）；灰闪 = 正在提取。连击 > 0 期间每 5 秒自动轮询刷新，侧栏「设置」项同步显示红色连击徽标。
-- **失败分桶计数**：按原因（无路由 / 无 cwd / LLM 调用 / 解析 / 落盘 IO）分桶，只显示非零桶。
+- **失败分桶计数**：按原因（无路由 / 无 cwd / LLM 调用 / 解析 / 落盘 IO / 重试 / 换道 / 思考档降级）分桶，只显示非零桶。
+- **思考档降级提示**：该路由不支持所配思考档时（宿主以 `UNSUPPORTED_REASONING_EFFORT` 拒绝），插件按模型默认档重发一次并在健康卡与门牌各显示一行「思考档降级 N 次」——这趟额外往返此前只进日志，用户既不知道发生了、也无从判断要不要换档位。
+- **截断标记**：「最近提取记录」里 `written` 行若带 `truncatedParse`（输出被 max-tokens 腰斩但仍解析成功），标签附「（输出被截断，可能少存）」——这是"看起来正常的成功"，不标出来永远不知道那次可能少存了几条。
+- **去重口径覆盖率**：`/state.extractionLog.coverage` 给出 distinct 区间数（`distinctFailedRanges` / `distinctWrittenRanges` / `distinctAbandonedRanges`）与区间级成功率 `writtenRangeRate`。**区间口径，不是轮次口径**（宿主不提供总轮次数，故不编造）；`failed` 计数下降 ≠ 记忆变多，只有 distinct 区间数说得清。
 - **最近 5 条失败详情**：时间 / 原因 / 模型 / 错误摘要，配合失败日志路径（`<storageRoot>/extraction-errors.log`）排障。
 - **错过区间提示**：「第 X 轮对话之后的内容尚未记录，恢复后自动补提」——告诉你哪些对话可能漏记了；配套「补提」区可逐条重跑（见[「会话补提」](#会话补提跨重启把失败区间读回来重提)）。
 - **「立即重试提取」按钮**：对仍有未提取区间的会话真的发起一次 LLM 提取（有确认弹窗，明示消耗少量 token）；点击后按钮进入 busy 态，面板每 2 秒轮询状态最多 60 秒，恢复即提示「提取已恢复」。10 秒最小间隔，提取在途时返回 409。
@@ -309,6 +312,7 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
 - **升级后需重启**：替换已安装的包后，进程要重启才会加载新 JS 模块（web profile HMR 可自动重载；desktop 重启应用；headless 下次启动）。
 - **v0.6.0 升级须知（行为变化，务必过一眼）**：① 长期记忆（`long-term`）不再进注入索引（归档条目对所有会话不可见，提取 prompt 仍可见）；② 人设段上限 16000 → 8000 字符；③ `injectMaxTokens` 默认 16000 → 24000；④ 新增「运行时记忆」开关，**默认关**（不开则注入内容与旧版等价，只是少了 long-term 索引行）；⑤ 存储格式版本 1 → 2，退回旧版会自动只读。细节见 [CHANGELOG.md](CHANGELOG.md) 的 0.6.0 条目。
 - **降级前先备份**：数据目录里的 `keepsake-format.json` 记录存储格式版本（见 [FORMAT.md](FORMAT.md)）。**v0.6.0 起 `FORMAT_VERSION=2`**（v0.3.0 → v0.5.0 期间一直为 1）：新增可选 `pinned` 与 long-term 的 origin 三字段，属可选增量、无数据迁移。由此——从 v0.6.0 退回 v0.5.0 或更旧版本时，旧版读到 v2 标记会**自动转只读**（写端点 503 + 门牌/健康卡报警，读取仍放行），这是防「旧版覆写剥掉 pin」的兜底；而 v0.4.0/v0.5.0 退回 v0.2.x 时格式闸**不会**触发，旧版可以正常读写同一份数据，但它没有 v0.4.0 的写入安全面（批前快照 / 回收站 / `sha1` 覆盖闸 / 写后读校验），其自动提取的覆写是直接替换。降级前建议先做一次全量备份（设置页数据卡「导出全部」，或直接拷走 `~/.dsh/memory/`）。
+- **降级到 v0.6.4 及更早版本前，先删掉自己显式加过的两个 config 键**：`extractReasoningEffort`（本版本新增的键）与 `maxOutputTokens: 0`（v0.6.4 的校验要求正整数，0 会被拒）在旧版 `resolveConfig` 里分别是「未知键」与「非法值」，而 `apply()` 第一步就调 `resolveConfig` 且无 try/catch——**旧版会装载即失败**，不是降级运行。`cordis.patch.yml` 出厂配置里这两个键默认就是注释状态（代码缺省已等价于「0 + 不下发」），只有你自己显式取消注释时才需要手动删掉。
 
 ### 验证生效
 
@@ -341,7 +345,8 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `autoRecoverEnabled` | **true** | 自动补提开关（见[「会话补提」](#会话补提跨重启把失败区间读回来重提)的「自动收口」）：会话关闭 / 轮次完成 / 启动清扫三个时机自动补提未恢复的失败区间；**false = 关闭自动补提**，只保留面板手动按钮。宿主无会话持久化时自动链路静默不跑 |
 | `autoRecoverCooldownMs` | 300000 | 同一失败区间两次自动补提尝试的最小间隔（毫秒），防宿主读不回的区间被反复白读；上限受定时器最大延迟约束 |
 | `timeoutMs` | 120000 | 单次提取调用超时 |
-| `maxOutputTokens` | 4096 | 提取输出上限 |
+| `maxOutputTokens` | **0** | 提取输出上限。**0 = 跟随模型**（不发 `maxTokens`，由宿主套模型默认值；推荐）；>0 时照旧作为硬上限。显式 4096 会让带思考的模型把预算全花在思考上（实测 88 条 `llm-error` 里 81 条是 `kind=max-tokens`） |
+| `extractReasoningEffort` | **不下发**（缺省） | 提取调用的思考档：`"minimal"` / `"low"` / `"medium"` / `"high"`（非法值启动即抛，带允许值提示）。**缺省不下发**（`options` 里不出现该键，跟随模型默认档）：宿主按模型能力声明校验档位，不被支持的档位会在 provider I/O 前被拒（`UNSUPPORTED_REASONING_EFFORT`），触发一次降级重发，最终仍按模型默认档跑——所以只在你的路由确实声明了该档位时才配（如 `magpie/group/mozu1` 只声明 `high`/`max`，配 `low` 就是每轮白撞一次） |
 | `maxIndexLines` / `maxIndexChars` | 200 / 25000 | 注入截断预算 |
 | `maxManifestFiles` | 200 | manifest 文件数上限 |
 | `maxPromptChars` | 48000 | 增量 transcript 截断 |
@@ -465,9 +470,11 @@ cordis entry config（见 `cordis.patch.yml`）：
 
 ## 可观测与运维
 
-- **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
+- **提取失败计数**：`/dsh-keepsake/api/state` 的 `extractionFailures`（按原因分桶 + 同因连击 streak + `retried` 重试 attempt 计数 + `recent[5]` 最近失败详情 + `reasoningDegraded` 思考档降级次数 + `extractionTokens` 提取 token/成本面）；门牌/面板红条显示连续失败。结构性失败（无路由/无 cwd）连续 5 次后显式放弃该区间（error 日志），不再无限重试积压。
+- **提取 token / 成本面**：`extractionFailures.extractionTokens` = `{ input, output, total, calls }`（进程内累计）。`maxOutputTokens` 缺省为 0 = 跟随模型（本机模型默认 250000，是旧固定值 4096 的约 61 倍）之后，单次输出上限随之放大——这个面就是让「成本是否被带飞」看得见的唯一依据。口径：`calls` 记**真实发起的调用次数**（含 `UNSUPPORTED_REASONING_EFFORT` 后的降档重发那一趟、含失败途），`total` 取宿主上报的 `totalTokens`（含 cache 读写，缺失时才回落 `input + output`）；宿主没发 usage chunk（旧适配器）时 token 记 0 但 `calls` 仍计数——「调了几次」与「花了多少 token」分开报，不互相顶替。
 - **观测面**：`/state` 另含 `lastFailedRange`（未恢复失败区间）/ `extractionInFlight` / `lastAttemptAt` / `lastUsedRoute`（最近一次提取用车）/ `extractionConfig`（含 fallback；另有打分门与脱敏的生效口径五键——`gateEnabled` / `gateMinScore` / `idleDelayMs` / `maxRunsPerSession` / `redactionEnabled`）与顶层 `injectMaxChars` / `injectMaxTokens`（注入双预算）/ `embeddingConfig`（嵌入召回配置，含生效的 `baseUrl`）；面板设置页有「管道健康卡」承载以上全部。
-- **提取运行日志面（v0.4.1）**：`/state` 的 `extractionLog` 字段——`runs`（最近 30 条结算记录）/ `unrecovered`（失败且未被后续补上的区间）/ `abandoned` 与 `abandonedCount`（结构性失败被显式放弃、不再重试的区间数与清单）；数据源即 `<storageRoot>/extraction-journal.jsonl`，结算行含脱敏命中数 `redacted`（有命中才写）。`settings.corrupt`（开关文件解析失败标记）、`recentKeepDays`（近期动态保留天数）、`extractionTimeoutMs`（单次提取超时）也在 `/state` 里可观测。
+- **提取运行日志面（v0.4.1）**：`/state` 的 `extractionLog` 字段——`runs`（最近 30 条结算记录）/ `unrecovered`（失败且未被后续补上的区间）/ `abandoned` 与 `abandonedCount`（结构性失败被显式放弃、不再重试的区间数与清单）；数据源即 `<storageRoot>/extraction-journal.jsonl`，结算行含脱敏命中数 `redacted`（有命中才写）与截断标记 `truncatedParse`（输出被 max-tokens 腰斩但仍解析成功，有才写）。`settings.corrupt`（开关文件解析失败标记）、`recentKeepDays`（近期动态保留天数）、`extractionTimeoutMs`（单次提取超时）也在 `/state` 里可观测。
+- **去重口径覆盖率（区间口径，不是轮次口径）**：`extractionLog.coverage` = `{ distinctFailedRanges, distinctWrittenRanges, distinctAbandonedRanges, writtenRangeRate, writtenRangesTotal, failedRangesTotal, abandonedRangesTotal, scope: "range" }`。这是判断「修复真的生效」的唯一判据：修复生效后「不再反复白撞同一区间」会让 `failed` 计数下降，但那**不等于**记忆变多——只有 distinct `(sessionId, from, to)` 区间数说得清。`writtenRangeRate` = `written / (written + failed + abandoned)`（区间级成功率；宿主不提供总轮次数，故**不编造轮次口径**，分母也不含 skipped/zero-ops——它们没有区间成败语义）。`*RangesTotal` 是不去重的行数，与 distinct 并排给出，`行数/distinct` 就是「平均每区间结账几次」（重复放大的直接读数）。这些数进程内累计 + 重放同源，`runs` ring 被轮转裁掉也不影响。**每个区间只归一种终态**（written > abandoned > failed，强终态覆盖弱终态）：先失败、后被补提救回的区间只算成功，不会同时计入失败——否则成功率会被系统性低估。
 - **会话补提面（v0.4.2）**：`GET /dsh-keepsake/api/sessions/pending`（`hostSupported` + `items[]`，每条带 `sessionId` / `from` / `to` / `at` / `reason` / `kind`（failed / abandoned）/ `sessionAvailable`）；`POST /dsh-keepsake/api/sessions/recover`（202 异步，409 单飞 / 404 会话不在 / 503 宿主未提供会话持久化）；`/state` 的 `recover` 字段（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`，v0.5.0 增自动补提四键 `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger`——`lastAutoTrigger` 记录触发面 `disposed` / `turn/end` / `startup` / `manual`）观测执行进度。
 - **记忆整理面（v0.4.2）**：`GET /dsh-keepsake/api/maintenance/suggestions`（`duplicates` / `stale` / `indexHealth`（`dangling` / `orphans` / `emptyCategories`）/ `counts` / `generatedAt`）；`POST /dsh-keepsake/api/maintenance/repair-index`（`fixed` 已应用动作明细数组 / `fixedCount` / `unchanged`）。
 - **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；v0.5.0 新增 token 口径两计数——`lastTokens`（最近一次注入 token 估算）/ `totalTokens`（累计，CJK 感知口径，见 `lib/tokens.js`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败 / 变更节流 / 取代 / token 预算占用「最近 ≈X tokens / 上限 Y」，`injectMaxTokens` 为 0 时退回字符展示）。渲染失败显式计入 `renderFailures`（不静默丢）。

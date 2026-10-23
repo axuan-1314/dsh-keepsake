@@ -248,6 +248,141 @@ test("journal：放弃区间跨『重启』（重放）仍可见——放弃不�
   }
 });
 
+// ---- 3b. coverage 去重口径（distinct 区间数 + 区间级成功率） ----
+// 背景：failed 计数会因"不再反复白撞同一区间"而下降，但那不等于记忆变多。
+// 验收的唯一判据是 distinct (sessionId, from, to) 数——按区间说话，不按行数说话。
+
+test("journal：coverage distinct 口径——3 条同区间重复失败只算 1 个（行数是 4 时 distinct 是 2）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    // 3 条同区间重复失败 + 1 条不同区间失败 + 2 条成功
+    await journal.recordRun({ sessionId: "s", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s", from: 11, to: 14, cursorAfter: 11, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s", from: 3, to: 7, cursorAfter: 7, outcome: "written", writes: 1 });
+    await journal.recordRun({ sessionId: "s", from: 14, to: 20, cursorAfter: 20, outcome: "written", writes: 1 });
+    const cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctFailedRanges, 2, "同区间重复失败 distinct 只算 1 个");
+    assert.equal(cov.failedRangesTotal, 4, "行数不去重：4 条 failed（放大可见）");
+    assert.equal(cov.distinctWrittenRanges, 2);
+    assert.equal(cov.writtenRangesTotal, 2);
+    assert.equal(cov.distinctAbandonedRanges, 0);
+    // 区间级成功率 = written / (written + failed + abandoned) = 2/4
+    assert.equal(cov.writtenRangeRate, 0.5);
+    assert.equal(cov.scope, "range", "口径标注：区间口径，不是轮次口径");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：coverage 跨重启重放一致（ring 被裁也不缩水；distinct 与行数并排）", async () => {
+  const root = tempRoot();
+  try {
+    const first = createJournal({ storageRoot: root, ringMax: 2, rotateAt: 1000, keepOnRotate: 2 });
+    for (let i = 0; i < 5; i += 1) {
+      await first.recordRun({ sessionId: "s", from: i, to: i + 1, cursorAfter: i, outcome: "failed", reason: "llm-error" });
+    }
+    await first.recordRun({ sessionId: "s", from: 10, to: 20, cursorAfter: 20, outcome: "written", writes: 1 });
+    assert.equal(first.snapshot().runs.length, 2, "ring 只留 2 条（从 ring 现算必少算）");
+    const revived = createJournal({ storageRoot: root });
+    const cov = revived.snapshot().coverage;
+    assert.equal(cov.distinctFailedRanges, 5, "重放后 distinct 不缩水");
+    assert.equal(cov.failedRangesTotal, 5);
+    assert.equal(cov.distinctWrittenRanges, 1);
+    assert.equal(cov.writtenRangeRate, 1 / 6);
+    // 同区间再记 3 次：distinct 不动，行数 +3（"重复放大"可算 = 行数/distinct）
+    for (let i = 0; i < 3; i += 1) {
+      await revived.recordRun({ sessionId: "s", from: 0, to: 1, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    }
+    const cov2 = revived.snapshot().coverage;
+    assert.equal(cov2.distinctFailedRanges, 5, "同区间重复只计 1 个 distinct");
+    assert.equal(cov2.failedRangesTotal, 8, "行数照计（8/5 ≈ 每区间结账 1.6 次）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：coverage 按会话分键（同区间不同会话算两个）+ 零结算时 rate=null 不编数", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    // 空态：分母 0 → null（"没有数据"与"成功率 0"必须可区分，不许编 0/1）
+    assert.equal(journal.snapshot().coverage.writtenRangeRate, null, "零结算时不编成功率");
+    // 同 (from,to) 不同 sessionId 是两个区间（别会话失败不该混成一个）
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 5, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s2", from: 0, to: 5, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    assert.equal(journal.snapshot().coverage.distinctFailedRanges, 2, "distinct 键含 sessionId");
+    // skipped/zero-ops 不进区间级口径（无区间成败语义，且量纲与轮次无关）
+    await journal.recordRun({ sessionId: "s1", from: 5, to: 6, cursorAfter: 6, outcome: "skipped", reason: "gate-off" });
+    await journal.recordRun({ sessionId: "s1", from: 6, to: 7, cursorAfter: 7, outcome: "zero-ops", reason: "model-无产出" });
+    const cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctFailedRanges, 2, "skipped/zero-ops 不计入 distinct");
+    assert.equal(cov.failedRangesTotal, 2, "skipped/zero-ops 不计入行数");
+    assert.equal(cov.distinctWrittenRanges, 0);
+    assert.equal(cov.writtenRangeRate, 0, "有 failed 无 written → 区间级成功率 0（真 0，不是 null）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 终态覆盖：同一区间「先失败、后补提成功」只能算成功一次，不能同时算失败。
+// 这是 v0.6.2「用意图代替结果判终态」的同型陷阱：三个独立集合会各进一条，
+// 导致成功率被系统性低估（实测真实数据 93 vs 82，差 11 个区间）。
+test("journal：coverage 终态覆盖——同区间先 failed 后 written 只算 written（成功率高估/失败率低估都禁止）", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "written", reason: "model-无产出" });
+    const cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctWrittenRanges, 1, "该区间终态是 written");
+    assert.equal(cov.distinctFailedRanges, 0, "同一区间不得同时计入 failed（终态覆盖）");
+    assert.equal(cov.writtenRangeRate, 1, "1 写 0 失败 → 100%，不是 50%");
+    assert.equal(cov.failedRangesTotal, 2, "行数仍如实记 2 条 failed（不去重、只影响行数口径）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：coverage 终态不回退——written 之后同区间又 failed，不抹掉已落盘的成果", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "written", reason: "model-无产出" });
+    assert.equal(journal.snapshot().coverage.distinctWrittenRanges, 1);
+    // 记忆已经落盘了；后来一次同区间重试失败不应把既有成果降级
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    const cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctWrittenRanges, 1, "written 终态保持");
+    assert.equal(cov.distinctFailedRanges, 0, "retry 失败不推翻已完成的结果");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("journal：coverage abandoned 覆盖 failed，但 written 仍可覆盖 abandoned", async () => {
+  const root = tempRoot();
+  try {
+    const journal = createJournal({ storageRoot: root });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 0, outcome: "failed", reason: "no-route" });
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "abandoned", reason: "no-route" });
+    let cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctAbandonedRanges, 1);
+    assert.equal(cov.distinctFailedRanges, 0, "abandoned 强于 failed");
+    // 放弃后经人工补提救回 → 最终仍算成功
+    await journal.recordRun({ sessionId: "s1", from: 0, to: 10, cursorAfter: 10, outcome: "written", reason: "model-无产出" });
+    cov = journal.snapshot().coverage;
+    assert.equal(cov.distinctWrittenRanges, 1);
+    assert.equal(cov.distinctAbandonedRanges, 0, "written 强于 abandoned（救回后不再算放弃）");
+    assert.equal(cov.writtenRangeRate, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ---- 4. 并发：20 次 recordRun 不 await，混合 2 个会话 ----
 test("journal：并发 20 次 recordRun（2 会话混合）全部落盘、行数正确、无坏行", async () => {
   const root = tempRoot();

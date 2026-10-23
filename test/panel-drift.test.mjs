@@ -249,3 +249,57 @@ test("面板漂移：runtime 消费锚全部接线（L.* 调用在位防白做�
   assert.ok(panelHtml.includes('switchRow("runtimeEnabled"'), "设置页缺 runtimeEnabled 开关");
   assert.ok(panelHtml.includes("L.runtimeEnabledOf("), "开关与引导必须走 runtimeEnabledOf（三态 tolerant，不硬判 false）");
 });
+// ---- 用户面文案测试：面板表格不得出现英文枚举（复查点名的遗留缺口） ----
+// 最近失败表的 reason 列曾直接 esc(r.reason) 渲染，面板上会露出 no-route / llm-error /
+// parse-error / io-error 这类英文枚举（用户看不懂也不知道该做什么）。现在该列与
+// 「最近提取记录」结果列同口径走 L.reasonLabelOf 中文化。
+// 这里把面板的真实行模板抠出来求值（不是只 grep 源码）：模板若回退成 esc(r.reason)
+// 或换掉 reasonLabelOf，下面渲染出的 HTML 立刻命中英文枚举正则。
+test("面板漂移：最近失败表 reason 列经 reasonLabelOf 中文化（渲染级，不 grep）", () => {
+  // 从 panel.html 抠出真实行模板（`const rows = ef.recent.slice(0, 5).map((r) => {` 起）
+  const start = panelHtml.indexOf("ef.recent.slice(0, 5).map((r) => {");
+  assert.ok(start >= 0, "面板必须保留最近失败表行模板");
+  // 取到 return 语句那一行（模板是 return `<tr>…` 一行）
+  const retLine = panelHtml.slice(start).match(/return `([^`]*)`;/);
+  assert.ok(retLine, "必须抠得到 return `<tr>…` 行模板");
+  // 模板引用的绑定照面板源码同口径喂：r（该行）/ msg（r.message 原样）/ short（截 60 摘要）
+  const rowFn = new Function("r", "msg", "short", "L", "esc", "return `" + retLine[1] + "`;");
+  const escFn = (s) => String(s ?? "");
+  const render = (reason) => {
+    const r = { at: 1730000000000, reason, model: "acme/chat-model", message: "429 …" };
+    const msg = String(r.message ?? "");
+    const short = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
+    return rowFn(r, msg, short, L, escFn);
+  };
+  const ENUM_RE = /\b(no-route|llm-error|parse-error|io-error|no-cwd)\b/;
+  for (const reason of ["no-route", "llm-error", "parse-error", "io-error", "no-cwd"]) {
+    const html = render(reason);
+    assert.doesNotMatch(html, ENUM_RE, `reason 列不得露英文枚举 ${reason}：${html}`);
+    assert.ok(html.includes("<tr>"), `必须渲染成表格行：${html}`);
+  }
+  // 中文化确实生效（不是把 reason 吞掉留空）
+  assert.match(render("no-route"), /无模型路由/, "reason 列必须出中文标签");
+});
+
+test("面板漂移：思考档降级摘要已接线（reasoningDegraded>0 时渲染，零值不渲染）", () => {
+  assert.ok(panelHtml.includes("L.reasoningDegradedText(efRaw)"), "健康卡必须消费 reasoningDegradedText");
+  // 纯函数侧：>0 出文案含「降级」，零值/旧宿主 null
+  assert.match(L.reasoningDegradedText({ reasoningDegraded: 2 }), /思考档降级 2 次/);
+  assert.match(L.reasoningDegradedText({ reasoningDegraded: 2 }), /降级/);
+  assert.equal(L.reasoningDegradedText({ reasoningDegraded: 0 }), null);
+  assert.equal(L.reasoningDegradedText(null), null);
+});
+
+test("面板漂移：最近提取记录截断标记（written + truncatedParse>0 标签含「截断」）", () => {
+  // extractionRunLines 内部调 extractionRunLabel：截断标随行标签出（双端同源）
+  const lines = L.extractionRunLines([
+    { at: 1730000000000, from: 0, to: 5, sessionId: "s", outcome: "written", writes: 2, truncatedParse: 1 },
+  ]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0].label, /截断/, "truncatedParse>0 的 written 行标签必须含「截断」");
+  // 无截断标记 → 标签干净（不印 0 装饰）
+  const plain = L.extractionRunLines([
+    { at: 1730000000000, from: 0, to: 5, sessionId: "s", outcome: "written", writes: 2 },
+  ]);
+  assert.equal(plain[0].label, "已写 2 条");
+});

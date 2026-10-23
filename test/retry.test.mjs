@@ -1,5 +1,5 @@
 // 提取调用重试韧性：错误分类（route on code）/ 重试链+drain 纪律/
-// 退避参数与纯函数 / retried·lastRecoveredAt 计数 / fallback 换道接线。
+// 退避参数与纯函数 / retried·lastRecoveredAt·reasoningDegraded 计数 / fallback 换道接线。
 // 假 ctx 配方照 test/entry.test.mjs；DATA_DIR 隔离照各测试的 mkdtempSync(tmpdir())，
 // 不写 ~/.dsh 真实数据、不真实调用任何 LLM（stream 全假队列）。
 import assert from "node:assert/strict";
@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { apply, resolveConfig } from "../lib/index.js";
 import {
   __resetMetricsForTest,
+  bumpReasoningDegraded,
   bumpRetryAttempt,
   extractionFailureSnapshot,
   isRetryableFailure,
@@ -719,11 +720,12 @@ test("fallback：配了但全败 → 报 error、fallbackUsed 不加、不落盘
 
 // ---- metrics 计数与恢复语义 ----
 
-test("metrics：retried / lastRecoveredAt / fallbackUsed 契约", () => {
+test("metrics：retried / lastRecoveredAt / fallbackUsed / reasoningDegraded 契约", () => {
   __resetMetricsForTest();
   let snap = extractionFailureSnapshot();
   assert.equal(snap.retried, 0);
   assert.equal(snap.fallbackUsed, 0);
+  assert.equal(snap.reasoningDegraded, 0);
   assert.equal(snap.lastRecoveredAt, null);
   bumpRetryAttempt();
   bumpRetryAttempt();
@@ -732,12 +734,16 @@ test("metrics：retried / lastRecoveredAt / fallbackUsed 契约", () => {
   // streak 语义不受影响（extractSession 粒度由 bump/reset 管）
   assert.equal(snap.streak, 0);
   assert.equal(snap.streakReason, "");
+  // 降级重发计数：宿主拒绝显式思考档的每次真实重发 +1（不是每轮调用都 +1）
+  assert.equal(bumpReasoningDegraded(), 1, "bumpReasoningDegraded 返回累计值");
+  assert.equal(extractionFailureSnapshot().reasoningDegraded, 1);
   const before = Date.now();
   noteExtractionRecovered();
   const after = extractionFailureSnapshot().lastRecoveredAt;
   assert.ok(after >= before && after <= Date.now(), "lastRecoveredAt 是打点时刻");
   __resetMetricsForTest();
   assert.equal(extractionFailureSnapshot().retried, 0, "__resetMetricsForTest 复位新字段");
+  assert.equal(extractionFailureSnapshot().reasoningDegraded, 0, "__resetMetricsForTest 复位降级计数");
 });
 
 // ---- 提取结算明细端到端（extractSession 返回对象 → journal 落盘）----
@@ -1018,6 +1024,50 @@ test("no-route 两态：streak<5 → status='error' cursorAfter==from；第 5 �
     assert.equal(runs[5].outcome, "abandoned");
     assert.equal(runs[5].reason, "no-route");
     assert.ok(runs[5].cursorAfter > runs[5].from, "第 6 轮继续放弃型");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---- 放弃闸的适用范围：只对结构性失败生效，暂态失败永不放弃 ----
+//
+// 设计层不变量（防"更快放弃"）：abandoned 会推进 cursor = 这段记忆永久丢弃，
+// 故只有**重试不可能自愈**的结构性失败（no-cwd / 确认无 provider 的 no-route）
+// 才配走到放弃闸。llm-error / parse-error 是暂态失败（环境侧抖动：max-tokens /
+// timeout / RATE_LIMIT / SERVER / TRANSPORT 都属于环境，不说明"这段内容不可提取"），
+// 一律只 return failed（status='error'，cursor 不动）——区间留在未恢复清单里，
+// 等环境恢复后的补提/下一轮还有机会把它读回来。
+// 这条不变量若被破坏（比如给 llm-error 也加 streak>=5 放弃闸），本机会话
+// session-2f446a22 的 18 连 llm-error 就会在第 5 次把 18 段记忆一次性推进 cursor 判死。
+test("llm-error 长连（>=5）也不放弃：暂态失败不得计入放弃闸（cursor 不动、区间留待补提）", async () => {
+  resetSettingsCache();
+  __resetMetricsForTest();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-journal-llmstreak-"));
+  const workspace = mkdtempSync(join(tmpdir(), "dsh-keepsake-ws-journal-llmstreak-"));
+  try {
+    // 8 连 llm-error（远超放弃线 5）：每轮真实发起调用、每次都以暂态 code 失败。
+    await runRounds({
+      root,
+      workspace,
+      // SERVER = 可重试的暂态失败（RETRYABLE_FAILURE_CODES 族）；retryAttempts:1 让每轮只撞一次
+      streamImpl: () => failingStream({ code: "SERVER", status: 503, message: "upstream unavailable" }),
+      config: { retryAttempts: 1 },
+      rounds: Array.from({ length: 8 }, (_, i) => ({ seq: i + 1 })),
+    });
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 8, "八轮各落一条结算");
+    for (let i = 0; i < 8; i += 1) {
+      assert.equal(runs[i].outcome, "failed", `第 ${i + 1} 轮必须仍是 failed（streak=${i + 1} 也不许放弃）`);
+      assert.equal(runs[i].reason, "llm-error");
+      assert.equal(runs[i].cursorAfter, runs[i].from, `第 ${i + 1} 轮 cursor 不得推进（推进=记忆被永久丢弃）`);
+    }
+    // 八连一次 abandoned 都没有（这是本条不变量的事实证据）
+    assert.equal(runs.some((r) => r.outcome === "abandoned"), false, "llm-error 连击不得产生任何 abandoned");
+    // 连击计数本身照常累计（观测面要看得见"这段环境侧抖了多少次"）——
+    // 注意：streak 照累计但【不喂任何放弃闸】，这是"计数"与"放弃判据"的分层。
+    assert.equal(extractionFailureSnapshot()["llm-error"], 8);
+    assert.equal(extractionFailureSnapshot().streak, 8, "streak 照累计（只影响告警，不影响放弃）");
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });

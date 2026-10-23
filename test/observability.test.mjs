@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
   __resetMetricsForTest,
+  bumpExtractionTokens,
   clearExtractionFailedRange,
   extractionFailureSnapshot,
   extractionObservationSnapshot,
@@ -129,6 +130,67 @@ test("metrics：lastFailedRange 置/清 + inFlight + lastUsedRoute 快照拷贝"
   assert.equal(cleared.extractionInFlight, false);
   __resetMetricsForTest();
   assert.equal(extractionObservationSnapshot().lastUsedRoute, null, "复位生效");
+});
+
+// ---- token / 成本观测面（maxOutputTokens 跟随模型后的成本放大必须看得见） ----
+
+test("metrics：bumpExtractionTokens 累计 input/output/total + calls；两次调用累加", () => {
+  __resetMetricsForTest();
+  // 空态：字段恒在（缺失=旧版判定依据），值全零
+  assert.deepEqual(extractionFailureSnapshot().extractionTokens, { input: 0, output: 0, total: 0, calls: 0 });
+  // 宿主形态（app.asar 的 dsh-llm-pi-ai mapUsage，finish 之前发出）
+  assert.equal(bumpExtractionTokens({ inputTokens: 100, outputTokens: 500, totalTokens: 600 }), 1, "返回累计调用次数");
+  let snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 100, output: 500, total: 600, calls: 1 });
+  // 第二次：calls +1 且三项都累加
+  bumpExtractionTokens({ inputTokens: 200, outputTokens: 1000, totalTokens: 1200 });
+  snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 300, output: 1500, total: 1800, calls: 2 });
+  // cache 读写场景：totalTokens ≠ input+output 时如实取宿主 total（不自算）
+  bumpExtractionTokens({ inputTokens: 10, outputTokens: 20, totalTokens: 25, cacheReadTokens: 5, cacheWriteTokens: 3 });
+  snap = extractionFailureSnapshot();
+  assert.equal(snap.extractionTokens.total, 1825, "host totalTokens 优先（含 cache 时 ≠ input+output）");
+  assert.equal(snap.extractionTokens.calls, 3);
+  __resetMetricsForTest();
+  assert.deepEqual(extractionFailureSnapshot().extractionTokens, { input: 0, output: 0, total: 0, calls: 0 }, "复位生效");
+});
+
+test("metrics：bumpExtractionTokens 对脏 usage 钳零 + 无 usage 只计 calls（调用事实不丢）", () => {
+  __resetMetricsForTest();
+  // 旧适配器/失败途没有 usage chunk：token 记 0，但 calls 必须仍计数——
+  // "调了几次"与"花了多少 token"是两个问题，拿不到用量不等于没调用
+  // （否则降档重发那一趟在观测面上直接消失，正好看不见最该看见的东西）。
+  assert.equal(bumpExtractionTokens(void 0), 1);
+  assert.equal(bumpExtractionTokens(null), 2);
+  assert.equal(bumpExtractionTokens("nope"), 3);
+  assert.equal(bumpExtractionTokens({}), 4);
+  let snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 0, output: 0, total: 0, calls: 4 }, "无 usage：只计调用");
+  // 脏值（NaN/负数/小数/字符串）逐项钳到 0，不污染累计。
+  // totalTokens=3.7 是有限非负 → 按 Math.floor 钳成 3（脏但有依据，不归零）；
+  // input/output 的负数与 NaN 归零。三者分开钳，不互相顶替。
+  bumpExtractionTokens({ inputTokens: -5, outputTokens: NaN, totalTokens: 3.7 });
+  snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 0, output: 0, total: 3, calls: 5 });
+  // totalTokens 非法（负数/NaN）才整体回落 input+output
+  bumpExtractionTokens({ inputTokens: 1, outputTokens: 2, totalTokens: -9 });
+  snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 1, output: 2, total: 6, calls: 6 });
+  // totalTokens 缺失 → 回落 input+output（不自己凑一个宿主没给的数）
+  bumpExtractionTokens({ inputTokens: 7, outputTokens: 11 });
+  snap = extractionFailureSnapshot();
+  assert.deepEqual(snap.extractionTokens, { input: 8, output: 13, total: 24, calls: 7 });
+  __resetMetricsForTest();
+});
+
+test("metrics：extractionFailureSnapshot 的 extractionTokens 是拷贝（外改不污染内部态）", () => {
+  __resetMetricsForTest();
+  bumpExtractionTokens({ inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+  const snap = extractionFailureSnapshot();
+  snap.extractionTokens.input = 999;
+  snap.extractionTokens.calls = 999;
+  assert.deepEqual(extractionFailureSnapshot().extractionTokens, { input: 1, output: 2, total: 3, calls: 1 });
+  __resetMetricsForTest();
 });
 
 // ---- 注入面（消息通道注入健康：记账 / 异常计数 / 快照不可变） ----
@@ -298,6 +360,7 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
     assert.ok(Array.isArray(body.extractionFailures.recent));
     assert.equal(body.extractionFailures.retried, 0);
     assert.equal(body.extractionFailures.fallbackUsed, 0);
+    assert.equal(body.extractionFailures.reasoningDegraded, 0);
     assert.equal(body.extractionFailures.lastRecoveredAt, null);
     assert.equal(body.lastFailedRange, null);
     assert.equal(body.extractionInFlight, false);
@@ -308,16 +371,19 @@ test("api：GET state 带新字段（观测面+双模型卡数据源）", async 
     assert.equal(body.recentKeepDays, 45);
     assert.equal(body.extractionTimeoutMs, 45000);
     assert.equal(body.settings.recentKeepDays, 45, "settings.recentKeepDays 回落到 config 现值");
-    // 未配 overrides → 如实 null（跟随会话路由）；五字段恒在（旧宿主 configSummary 无键 → null）
+    // 未配 overrides → 如实 null（跟随会话路由）；七字段恒在（旧宿主 configSummary 无键 → null）
     assert.deepEqual(body.extractionConfig, {
       provider: null, model: null, fallback: [],
       gateEnabled: null, gateMinScore: null, idleDelayMs: null, maxRunsPerSession: null, redactionEnabled: null,
+      // 提取预算面：null = 旧宿主无此键，与 0（跟随模型）/ null（不下发档位）语义可区分
+      maxOutputTokens: null, reasoningEffort: null,
     });
     assert.deepEqual(body.embeddingConfig, { provider: null, model: null, baseUrl: "" });
     // 提取结算层（面板最近提取记录数据源）：字段恒在，无 journal 依赖时为标准空形
     assert.ok(Array.isArray(body.extractionLog.runs));
     assert.ok(Array.isArray(body.extractionLog.unrecovered));
-    assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
+    assert.equal(body.extractionLog.coverage, null, "无 journal 时 coverage=null（不拿 0 冒充无失败区间）");
+    assert.deepEqual(body.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0, coverage: null });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -119,8 +119,9 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
     // 契约字段：近期动态保留天数 / 单次提取超时（未接线 extraction 时 null）
     assert.equal(json.recentKeepDays, 30);
     assert.equal(json.extractionTimeoutMs, null);
-    // 提取结算层：字段恒在（缺失=旧版判定依据），无 journal 依赖时为空形
-    assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
+    // 提取结算层：字段恒在（缺失=旧版判定依据），无 journal 依赖时为空形。
+    // coverage=null 是"没有 journal"的显式标记（区别于"有 journal 但零结算"——后者给 coverage 对象）。
+    assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0, coverage: null });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -137,9 +138,10 @@ test("GET state：extractionLog 恒含 runs/unrecovered（含 journal 缺省的�
       assert.ok(Array.isArray(json.extractionLog.unrecovered), "unrecovered 恒为数组");
       assert.ok(Array.isArray(json.extractionLog.abandoned), "abandoned 恒为数组");
       assert.equal(json.extractionLog.abandonedCount, 0);
-      assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0 });
+      assert.equal(json.extractionLog.coverage, null, "无 journal 时 coverage=null（缺它=旧版，不拿 0 冒充）");
+      assert.deepEqual(json.extractionLog, { runs: [], unrecovered: [], abandoned: [], abandonedCount: 0, coverage: null });
     }
-    // ② 真 journal 记账后 → /state 如实反映（runs 新在前 + 未恢复失败区间）
+    // ② 真 journal 记账后 → /state 如实反映（runs 新在前 + 未恢复失败区间 + 去重口径）
     const journal = createJournal({ storageRoot: root, log: silentLog });
     journal.recordRun({ sessionId: "sess-a", from: 3, to: 7, cursorAfter: 7, outcome: "written", writes: 2, deletes: 0 });
     journal.recordRun({ sessionId: "sess-a", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
@@ -155,6 +157,67 @@ test("GET state：extractionLog 恒含 runs/unrecovered（含 journal 缺省的�
       assert.equal(json.extractionLog.unrecovered[0].from, 7);
       assert.equal(json.extractionLog.unrecovered[0].to, 11);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("GET state：extractionLog.coverage 去重口径（3 条同区间重复失败 + 1 条不同区间 + 2 条成功）", async () => {
+  const root = freshRoot();
+  try {
+    const journal = createJournal({ storageRoot: root, log: silentLog });
+    // 构造"重复放大"：同区间 (sess-a, 7, 11) 连败 3 次；另一区间 (sess-a, 11, 14) 败 1 次；
+    // 另有两个区间成功。行数 4 failed + 2 written，但 distinct 失败区间只有 2 个。
+    await journal.recordRun({ sessionId: "sess-a", from: 3, to: 7, cursorAfter: 7, outcome: "written", writes: 1 });
+    for (let i = 0; i < 3; i += 1) {
+      await journal.recordRun({ sessionId: "sess-a", from: 7, to: 11, cursorAfter: 7, outcome: "failed", reason: "llm-error" });
+    }
+    await journal.recordRun({ sessionId: "sess-a", from: 11, to: 14, cursorAfter: 11, outcome: "failed", reason: "llm-error" });
+    await journal.recordRun({ sessionId: "sess-a", from: 14, to: 20, cursorAfter: 20, outcome: "written", writes: 1 });
+    await journal.recordRun({ sessionId: "sess-b", from: 0, to: 5, cursorAfter: 5, outcome: "written", writes: 1 });
+
+    const { status, json } = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, journal });
+    assert.equal(status, 200);
+    const cov = json.extractionLog.coverage;
+    // 验收的唯一判据：distinct 区间数，不是行数。
+    // failed 计数会因"不再反复白撞同一区间"而下降，那不等于记忆变多——只有 distinct 说得清。
+    assert.equal(cov.distinctFailedRanges, 2, "3 条同区间重复失败 + 1 条不同区间 → distinct=2（而行数是 4）");
+    assert.equal(cov.failedRangesTotal, 4, "行数不去重：4 条 failed");
+    assert.equal(cov.distinctWrittenRanges, 3);
+    assert.equal(cov.writtenRangesTotal, 3);
+    assert.equal(cov.distinctAbandonedRanges, 0);
+    assert.equal(cov.abandonedRangesTotal, 0);
+    // 区间级成功率（区间口径，不是轮次口径）：written / (written+failed+abandoned) = 3/5
+    assert.equal(cov.writtenRangeRate, 3 / 5);
+    assert.equal(cov.scope, "range", "口径标注必须是 range（区间口径）");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("GET state：extractionLog.coverage 跨重启重放一致（distinct 不因 ring 裁行而缩水）", async () => {
+  const root = freshRoot();
+  try {
+    const first = createJournal({ storageRoot: root, log: silentLog, ringMax: 2, rotateAt: 1000, keepOnRotate: 2 });
+    // 5 条失败 + 1 条成功：ring 只留 2 条，盘上全量可重放
+    for (let i = 0; i < 5; i += 1) {
+      await first.recordRun({ sessionId: "s", from: i, to: i + 1, cursorAfter: i, outcome: "failed", reason: "llm-error" });
+    }
+    await first.recordRun({ sessionId: "s", from: 10, to: 20, cursorAfter: 20, outcome: "written", writes: 1 });
+    assert.equal(first.snapshot().runs.length, 2, "ring 只留最近 2 条（现算口径会少算）");
+
+    // 重启：新实例重放盘上全量行
+    const revived = createJournal({ storageRoot: root, log: silentLog });
+    const cov = revived.snapshot().coverage;
+    assert.equal(cov.distinctFailedRanges, 5, "跨重启 distinct 不缩水（ring 被裁也不影响）");
+    assert.equal(cov.distinctWrittenRanges, 1);
+    assert.equal(cov.writtenRangeRate, 1 / 6);
+    // 重复同区间只算一次：把 (0,1) 再记 3 次，distinct 仍 5
+    for (let i = 0; i < 3; i += 1) {
+      await revived.recordRun({ sessionId: "s", from: 0, to: 1, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+    }
+    assert.equal(revived.snapshot().coverage.distinctFailedRanges, 5, "同区间重复只计 1 个 distinct");
+    assert.equal(revived.snapshot().coverage.failedRangesTotal, 8, "行数照计 8（放大可见）");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

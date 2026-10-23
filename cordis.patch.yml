@@ -48,7 +48,13 @@
         model: null
         minUserWords: 3
         timeoutMs: 120000
-        maxOutputTokens: 4096
+        # 0=跟随模型（推荐，代码缺省即 0）：显式 4096 会把带思考模型的输出预算吃光。
+        # 本机 88 条 llm-error 里 81 条是 kind=max-tokens，全部由固定 4096 造成。
+        # maxOutputTokens: 0
+        # 提取的思考档：minimal | low | medium | high（代码缺省=不下发，跟随模型默认档）。
+        # 注意：只在你的路由模型声明支持该档位时才配——宿主会按模型能力校验，
+        # 不支持的档位（如 magpie/group/mozu1 只声明 high/max）会被拒并触发一次降级重发。
+        # extractReasoningEffort: low
         maxIndexLines: 200
         maxIndexChars: 25000
         maxManifestFiles: 200

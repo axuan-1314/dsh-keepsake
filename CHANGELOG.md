@@ -4,6 +4,31 @@
 
 ## [未发布]
 
+**提取韧性三修：输出预算跟随模型 + 显式降思考档 + 失败不再自删路由 + 补提路径复原路由；外加「证明修复真的生效」的三项观测能力。** 本机 `extraction-errors.log` 309 行里 `llm-error` 88 条，其中 **81 条是 `kind=max-tokens`**；且 `llm-error → no-route` 转移 75/88——一次模型侧抖动被两条缺陷接力放大成结构性失败链。修完四件止血后有**三个观测缺口**导致无法验证修复是否真生效，本批补齐。无新增依赖，`FORMAT_VERSION` 仍为 2。
+
+### 修复
+
+- **输出预算固定 4096 吃光带思考模型的输出**：`maxOutputTokens` 语义改为 **0 = 跟随模型**（新默认），且为 0 时**不下发 `maxTokens` 键**（宿主 `resolveCallFor` 只在 `maxTokens === undefined` 时材料化模型默认值，传 0 会被当成 0 预算）。`cordis.patch.yml` 同步改为 0。
+- **从不显式降思考档**：新增 config `extractReasoningEffort`（`minimal|low|medium|high`，默认 `low`，非法值启动即抛且提示允许值）。此前提取调用只传 `maxTokens`、从不传 `reasoningEffort`，宿主因此套用模型默认最高档，单次思考就把预算吃满、正文零输出。
+- **`kind=max-tokens` 一次判死**：`callLlmText` 改为 `{ text, truncated }` 返回形状；`max-tokens` 且已累积正文时不再直接抛错，而是带 `truncated` 标记交回调用方**先尝试解析**——解析成功即照常落盘并记新观测键 `truncatedParse`（进 `journal.shapeRun` 白名单，跨重启可重放），解析失败才记 `parse-error`（并显式标注是否截断所致）。正文零输出仍判 `llm-error`。
+- **失败自删路由 → 级联 no-route**：`llm-error` 后不再 `delete st.route`，保留 last-good 路由；「中途换模型可自愈」改由新增的 `routeStale` 标记承担——失败后到达的 `assistant/message.source` 允许覆盖旧路由（`request/header` 本就无条件覆盖）。
+- **补提路径 100% no-route**：`createSessionAdapter` 现在扫描读回事件复原路由（`routeFromEvents`：`request/header` 优先、`assistant/message.source` 兜底、同一来源取最后一条），落在适配对象的新字段 `recoveredRoute` 上；`extractSession` 路由解析加入第三级 `session.recoveredRoute`。字段名刻意带 `recovered` 前缀，不与宿主 `Session` 的既有属性面冲突。
+- **宿主能力校验的边界**：宿主对不支持的思考档会在 provider I/O 前以 `code=UNSUPPORTED_REASONING_EFFORT` 拒绝（非思考模型完全没有 reasoning 元数据）。`callLlmText` 命中该 code 时打一条 warn 并**不带档位重发一次**，同时把该路由记进进程内 `reasoningUnsupported` 表，后续同路由不再下发——降级可见、不静默、不无限重试。
+
+### 观测能力（三项缺口：修完了却证明不了生效）
+
+- **token / 成本观测（P0）**：`callLlmText` 此前只认 `text-delta` 与 `finish`，把宿主的 `{type:"usage", usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?}}` chunk **直接丢弃**——于是 `maxOutputTokens` 从 4096 抬到模型默认（本机 250000，61 倍）之后，单次输出上限放大 61 倍、成本可能被带飞而完全看不见。现在每趟（含降档重发第二趟）收口时记账，新面 `/state.extractionFailures.extractionTokens` = `{ input, output, total, calls }`。口径：`calls` 记真实发起的调用次数（含降档重发那趟、含失败途），宿主没发 usage chunk（旧适配器）时 token 记 0 但 `calls` 仍计数——「调了几次」与「花了多少 token」分开报；`total` 取宿主 `totalTokens`（含 cache 读写，缺失才回落 `input + output`），不自己凑数。
+- **`/state` 去重口径（P0）**：新增 `/state.extractionLog.coverage` = `{ distinctFailedRanges, distinctWrittenRanges, distinctAbandonedRanges, writtenRangeRate, writtenRangesTotal, failedRangesTotal, abandonedRangesTotal, scope: "range" }`。**这是验收的唯一判据**：修复生效后「不再反复白撞同一区间」会让 `failed` 计数下降，但那不等于记忆变多——只有 distinct `(sessionId, from, to)` 区间数说得清。口径如实标注为**区间口径不是轮次口径**：宿主不提供总轮次数，故 `writtenRangeRate` = `written / (written + failed + abandoned)`（区间级成功率），分母不含 skipped/zero-ops（无区间成败语义），也不编一个轮次数。`*RangesTotal` 是不去重行数，与 distinct 并排，`行数/distinct` 即「平均每区间结账几次」。journal 侧进程内累计 + 重放同源（`runs` ring 只有 30 条且会被轮转裁掉，从 ring 现算必少算）；`parseReplayLine`/`shapeRun` 白名单语义未动（不新增盘上字段，纯读侧统计）。
+- **截断与降档上用户面（P1）**：`truncatedParse > 0` 的 `written` 行标签附「（输出被截断，可能少存）」（`extractionRunLabel`）；`reasoningDegraded > 0` 时健康卡与门牌各显示一行「思考档降级 N 次（该路由不支持所配档位…）」（新增纯函数 `reasoningDegradedText` + `EXTRACTION_BUCKET_KEYS` 增桶）；面板最近失败表的 reason 列改走 `L.reasonLabelOf(...)` 与测试中文化口径统一（复查点名的遗留：此前直接 `esc(r.reason)`，面板上会露 `no-route` / `llm-error` 这类英文枚举）。门牌侧同步内联兜底（`reasoningDegradedTextFallback`），双端逐字一致。
+
+### 测试测试
+
+- 新增 `test/extract-route-resilience.test.mjs`（12 条）：预算缺省 0 且 options 无 `maxTokens` 键、思考档缺省/显式/非法、`UNSUPPORTED_REASONING_EFFORT` 降级重发一次且同路由不再白撞、截断可解析即落盘 + `truncatedParse` 跨 journal 实例重放仍在、半截 JSON 走 `parse-error`、零输出仍判死、`llm-error` 后同会话下一轮不产生 `no-route`、失败后新 `source` 能顶替旧路由、`routeFromEvents` 优先级、补提经真 REST 面发起真调用且路由来自读回事件。全部走真 `apply()` 入口/真 REST 面，未复刻接线。逐条做过拆改验证（摘掉对应修复 → 必红）。
+- 新增 token/成本面测试（6 条）：`test/observability.test.mjs` 3 条（累计/两次累加/cache 时 host total 优先、脏 usage 钳零 + 无 usage 只计 calls、快照拷贝不可变）+ `test/extract-route-resilience.test.mjs` 4 条端到端（假 llm 发 usage chunk → 真 REST `/state` 快照 `input=100/output=500/total=600/calls=1`；两次调用累加；降档重发第二趟也计；旧适配器无 usage chunk 不抛错且 `calls` 仍计 1）。
+- 新增去重口径测试（5 条）：`test/journal.test.mjs` 3 条（3 条同区间重复失败 + 1 条不同区间 + 2 条成功 → `distinct=2` 而行数 4；跨重启重放不缩水 + 同区间再记 3 次 distinct 不动行数 +3；按会话分键 + 零结算 `rate=null` 不编数）+ `test/api.test.mjs` 2 条（同构造经真 REST `/state`；`ringMax=2` 下跨重启一致）。
+- 新增用户面测试（6 条）：`test/panel-logic.test.mjs` 2 条（`truncatedParse` 截断标 + 与落盘失败并存不互顶、非 written 不带标；`reasoningDegradedText` 含「降级」且零值/旧宿主 null）+ `test/panel-drift.test.mjs` 3 条（**渲染级**：把面板真实行模板抠出来求值，reason 列不得命中 `/\b(no-route|llm-error|parse-error|io-error|no-cwd)\b/；降级摘要接线；截断标记随行标签出）+ `test/client-source.test.mjs` 1 条（`reasoningDegradedTextFallback` 表驱动与实现逐字一致 + 双端消费锚）。
+- 拆改验证（逐条「摘修复 → 必红 → 还原 → 绿」）：删 `callLlmText` 的 usage 分支 → 4 条 usage 测试红；把 distinct 改成行数统计 → 4 条 coverage 测试红；删 `truncatedParse` 附标分支 → 2 条红；`EXTRACTION_BUCKET_KEYS` 去掉 `reasoningDegraded` → 1 条红；面板 reason 列回退 `esc(r.reason)` → 渲染级测试红；门牌降级文案与 panel-logic 漂移 → 防漂移测试红；面板降级摘要改接别的函数 → 2 条红。测试总数 1104 → 1123。
+
 ## [0.6.4] - 2026-10-22
 
 **上两批修复自己引入的缺陷 + 五路复查 P2/P3 收尾。** v0.6.2/v0.6.3 修掉了真问题，但复查（含对「修复本身」的对抗复查）发现其中两条修法各有反向副作用、另有若干遗留。本批把 2 个 P0 级回归、5 个 P2、5 个 P3 全部收口，并补上复查点名的最大的测试空白（memo 链路端到端）。无新增开关、`FORMAT_VERSION` 仍为 2。

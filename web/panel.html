@@ -1479,7 +1479,9 @@ function buildPipeHealthCard(data) {
       const rows = ef.recent.slice(0, 5).map((r) => {
         const msg = String(r && r.message != null ? r.message : "");
         const short = msg.length > 60 ? msg.slice(0, 60) + "…" : msg;
-        return `<tr><td class="meta">${esc(L.relativeTimeOf(r && r.at))}</td><td>${esc(r && r.reason)}</td><td class="meta">${esc(L.modelShortName(r && r.model) || "—")}</td><td class="meta" title="${esc(msg)}">${esc(short)}</td></tr>`;
+        // reason 列与"最近提取记录"结果列同口径：一律经 L.reasonLabelOf 中文化，
+        // 面板上绝不出现 no-route / llm-error 这类英文枚举（复查点名的遗留缺口）。
+        return `<tr><td class="meta">${esc(L.relativeTimeOf(r && r.at))}</td><td>${esc(L.reasonLabelOf(r && r.reason))}</td><td class="meta">${esc(L.modelShortName(r && r.model) || "—")}</td><td class="meta" title="${esc(msg)}">${esc(short)}</td></tr>`;
       }).join("");
       parts.push(`
         <div class="tableScroll"><table class="preview">
@@ -1512,6 +1514,11 @@ function buildPipeHealthCard(data) {
   //   /state.safety 缺失（旧版宿主）→ safetySummaryText 返回 null，不渲染（tolerant 消费）。
   const safetyLine = L.safetySummaryText(data.safety);
   if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
+  // 思考档降级摘要（该路由不支持所配档位 → 已按模型默认档重发 N 次）——
+  // 只进 journal/log.warn 的话用户既不知道发生了、也无从判断要不要换档位。
+  // 零值/旧宿主（无 reasoningDegraded 字段）→ null 不渲染（不印 0 装饰）。
+  const degradedLine = L.reasoningDegradedText(efRaw);
+  if (degradedLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(degradedLine)}</div>`);
   const injectionLine = L.injectionSummary(data.injection);
   if (injectionLine) {
     // 预算占用段：token 预算 >0 且服务端带 lastTokens 时附「最近 ≈X tokens / 上限 Y」；

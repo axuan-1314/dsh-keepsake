@@ -54,6 +54,7 @@ import {
   pipeHealthLevel,
   previewRowsOf,
   reasonLabelOf,
+  reasoningDegradedText,
   recentAgeOf,
   recentExpireDays,
   relativeTimeOf,
@@ -333,9 +334,9 @@ test("serializeEntries：desc 含换行折叠为空格（单行注释协议防�
 
 // ---- 提取管道可观测（/state 新字段 tolerant 消费纯函数） ----
 
-test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed，顺序稳定（分桶展示序）", () => {
+test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed/reasoningDegraded，顺序稳定（分桶展示序）", () => {
   assert.deepEqual(EXTRACTION_BUCKET_KEYS, [
-    "no-route", "no-cwd", "llm-error", "parse-error", "io-error", "retried", "fallbackUsed",
+    "no-route", "no-cwd", "llm-error", "parse-error", "io-error", "retried", "fallbackUsed", "reasoningDegraded",
   ]);
 });
 
@@ -410,22 +411,65 @@ test("extractionNoticeText：新版带病因+模型短名；streak 0 → 空；�
   assert.equal(extractionNoticeText(null), "");
   assert.equal(extractionNoticeText(0), "");
   assert.equal(extractionNoticeText({ streak: 0, recent: [] }), "");
-  // 新版主形态（计数 · 病因（模型末段））
+  // 新版主形态（计数 · 病因（模型末段））——原因走中文映射，不露英文枚举
   assert.equal(
     extractionNoticeText({ streak: 3, recent: [{ reason: "llm-error", at: 1, provider: "acme", model: "group/chat-model", message: "429 …" }] }),
-    "自动提取失败 3 次 · 最近：llm-error（chat-model）",
+    "自动提取失败 3 次 · 最近：LLM 调用失败（chat-model）",
   );
-  assert.equal(extractionNoticeText({ streak: 1, recent: [{ reason: "io-error" }] }), "自动提取失败 1 次 · 最近：io-error");
+  assert.equal(extractionNoticeText({ streak: 1, recent: [{ reason: "io-error" }] }), "自动提取失败 1 次 · 最近：落盘失败");
   assert.equal(extractionNoticeText({ streak: 2, recent: [] }), "自动提取失败 2 次", "有 recent 字段但空（≠旧版文案）");
   assert.equal(
     extractionNoticeText({ streak: 2, recent: [], streakReason: "parse-error" }),
-    "自动提取失败 2 次 · 最近：parse-error",
+    "自动提取失败 2 次 · 最近：输出解析失败",
     "recent 空时 streakReason 兜底",
   );
   assert.equal(extractionNoticeText({ streak: 2, recent: [{ model: "group/x" }] }), "自动提取失败 2 次", "无原因时只报计数");
   // 旧版：无 recent 字段（对象）或纯数字 → 沿用旧单行文案
   assert.equal(extractionNoticeText({ streak: 3, streakReason: "llm-error" }), OLD(3));
   assert.equal(extractionNoticeText(3), OLD(3));
+});
+
+test("reasoningDegradedText：>0 出「思考档降级 N 次」摘要；零值/缺失/脏值 → null（不渲染）", () => {
+  const t = reasoningDegradedText({ reasoningDegraded: 3 });
+  assert.match(t, /思考档降级 3 次/, "必须含次数");
+  assert.match(t, /降级/, "必须含「降级」字样（测试关键词）");
+  assert.match(t, /该路由不支持所配档位/, "必须说清原因（用户据此决定换不换档位）");
+  // 零值 / 缺字段 / 旧数字形态 / 脏值 → null（不印 0 装饰）
+  assert.equal(reasoningDegradedText({ reasoningDegraded: 0 }), null);
+  assert.equal(reasoningDegradedText({}), null);
+  assert.equal(reasoningDegradedText(null), null);
+  assert.equal(reasoningDegradedText(void 0), null);
+  assert.equal(reasoningDegradedText(2), null, "旧数字形态没有这个字段：null（不拿 streak 顶替）");
+  assert.equal(reasoningDegradedText({ reasoningDegraded: -1 }), null);
+  assert.equal(reasoningDegradedText({ reasoningDegraded: "x" }), null);
+  assert.equal(reasoningDegradedText({ reasoningDegraded: NaN }), null);
+  // 小数钳成整数次数（不印 2.5 次）
+  assert.match(reasoningDegradedText({ reasoningDegraded: 2.9 }), /思考档降级 2 次/);
+});
+
+test("extractionNoticeText：失败原因中文化（复用 EXTRACTION_REASON_LABELS），未收录走兜底美化", () => {
+  const ENUM_RE = /\b(no-route|llm-error|parse-error|io-error|no-cwd)\b/;
+  // 已收录的失败枚举：一律译成中文，且绝不露英文 token
+  for (const [token, zh] of Object.entries(EXTRACTION_REASON_LABELS)) {
+    const text = extractionNoticeText({ streak: 2, recent: [{ reason: token, model: "acme/chat" }] });
+    assert.doesNotMatch(text, ENUM_RE, `原因 ${token} 不得以英文枚举出现在面板：${text}`);
+    assert.ok(text.includes(zh), `原因 ${token} 应显示为「${zh}」：${text}`);
+  }
+  // 用户实际看到的形态（实现侧实测的 no-route 场景）
+  assert.equal(
+    extractionNoticeText({ streak: 5, recent: [{ reason: "no-route", model: "mozu1" }] }),
+    "自动提取失败 5 次 · 最近：无模型路由（mozu1）",
+  );
+  // streakReason 兜底路径同样中文化（recent 空）
+  assert.equal(
+    extractionNoticeText({ streak: 2, recent: [], streakReason: "no-cwd" }),
+    "自动提取失败 2 次 · 最近：会话无工作区",
+  );
+  // 未收录原因：兜底美化（连字符/下划线转空格），不抛错、不显示原始下划线串
+  const future = extractionNoticeText({ streak: 1, recent: [{ reason: "some-future-reason" }] });
+  assert.equal(future, "自动提取失败 1 次 · 最近：some future reason");
+  assert.doesNotMatch(future, /some-future-reason|some_future_reason/, "未收录原因不得原样露出下划线/连字符串");
+  assert.equal(extractionNoticeText({ streak: 1, recent: [{ reason: "quota_exceeded" }] }), "自动提取失败 1 次 · 最近：quota exceeded");
 });
 
 test("extractionRangeText：第 X 轮对话之后…（去 seq 内部术语）；条件不满足 → 空", () => {
@@ -491,6 +535,26 @@ test("extractionRunLabel：written 计数（writes+deletes）/ 部分失败附�
     "部分成功必须可见（良性总数会掩盖失败的 1 条）",
   );
   assert.equal(extractionRunLabel({ outcome: "written", writes: "x", deletes: -2 }), "已写 0 条", "脏计数不炸不显示负数");
+});
+
+test("extractionRunLabel：written + truncatedParse>0 → 附「（输出被截断，可能少存）」", () => {
+  // 截断仍解析成功 = "看起来正常的成功"，不标出来用户永远不知道这次可能少存了几条
+  assert.equal(
+    extractionRunLabel({ outcome: "written", writes: 2, truncatedParse: 1 }),
+    "已写 2 条（输出被截断，可能少存）",
+  );
+  // 与落盘失败并存在场（两个提示都要在，不互相顶替）
+  assert.equal(
+    extractionRunLabel({ outcome: "written", writes: 2, failedOps: 1, truncatedParse: 1 }),
+    "已写 2 条；落盘失败 1（输出被截断，可能少存）",
+  );
+  // 0/缺省/脏值 → 不附（不印 0 装饰）
+  assert.equal(extractionRunLabel({ outcome: "written", writes: 2, truncatedParse: 0 }), "已写 2 条");
+  assert.equal(extractionRunLabel({ outcome: "written", writes: 2 }), "已写 2 条");
+  assert.equal(extractionRunLabel({ outcome: "written", writes: 2, truncatedParse: "x" }), "已写 2 条", "脏值不炸不附标");
+  // 非 written 终态不带截断标（截断标只对"写成了"有意义）
+  assert.equal(extractionRunLabel({ outcome: "zero-ops", truncatedParse: 1 }), "无可记");
+  assert.equal(extractionRunLabel({ outcome: "failed", reason: "parse-error", truncatedParse: 1 }), "失败：输出解析失败");
 });
 
 test("extractionRunLabel：zero-ops 两态（无可记 / 无可落盘）", () => {
@@ -619,7 +683,8 @@ test("abandonedNoticeText：有数据 → 文案字符串；空/非数组 → nu
   const r = abandonedNoticeText([{ from: 10, to: 20, sessionId: "s1" }, { from: 30, to: 40, sessionId: "s1" }]);
   assert.equal(typeof r, "string", "返回裸文案字符串（面板按 err 红条渲染）");
   assert.match(r, /有 2 段对话的提取已放弃/);
-  assert.match(r, /可在下方最近提取记录查看明细/);
+  assert.match(r, /可在下方最近提取记录查看明细|可在最近提取记录查看明细/);
+  assert.match(r, /可在「待补提区间」里找到并尝试救回/, "已放弃区间必须指路补提入口（只说不会补上=用户不知道还能救）");
   // 单条
   assert.equal(abandonedNoticeText([{ from: 1, to: 2 }]).startsWith("有 1 段对话的提取已放弃"), true);
   // 无数据 / 旧版宿主 → null（不渲染，不装样子）

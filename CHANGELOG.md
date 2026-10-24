@@ -2,7 +2,32 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)，变更记录格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [0.7.0] - 2026-10-24
+
+**批 3：召回端点故障可见化 + 硬事实守护指路 + 在途中止分类 + 零正文失败路径（复查后收口版）。** 施工由三个并行模块并行完成，随后三路对抗复查（假绿猎杀 / 自伤猎杀 / 终端用户视角）揪出 2 条施工 P0、2 条复查 P0、若干 P1，实现侧逐条裁定修复。先交代三件对账事实，防止后续翻案：
+- **方案 v2 §4.1（放弃闸重设计）的前提不成立，本批不动放弃闸。** 重启后 journal 里 0 条 `no-route`（级联已断），唯一残留失败族是 `ABORTED`（见修复③）。
+- **「max-tokens 复发」被证伪。** 施工前实现侧把重启后一条 `llm-error` 误读成 `kind=max-tokens`——逐字节核验原文是 `ABORTED`；最后一条真正的 max-tokens（`11:22:48Z`）早于插件重启（`13:32:50Z`）。注意插件是 `link:D:/dsh-keepsake` 直连工作树，**代码生效看重启时刻，不看提交时刻**。
+- **但「零正文 max-tokens」这个失败模式本身是真的**（批 1 之前 81/88 条 llm-error 都是它），且机制被本机实际环境网关实测坐实：思考 token 与正文**共享同一个 `maxTokens` 预算、思考链先跑**（`max_tokens=64` → reasoning 258 字符 / content 0 字符），丢 `reasoningEffort` 救不了（不传档位模型照样思考）。本批修的是它的失败路径——有界、不重演批 1。
+
+### 修复
+
+- **在途中止按「执行结果」分类（本机实际环境真故障，本批含金量最高的一件）**。本机实际环境 `extraction-errors.log` 13:28/13:37 两条 `llm-error … ABORTED`：插件 `callLlmText` 的单次超时计时器（默认 120s）`controller.abort()` 后，宿主把它映射成 `code=ABORTED`——**不在可重试族** → 一次判死；1291-seq 的大区间（越长越有价值）最容易被它吃掉。修法两条，判据全是执行结果、不猜错误形状：① 计时器超时 → 按 `controller.signal.reason === timeoutError` 补挂宿主同形 `code=TIMEOUT`（既有可重试族）→ 链上退避重采样；② dispose 在途（卸载打断在途 attempt）→ `runAttemptChain` 捕获处先查 `lifetime.signal` 本尊 → 按 `aborted` 收场，不进 `llm-error` 桶、不推失败连击（是我们在卸载，不是模型失败）。
+- **零正文 `max-tokens`：显式配小上限的用户有界逃逸；跟随模型不进重试链（成本纪律）**。显式配了 `maxOutputTokens > 0` 时零正文 → **丢掉该上限、改跟随模型重发一次**（唯一真正改变预算的手段，实测同一 prompt 不下发上限时正文正常产出），只逃逸一次，且**重发拿到正文才计数**（`escapeRetried` 在成功返回点记，发起不计——复查抓过"逃逸失败时健康卡同时显示『提取失败』与『重发成功』"的意图当结果）。**刻意不给它开链级重采样**：施工版曾自造 `code=OUTPUT_BUDGET_EXHAUSTED` 进 `RETRYABLE_FAILURE_CODES`，复查算账后移除——跟随模型（本机 25 万 token 预算）仍零正文在实践中不可达，为它重采样最坏是 `retryAttempts × fallback 条数` 次满预算调用（实测 `retryAttempts=10` + 3 条 fallback = **84 次**），拿真金白银换一个几乎不存在的场景。`RETRYABLE_FAILURE_CODES` 保持宿主 `DEFAULT_RETRYABLE_CODES` 五项镜像（有测试钉住集合本体）。
+- **召回端点配错：从「启动即抛、整个插件起不来」改为「插件照常加载 + 面板/门牌红条指路」**（方案 v2 §4.2 降级落地，不加开关）。原实现：`resolveConfig` 对「`recallEnabled: true` 但缺 `embeddingBaseUrl`/`embeddingModel`、或 `injectChannel` 不是 `message`」直接 `throw`，而 `apply()` 第一行就调它——用户没填一个**可选功能**的端点，代价是连核心的对话记忆提取与注入一起起不来。现在拆成两类：
+  - **静态配置类**：不再抛错。`recallEnabled` 被**显式置 false**（运行时零嵌入调用，不是"开着但每轮白撞"的 fail-open），诊断经 `/state.recallDiagnostics` 透出，红条文案（`L.recallDisabledNoticeText`，面板/门牌/启动日志同一出处）**三岔口径、全部按当前生效配置每轮现算**：①缺端点/模型 → 点名键名 + 面板「嵌入服务」卡 + **必须同时打开「开启语义召回」开关**（复查 P0：开关预填 false，用户照旧文案填完端点后红条让位、召回静默不工作）；②`injectChannel` 不是 message → 只能改 `cordis.patch.yml`（明说面板改不了；用户补齐端点后红条改为只报通道问题，不再谎报缺键——复查 P0）；③配置齐了但开关没开 → 显式 `switchOff` 红条（复查两路各自独立抓到的 fail-open：旧 `rescuedBySettings` 只看端点/模型不看开关）。诊断每轮现算的副产品：**热恢复**——用户补齐配置后不重启即恢复（有测试）。仍然启动即抛的只有"配错"（URL 非 http(s)、键类型非法），与其它配置键 fail-loud 同口径。
+  - **运行时故障类（端点连不上/超时/HTTP 错）**：熔断语义一字未改（3 次 → 冷却 60s），只补可见性——`/state.recall.errors` 非零时面板与门牌出红条（与静态类互斥显示），文案注明「只影响语义召回，其它功能不受影响」。
+- **硬事实守护策略（`hardfactPolicy`）面板指路**（方案 v2 §4.3，按定案只加文案不加控件）：设置页「保留策略」卡一段说明——守护什么（正文里的数字、版本号、十六进制标识、字节尺寸这类写错一个字符就可能跑不通的内容）、当前值（warn/block 各自意味着什么；脏值如实标「不认识（按 warn 生效）」，不冒充现值）、去哪改（settings.json 的 `hardfactPolicy` 键，下一轮生效），并如实说明为什么不给控件（拨到 block 会把合法更新一起回滚，用户看到「我改的记忆自己变回去了」）。复查修正两处：**路径不再写死 `~/.dsh`**（`storageRoot` 可配，改由 `/state.storageRoot` 现算，自定义路径的用户不再被指错路）；删掉「当前值 warn——warn：」的自我复述。
+- **红条指路路径动态化（同上口径）**：召回红条里的 settings.json 路径同样由 `/state.storageRoot` 现算，缺省才回落 `~/.dsh/memory/settings.json`；`/state.recallDiagnostics` 增 `requested` 字段（entry 是否请求过召回），单独透传的 `recallRequested` 死字段移除。
+
+### 测试测试（1126 → 1152，+26）
+
+- **零正文逃逸（3 条 + 集合钉 1 条）**：显式上限 + 两趟零正文 → 逃逸重发成功落盘且 `escapeRetried=1`；跟随模型 + 零正文 → **恰好 1 次调用**（不逃逸、不进重试链——变异：把自造 code 同时加回集合与补挂 → 必红）；逃逸那趟仍零正文 → 恰好两趟后 llm-error 且 `escapeRetried=0`（结果口径）；`RETRYABLE_FAILURE_CODES` 集合本体 deepEqual 宿主五项（防将来混入自造 code）。
+- **在途中止分类（2 条，全走真 `apply()` / 真 REST 面）**：①在途超时 → `retried≥1`（真实重采样）、失败摘要带 TIMEOUT（变异：摘掉 TIMEOUT 补挂 → 必红）；②dispose 在途（**走补提路径触发**——scheduler.dispose 会先有界 drain 在线提取，在线路径的 abort 永远落在两次 attempt 之间，只有补提不经 scheduler 才能确定命中"attempt 中途被打断"）→ `llm-error` 桶不增、journal 不记 llm-error（变异：摘掉 dispose 检查 → 必红）。**变异期间抓掉两个假测试**：假流"永不 yield 的死流"对 abort 信号无动于衷、extractSession 永远挂在 for-await 上，dispose 路径根本没走到——改为挂起至 signal abort 后抛宿主形状 ABORTED。
+- **召回降级（`test/recall-degrade.test.mjs`，14 条；全走真入口）**：缺键不抛 + 插件照常加载 + `/state` 诊断形状；只缺 model / 通道 section 各自精确；**有候选前提下**零嵌入调用（复查 P1：无条目时 fail-open 也不会发请求，断言无区分力——现在先 `createEntry` 再断言 0）；面板红条渲染级（含自定义 storageRoot 路径 + switchOff 岔 + 不得谎报缺键）；门牌兜底表驱动逐字一致（含 switchOff）；运行时故障端到端 + 推行锚；熔断常量 3 次/60s 未动；边界（配错仍抛 / 没请求过不出红条 / 配齐无诊断）；**switchOff 显式红条**（变异：摘掉 switchOff 岔 → 2 条红）；**热恢复**（补开开关不重启即恢复）。
+- **hardfact 指路（2 条渲染级）**：真实行模板求值（warn/block/缺失/脏值 + 自定义 storageRoot 路径 + 路径参数兜底）；无控件判据升级为「卡内白名单外一律违规」（复查 P1：旧判据只认带 `keepHardfact` 的标签，radio/checkbox 可绕过）。
+- **推行锚补强（复查 P1：只锁 const 行锁不住"算了但没 push"）**：`escapeLine` 与 `recallFailureLine` 的 push 行各有测试。
+
+## [0.6.5] - 2026-10-23
 
 **提取韧性三修：输出预算跟随模型 + 显式降思考档 + 失败不再自删路由 + 补提路径复原路由；外加「证明修复真的生效」的三项观测能力。** 本机 `extraction-errors.log` 309 行里 `llm-error` 88 条，其中 **81 条是 `kind=max-tokens`**；且 `llm-error → no-route` 转移 75/88——一次模型侧抖动被两条缺陷接力放大成结构性失败链。修完四件止血后有**三个观测缺口**导致无法验证修复是否真生效，本批补齐。无新增依赖，`FORMAT_VERSION` 仍为 2。
 

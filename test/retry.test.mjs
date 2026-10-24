@@ -16,6 +16,7 @@ import {
   isRetryableFailure,
   noteExtractionRecovered,
   retryDelayMs,
+  RETRYABLE_FAILURE_CODES,
 } from "../lib/metrics.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { INDEX_FILENAME } from "../lib/filename.js";
@@ -250,6 +251,22 @@ test("isRetryableFailure 表驱动：确定性失败 code 逐个断言不可重�
   for (const code of ["AUTH", "INVALID_REQUEST", "QUOTA", "NO_ADAPTER", "CONTEXT_WINDOW_EXCEEDED", "MISSING_CREDENTIAL"]) {
     assert.equal(isRetryableFailure({ code, message: "429 slow down please" }), false, `code=${code} 应不可重试`);
   }
+});
+
+test("isRetryableFailure：可重试集保持宿主镜像，不收自造 code（成本纪律）", () => {
+  // OUTPUT_BUDGET_EXHAUSTED（零正文 max-tokens）曾经被加进可重试集、复查 P0 后移除：
+  // 跟随模型（本机 25 万 token 预算）仍零正文在实践中不可达，为它开链级重采样最坏是
+  // retryAttempts × fallback 条数次满预算调用（实测 retryAttempts=10 + 3 条 fallback
+  // = 84 次）——拿真金白银换一个几乎不存在的场景。零正文落 llm-error 一次判死；
+  // 显式配小上限的用户走 callLlmText 的预算逃逸（有界：最多多一次调用）。
+  assert.equal(RETRYABLE_FAILURE_CODES.includes("OUTPUT_BUDGET_EXHAUSTED"), false, "自造 code 不得进宿主镜像的可重试集");
+  assert.equal(isRetryableFailure({ code: "OUTPUT_BUDGET_EXHAUSTED", message: "输出预算耗尽且正文零输出" }), false);
+  // 集合本体必须与内核 DEFAULT_RETRYABLE_CODES 一致（防止将来再混入自造 code）
+  assert.deepEqual(
+    [...RETRYABLE_FAILURE_CODES],
+    ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT"],
+    "可重试集 = 宿主 DEFAULT_RETRYABLE_CODES 五项，多一项少一项都红",
+  );
 });
 
 test("isRetryableFailure：code 缺失时的保守消息兜底（最后手段）", () => {

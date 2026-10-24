@@ -334,9 +334,9 @@ test("serializeEntries：desc 含换行折叠为空格（单行注释协议防�
 
 // ---- 提取管道可观测（/state 新字段 tolerant 消费纯函数） ----
 
-test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed/reasoningDegraded，顺序稳定（分桶展示序）", () => {
+test("EXTRACTION_BUCKET_KEYS：五存量桶 + retried/fallbackUsed/reasoningDegraded/escapeRetried，顺序稳定（分桶展示序）", () => {
   assert.deepEqual(EXTRACTION_BUCKET_KEYS, [
-    "no-route", "no-cwd", "llm-error", "parse-error", "io-error", "retried", "fallbackUsed", "reasoningDegraded",
+    "no-route", "no-cwd", "llm-error", "parse-error", "io-error", "retried", "fallbackUsed", "reasoningDegraded", "escapeRetried",
   ]);
 });
 

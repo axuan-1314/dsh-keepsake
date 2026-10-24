@@ -63,10 +63,12 @@ test("面板漂移：新纯函数全部在场（补提/整理/优先级/删除/�
     "healthPriorityLevel", "healthPriorityWord", "canShowNoFailureLine",
     "deleteOutcomeOf", "settingsCoercionNote", "injectionExtraText", "injectionBudgetText",
     "paginateOf", "paginationText", "trapFocus",
+    // 召回降级双红条（静态配置类 / 运行时故障类，见 panel-logic 顶部注释）
+    "recallDisabledNoticeText", "recallRuntimeFailureText",
   ]) {
     assert.equal(typeof L[name], "function", `缺 ${name}`);
   }
-  for (const c of ["PENDING_EMPTY_TEXT", "PENDING_RECOVERING_TEXT", "PENDING_UNAVAILABLE_NOTE", "MAINTENANCE_EMPTY_TEXT", "PAGE_SIZE", "INDEX_HEALTH_COLUMNS"]) {
+  for (const c of ["PENDING_EMPTY_TEXT", "PENDING_RECOVERING_TEXT", "PENDING_UNAVAILABLE_NOTE", "MAINTENANCE_EMPTY_TEXT", "PAGE_SIZE", "INDEX_HEALTH_COLUMNS", "RECALL_SETTINGS_PATH"]) {
     assert.ok(L[c] !== undefined, `缺常量 ${c}`);
   }
 });
@@ -97,6 +99,12 @@ test("面板漂移：新纯函数旧宿主容错（字段缺失返回安全值�
   assert.equal(L.injectionExtraText(null), "");
   assert.equal(L.injectionBudgetText(null, 16000), "");
   assert.equal(L.injectionBudgetText({ count: 1, lastTokens: 10 }, void 0), "", "上限缺失 → 空串（旧宿主）");
+  // 召回双红条容错：旧宿主无 /state.recallDiagnostics / 无 errors 计数 → null（不渲染、不炸）
+  assert.equal(L.recallDisabledNoticeText(void 0), null);
+  assert.equal(L.recallDisabledNoticeText({}), null);
+  assert.equal(L.recallDisabledNoticeText({ disabled: null }), null);
+  assert.equal(L.recallRuntimeFailureText(void 0), null);
+  assert.equal(L.recallRuntimeFailureText({ errors: 0 }), null, "零错误不印 0 装饰");
   // 分页 / 焦点陷阱在场且是函数
   assert.equal(L.paginateOf(0, 0).pageCount, 0);
   // trapFocus 依赖 document 全局：此处给最小桩，验证它返回卸载函数（Node 无 DOM）
@@ -117,6 +125,9 @@ test("面板漂移：新面板消费锚全部接线（L.* 调用在位防白做�
     "L.deleteOutcomeOf(", "L.settingsCoercionNote(",
     "L.injectionBudgetText(",
     "L.paginateOf(", "L.paginationText(", "L.trapFocus(",
+    // 召回降级红条：数据源必须是 /state.recallDiagnostics + 现算 settingsFilePath
+    //（接错成 /state.recall 就永远拿不到配置诊断，只会静默失效），运行时故障另走 /state.recall.errors
+    "L.recallDisabledNoticeText(data.recallDiagnostics, settingsFilePath)", "L.recallRuntimeFailureText(data.recall)",
   ]) {
     assert.ok(panelHtml.includes(anchor), `panel.html 未接线 ${anchor}（纯函数白做）`);
   }
@@ -302,4 +313,88 @@ test("面板漂移：最近提取记录截断标记（written + truncatedParse>0
     { at: 1730000000000, from: 0, to: 5, sessionId: "s", outcome: "written", writes: 2 },
   ]);
   assert.equal(plain[0].label, "已写 2 条");
+});
+
+// ---- hardfactPolicy 指路文案（方案 v2 4.3：只说明，不加控件） ----
+//   为什么必须有渲染级测试：这段文案的全部价值就在面板真实渲染出来的那一行上——
+//   只 grep「hardfactPolicyNote 在源码里出现过」拦不住「函数在场但面板没接线」
+//   （纯函数白做），也拦不住「接线时把 s.hardfactPolicy 换成写死的 'warn'」
+//   （拨到 block 的用户永远看不到自己的现值）。故把保留策略卡真实行模板抠出来求值。
+test("hardfactPolicy 指路：面板保留策略卡渲染级接线（抠真实行模板求值）", () => {
+  // 从 panel.html 抠出真实行模板（`<div class="meta" id="keepHardfactNote">` 起一行）
+  const line = panelHtml.split("\n").find((l) => l.includes('id="keepHardfactNote"'));
+  assert.ok(line, "保留策略卡必须有 hardfactPolicy 指路行");
+  const tmpl = line.match(/\$\{([^}]*)\}/);
+  assert.ok(tmpl, "指路行必须是模板插值（写死文案 = 现值永不变，直接红）");
+  assert.match(tmpl[1], /^esc\(L\.hardfactPolicyNote\(s\.hardfactPolicy, data\.storageRoot /, "指路行必须经 esc(L.hardfactPolicyNote(现值, 真实路径)) 渲染（路径用 /state.storageRoot 现算，storageRoot 可配不能写死 ~/.dsh）");
+  // 按面板源码同口径喂绑定：整行当模板字面量求值（s = /state.settings；esc 同 panel.html 定义）
+  const render = (settings, data = {}) => new Function("s", "L", "esc", "data", "return `" + line + "`;")(
+    settings, L, (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])),
+    data,
+  );
+  const POLICY_KEY = "hardfactPolicy";
+  // ① warn：文案到位 + 现值正确 + 键名与改法路径在场（storageRoot 缺失 → 回落 ~/.dsh 默认）
+  const warnHtml = render({ [POLICY_KEY]: "warn" });
+  assert.ok(warnHtml.includes("<div"), `必须渲染成 div：${warnHtml}`);
+  assert.match(warnHtml, /当前值 warn/);
+  assert.match(warnHtml, /只告警并记日志/);
+  assert.ok(warnHtml.includes(POLICY_KEY), "文案必须写出 settings 键名（用户照此改文件）");
+  assert.ok(warnHtml.includes("~/.dsh/memory/settings.json"), "storageRoot 缺失时文案必须回落默认路径");
+  assert.match(warnHtml, /我改的记忆自己变回去了/, "必须说明为什么不给控件（回滚合法更新的观感）");
+  // ①-b 自定义 storageRoot：指路必须是真实路径（写死 ~/.dsh 会给自定义用户指错路）
+  const customHtml = render({ [POLICY_KEY]: "warn" }, { storageRoot: "D:/custom/root/" });
+  assert.ok(customHtml.includes("D:/custom/root/settings.json"), "自定义 storageRoot 时必须指真实路径");
+  assert.ok(!customHtml.includes("~/.dsh"), "自定义路径下不得再出现 ~/.dsh 兜底（指路只能有一个真相）");
+  // ② block：现值切换（证明取值真的来自 settings，不是写死 warn）
+  const blockHtml = render({ [POLICY_KEY]: "block" });
+  assert.match(blockHtml, /当前值 block/);
+  assert.match(blockHtml, /撤销回滚/);
+  assert.doesNotMatch(blockHtml, /当前值 warn/, "block 时不得仍显示 warn（现值谎报）");
+  // ③ 旧宿主 /state.settings 无该键：仍要渲染（tolerant），按缺省 warn 生效但不冒充现值
+  const missingHtml = render({});
+  assert.match(missingHtml, /当前值不认识（按 warn 生效）/);
+  assert.match(missingHtml, /只告警并记日志/);
+  // ④ 脏值（白名单外，如 settings 校验已回默认 warn）不当成合法现值冒充
+  const dirtyHtml = render({ [POLICY_KEY]: "blocked" });
+  assert.match(dirtyHtml, /当前值不认识（按 warn 生效）/);
+  // ⑤ 纯函数层：常量与白名单在场（门牌/双端共用同一出处）
+  assert.deepEqual(L.HARDFACT_POLICY_VALUES, ["warn", "block"]);
+  assert.equal(L.HARDFACT_POLICY_SETTINGS_PATH, "~/.dsh/memory/settings.json");
+  assert.equal(L.hardfactPolicyNote(void 0), L.hardfactPolicyNote("blocked"), "缺失与脏值同口径：都不冒充合法现值");
+  assert.equal(L.hardfactPolicyNote(null), L.hardfactPolicyNote("blocked"));
+  assert.equal(L.hardfactPolicyNote(123), L.hardfactPolicyNote("blocked"), "非字符串同口径");
+  assert.match(L.hardfactPolicyNote(void 0), /按 warn 生效/, "缺失必须明说按 warn 生效");
+  // ⑥ 路径参数兜底：不传/空串 → 默认路径；真实路径 → 原样采用
+  assert.ok(L.hardfactPolicyNote("warn").includes("~/.dsh/memory/settings.json"), "不传路径回落默认");
+  assert.ok(L.hardfactPolicyNote("warn", "").includes("~/.dsh/memory/settings.json"), "空串路径同样回落默认");
+  assert.ok(L.hardfactPolicyNote("warn", "D:/custom/root/settings.json").includes("D:/custom/root/settings.json"), "真实路径原样采用");
+  assert.ok(!L.hardfactPolicyNote("warn", "D:/custom/root/settings.json").includes("~/.dsh"), "给了真实路径不得再出现默认路径");
+});
+
+test("hardfactPolicy 指路：面板不得为该键新增任何控件（定案：只加文案）", () => {
+  // 输入/下拉/开关一律不许有——用户拨到 block 会让合法更新被回滚（方案 v2 4.3）。
+  // 切片边界用「下一张卡的锚点」（`data-settingsHealth` / `<h3>数据</h3>`），
+  // 不用 </div> 计数——数不准会让边界悄悄落到文件尾，本用例就退化成了全文扫描
+  // （曾实测：加了下拉框仍然全部通过，等于没拦）。
+  const cardStart = panelHtml.indexOf('id="card-retention"');
+  assert.ok(cardStart >= 0, "保留策略卡必须存在");
+  const after = panelHtml.slice(cardStart);
+  const nextAnchor = [after.indexOf("data-settingsHealth"), after.indexOf("<h3>数据</h3>")].filter((i) => i > 0).sort((a, b) => a - b)[0];
+  assert.ok(nextAnchor > 0, "找不到保留策略卡的结束锚点（卡片结构变了，本用例必须红而不是静默扫全文）");
+  const body = after.slice(0, nextAnchor);
+  // 卡必须真的被切出来了（含三个既有控件），否则边界又退化了
+  for (const id of ["keepTrashDays", "keepSurgical", "keepRecentDays"]) {
+    assert.ok(body.includes(`id="${id}"`), `切片边界退化：保留策略卡里应有 ${id}`);
+  }
+  // 控件判据升级（复查 P1：旧判据只认带 keepHardfact 的标签，加个 radio/checkbox 就绕过）：
+  // 卡内凡 input/select/textarea 一律白名单核对——不在三个既有控件之列的就是违规。
+  const tagRe = /<(?:input|select|textarea)\b[^>]*>/gi;
+  const offenders = [];
+  let m;
+  while ((m = tagRe.exec(body)) !== null) {
+    if (!/\b(?:keepTrashDays|keepSurgical|keepRecentDays)\b/.test(m[0])) offenders.push(m[0].trim());
+  }
+  assert.equal(offenders.length, 0, `保留策略卡出现白名单外的输入控件（含 radio/checkbox）：${offenders.join(" ; ")}`);
+  // 任何 option=warn/block 的下拉同样不许有（兜底，防白名单控件被塞进非法选项）
+  assert.doesNotMatch(body, /<option[^>]*>\s*(?:warn|block)\s*<\/option>/i, "不得出现 warn/block 选项");
 });

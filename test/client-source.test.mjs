@@ -18,6 +18,9 @@ import {
   formatNoticeText,
   ladderNoteOf,
   reasoningDegradedText,
+  escapeRetriedText,
+  recallDisabledNoticeText,
+  recallRuntimeFailureText,
 } from "../lib/panel-logic.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -277,6 +280,37 @@ test("防漂移：思考档降级兜底 reasoningDegradedTextFallback 与实现�
   assert.equal(fn(null), null, "旧宿主无字段不渲染");
   // 模板锚（任何一边改文案，另一边立刻失去一致性被上一循环抓住）
   assert.ok(clientSrc.includes("`思考档降级 ${Math.floor(n)} 次（该路由不支持所配档位，已按模型默认档重发；换一个该路由支持的档位可免掉这些额外往返）`"));
+});
+
+test("防漂移：零正文逃逸兜底 escapeRetriedTextFallback 与实现表驱动一致", () => {
+  const fn = extractFactoryFn(clientSrc, "escapeRetriedTextFallback", "efRaw");
+  const cases = [
+    null, void 0, 0, 1, {}, { escapeRetried: 0 }, { escapeRetried: 1 }, { escapeRetried: 7 },
+    { streak: 3 }, { escapeRetried: -1 }, { escapeRetried: "x" }, { escapeRetried: 2.9 },
+    { escapeRetried: null }, { reasoningDegraded: 2 },
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), escapeRetriedText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  // 摘要必须含「输出上限不足」+ 可操作建议（用户面测试关键词），零值/缺失 → null
+  assert.match(fn({ escapeRetried: 2 }), /输出上限不足 2 次/);
+  assert.match(fn({ escapeRetried: 2 }), /maxOutputTokens/);
+  assert.equal(fn({ escapeRetried: 0 }), null, "零值不渲染");
+  assert.equal(fn(null), null, "旧宿主无字段不渲染");
+  // 模板锚：双端文案逐字一致（任何一边改字，这里立刻红）
+  assert.ok(clientSrc.includes("`输出上限不足 ${Math.floor(n)} 次（思考把上限吃光、正文没产出，已改为跟随模型默认值重发成功；调大 maxOutputTokens 或留空可免掉这些重发）`"));
+});
+
+test("结构钉：零正文逃逸摘要上用户面（escapeRetried 不只进 /state）", () => {
+  assert.match(panelSrc, /L\.escapeRetriedText\(efRaw\)/, "健康卡必须渲染零正文逃逸摘要");
+  assert.match(clientSrc, /escapeRetriedText\(efRaw\)/, "门牌必须渲染零正文逃逸摘要");
+  assert.match(clientSrc, /LOGIC \? LOGIC\.escapeRetriedText/, "门牌逃逸摘要必须经 panel-logic 优先分发");
+  // 推行锚（复查 P1：只锁 const 行锁不住「算了但没 push」——纯函数白做）：
+  // 面板与门牌都必须把 escapeLine 真正推进渲染输出。
+  assert.match(panelSrc, /if \(escapeLine\) parts\.push\(/, "面板必须把 escapeLine push 进健康卡（只算不推 = 摘要永不出场）");
+  assert.match(clientSrc, /escapeLine[\s\S]{0,240}?(createElement|"dsk-row"|parts)/, "门牌必须消费 escapeLine 进渲染");
+  // 面板不得自造这句文案（必须走纯函数，防双端漂移）
+  assert.doesNotMatch(panelSrc, /输出上限不足/);
 });
 
 test("结构钉：立即重试三段式——retry 只在 click handler、busy disabled、轮询只 GET state", () => {
@@ -599,6 +633,58 @@ test("防漂移：存储格式只读兜底 formatNoticeFallback 与实现表驱�
   }
   assert.match(clientSrc, /LOGIC \? LOGIC\.formatNoticeText/, "只读告警必须经 panel-logic 优先分发");
   assert.match(panelSrc, /L\.formatNoticeText\(/, "健康卡只读告警必须走共享纯函数（消费锚）");
+});
+
+// ---- 语义召回降级红条防漂移（静态配置类 / 运行时故障类，两类分开） ----
+
+test("防漂移：召回降级兜底 recallDisabledNoticeFallback 与实现表驱动一致（双端逐字）", () => {
+  const fn = extractFactoryFn(clientSrc, "recallDisabledNoticeFallback", "diagnostics, settingsPath");
+  const cases = [
+    null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
+    { disabled: null },
+    { disabled: {} }, // 空 reason：既无缺键也无通道问题 → null（不装样子）
+    { disabled: { missing: ["embeddingBaseUrl"], channelMismatch: false } },
+    { disabled: { missing: ["embeddingModel"], channelMismatch: false } },
+    { disabled: { missing: ["embeddingBaseUrl", "embeddingModel"], channelMismatch: false } },
+    { disabled: { missing: [], channelMismatch: true } }, // 纯通道问题：补法是改 injectChannel
+    { disabled: { missing: ["embeddingModel"], channelMismatch: true } }, // 两类同时命中
+    { disabled: { missing: ["embeddingBaseUrl", null, 3, ""], channelMismatch: false } }, // 脏数组
+    { disabled: "x" }, // 非对象 reason → null
+    { disabled: { missing: [], channelMismatch: false, switchOff: true } }, // 配置齐了但开关没开
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), recallDisabledNoticeText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+    // 路径参数同验（真实路径 / 空串兜底两侧必须一致）
+    assert.equal(fn(c, "D:/custom/root/settings.json"), recallDisabledNoticeText(c, "D:/custom/root/settings.json"),
+      `带自定义路径的输出不一致：${JSON.stringify(c)}`);
+  }
+  // 消费锚（数据源接错就永远拿不到配置诊断；storageRoot 可配，路径必须现算）
+  assert.match(clientSrc, /LOGIC \? LOGIC\.recallDisabledNoticeText/, "门牌必须经 panel-logic 优先分发");
+  assert.match(clientSrc, /recallDisabledNotice\(state\.recallDiagnostics, settingsFilePath\)/, "门牌数据源必须是 /state.recallDiagnostics + 现算路径");
+  assert.match(panelSrc, /L\.recallDisabledNoticeText\(data\.recallDiagnostics, settingsFilePath\)/, "健康卡数据源必须是 /state.recallDiagnostics + 现算路径");
+  // 文案要素锚：缺哪个键 + 去哪补 + 影响范围（三条缺一条，用户就照着做不了）
+  const sample = recallDisabledNoticeText({ disabled: { missing: ["embeddingBaseUrl"], channelMismatch: false } });
+  assert.ok(sample.includes("embeddingBaseUrl"), "必须点名缺的键");
+  assert.ok(sample.includes("~/.dsh/memory/settings.json"), "必须指路到配置文件");
+  assert.ok(sample.includes("其它功能不受影响"), "必须说清影响范围");
+  assert.ok(sample.includes("开启语义召回"), "补法必须包含「开启语义召回」开关这一步（预填 false 的坑，复查 P0）");
+  assert.ok(clientSrc.includes("语义召回已关闭（"), "门牌兜底文案模板锚必须逐字在位");
+});
+
+test("防漂移：召回运行时故障兜底 recallRuntimeFailureFallback 与实现表驱动一致", () => {
+  const fn = extractFactoryFn(clientSrc, "recallRuntimeFailureFallback", "recall");
+  const cases = [
+    null, void 0, {}, [], "x", // 旧版宿主/畸形：均 null
+    { errors: 0 }, { errors: -1 }, { errors: "x" }, { errors: null },
+    { errors: 1 }, { errors: 2.7 }, { errors: "3" },
+    { errors: 1, hits: 5, misses: 2 },
+  ];
+  for (const c of cases) {
+    assert.equal(fn(c), recallRuntimeFailureText(c), `兜底与实现输出不一致：${JSON.stringify(c)}`);
+  }
+  assert.match(clientSrc, /LOGIC \? LOGIC\.recallRuntimeFailureText/, "运行时故障必须经 panel-logic 优先分发");
+  assert.match(clientSrc, /recallRuntimeFailure\(state\.recall\)/, "门牌运行时故障数据源是 /state.recall");
+  assert.match(panelSrc, /L\.recallRuntimeFailureText\(data\.recall\)/, "健康卡运行时故障数据源是 /state.recall");
 });
 
 // ---- 面板新面接线锚（补提 / 记忆整理 / 设置健康 / 绿红优先级）----

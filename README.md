@@ -145,7 +145,8 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **测试连接不转发已存密钥**：已保存的 API Key 只发往它自己配置的那个端点；若「测试连接」的请求指向别的地址，不会把已存密钥带过去（只有请求体里当场填的 Key 才随该地址发送）。
 - **密钥不会被重存顶掉**：保存嵌入配置时，Key 输入框留空 = **保留已存密钥**（只改端点/模型等其余字段时无需重输）；「清除已存 Key」按钮（仅已设 Key 时出现）= 显式清空；输入新 Key = 覆盖。
 - **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（EmbeddingGemma、bge-m3 等）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
-- **失败显式降级**：端点超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`。
+- **配置不全 = 显式降级，插件照常起**：`recallEnabled: true` 但缺 `embeddingBaseUrl` / `embeddingModel`（或 `injectChannel` 不是 `message`）时，插件**不再启动失败**——召回被显式关闭（零嵌入调用），面板与门牌出红条按【当前生效配置】每轮现算着指路：缺哪个键、去面板「嵌入服务」卡补（**要同时打开同卡的「开启语义召回」开关**——开关预填为关，只填端点不打开开关的话红条会一直提示到打开为止）、通道问题只能改 `cordis.patch.yml`（面板救不了）；配置齐了但开关没开也有一条专门的「打开开关」红条，绝不静默不召回。红条里的 settings.json 路径按 `/state.storageRoot` 现算（自定义了数据目录的用户看到的是真实路径）。用户补齐配置后**不重启即恢复**（诊断每轮现算）。其它功能（对话记忆提取与注入）完全不受影响。端点 URL 不是 http(s) 属于「配错」而非「配不全」，仍然启动即抛。
+- **失败显式降级**：端点配齐但超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`，面板与门牌同时出红条（连续失败 3 次后自动暂停召回 60 秒）。
 
 ### 记忆管理面板
 
@@ -262,7 +263,7 @@ v0.4.1 让失败区间跨重启**看得见**（运行日志持久留痕），v0.
 
 > 真源只有 `*.md` 与 `MEMORY.md`：`backups/` 与 `trash/` 是**可安全删除的副本目录**（删掉不损失当前记忆，只失去回滚能力）。见 [FORMAT.md](FORMAT.md) 第七节。
 
-三项安全面设置写在 `~/.dsh/memory/settings.json`（与三层开关同一份文件，**不是** entry config——写进 `cordis.patch.yml` 会被拒）。其中 `surgicalKeep` / `trashKeepDays` 与近期动态保留天数 `recentKeepDays` 可在设置页「保留策略」卡直接改（下一轮对话生效）；`hardfactPolicy` 当前版本面板暂无输入，需手工改文件、下一轮生效：
+三项安全面设置写在 `~/.dsh/memory/settings.json`（与三层开关同一份文件，**不是** entry config——写进 `cordis.patch.yml` 会被拒）。其中 `surgicalKeep` / `trashKeepDays` 与近期动态保留天数 `recentKeepDays` 可在设置页「保留策略」卡直接改（下一轮对话生效）；`hardfactPolicy` 有意不给输入控件（拨到 `block` 会把合法更新一起回滚，用户会看到「我改的记忆自己变回去了」），面板保留策略卡有一段指路文案说清现值、两值语义与改法（路径按 `/state.storageRoot` 现算），改文件仍是手工、下一轮生效：
 
 | 设置 | 默认 | 说明 |
 |---|---|---|
@@ -357,7 +358,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 | `fallback` | []（纯重试不换道） | 换道路由 `[{provider, model}]`，≤3 条、去重、不得撞主道。主道 attempt 链耗尽后逐条换道（同 attempt 链），成功记 `fallbackUsed` 且最近用车指向该道；未配置则与纯重试一致 |
 | `embeddingModel` | 空 | **你的**嵌入模型标识。开启 `recallEnabled` 后必填——它同时是向量空间的缓存身份（换模型＝整库重嵌）。填你端点上的模型名即可，如 `EmbeddingGemma`、`bge-m3`、`text-embedding-3-small` |
 | `embeddingProvider` | 空 | 可选，纯面板显示标签，不参与调用，**不要求与 `embeddingModel` 成对**（如 `local` / `lmstudio`） |
-| `recallEnabled` | **false** | 语义召回总开关；开启需配 `embeddingBaseUrl` + `embeddingModel`（缺一启动即抛，fail loud） |
+| `recallEnabled` | **false** | 语义召回总开关；开启需配 `embeddingBaseUrl` + `embeddingModel`。**缺键不再启动即抛**：插件照常加载（记忆提取与注入不受影响），但语义召回被显式关闭，管理面板/门牌出红条说明缺哪个键、去哪补——不配置＝不召回，绝不静默当没开过 |
 | `embeddingBaseUrl` | 空 | 你的嵌入端点，**任意 OpenAI 兼容服务即可（本地或远程）**：`POST <url>`，体 `{model, input}`，返回 `{data:[{embedding}]}`（也容忍 `{embedding}` / `{embeddings}` 两种本地常见形态）。仅接受 `http(s)`。示例：本地服务 `http://127.0.0.1:1234/v1/embeddings`，vLLM / TEI / llama.cpp 等同形；远程如 `https://api.openai.com/v1/embeddings` |
 | `embeddingApiKey` | 空 | 端点鉴权（可选；有则带 `Authorization: Bearer`） |
 | `recallTopK` / `recallMaxTokens` | 5 / 1200 | 单轮召回条数上限 / 召回块 token 预算（CJK 感知估算） |
@@ -461,7 +462,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **落盘**：由插件（非模型）写文件到 `~/.dsh/memory/projects/<slug>-<hash16>/memory/` 或全局分类根，文件名经三道闸（包含性判定 + 黑名单段 + Unicode 控制符剥除）；`MEMORY.md` 索引自动合并维护；`recent-activity` 的时间戳由宿主盖章（不信模型报的时间）；近期动态滚动清理在启动时 + 每次全局写入后收口。
 - **注入**：默认走 durable 用户消息通道——每轮第一个 step 在 `agent/pre-step` 求值六段（4990 人设 / 4992 运行时用户画像 / 4993 运行时工作记忆 / 4995 全局记忆索引 / 5000 项目使用说明 / 5001 项目 `MEMORY.md` 索引；runtime 两段为空即不产生输出），拼成一块带 `<memory-context>` 包裹的 user 消息注入（块首两行：先取代声明——本块是最新记忆快照、作废此前的同类块、多块只认最新；后免责/署名——记忆是参考上下文、非任务指令；subagent 会话不注入）。段序固定、`persona` / `runtimeUser` / `runtimeMemory` 为锁定段（不进丢弃序列，兜底截断优先级 persona > runtimeUser > runtimeMemory，每次截断带告警行）。发送与否经三态裁决：与视野内上次那块规范化后相同则跳过；变化太小（字符 bigram 相似度 ≥0.98，或字符差 ≤ max(200, 全长 1%)）被节流、先攒着不发，等下次大变更或 compaction/rewind 把旧块挤出视野后随全量块补发；相似度 <0.5 的整块改写直接放行。总预算双口径：字符 `injectMaxChars`（默认 30000）与 token `injectMaxTokens`（默认 24000；CJK 感知估算：CJK 字按 1.5 token/字、其余按 0.25 token/字）同时生效、取更严者，召回块计入其中且主块先为召回块让位（召回块自身不做裁剪）；`injectMaxTokens: 0` 退回纯字符口径（旧行为逐字节一致）。`injectChannel: "section"` 时同样按序注入六段 `ctx.systemPrompt.section`（空段自动丢弃；索引读取有 mtime 缓存，缓存键含项目维度，防同 size+mtime 串档）。
 - **运行时记忆层**（可选，`runtimeEnabled`，默认关）：注入前按 `runtime.json.sourceHash` 比对候选池（路径 + mtimeMs + size + 配额 + 算法版本），一致用缓存、不一致懒编译。编译 = 选条（pinned 优先 → 权重/mtime 装填）→ 排序 → 渲染（`- 【关键|普通】[Title](相对路径) — 钩子`）→ 按字节配额裁剪 → 登记淘汰候选（产物末尾留 `[runtime evicted: N …]` 提示），产物原子写（tmp+rename）到 `runtime/<scope>/`。开启且产物 `status=ok` 时，`user-profile` / `work-profile` / `current-focus` 三分类**在「该分类条目全部进了产物」时**才退出全局索引渲染（有任一条被配额淘汰则该分类继续渲染，避免条目两头不可见）；项目条目同理按「已进产物」剔出项目索引行；`long-term` 则**无条件**退出注入索引（不依赖开关或产物状态），仅提取 prompt 例外。候选池读取失败（权限/IO，非"目录不存在"）按编译失败处理：`status=error` + 保留上一版产物，绝不当成"分类空了"覆盖掉。失效面：写盘 / 删除 / 归档执行 / pin 变更 → 受影响 scope 缓存失效，下次注入或面板打开时重编（runtime 端点自己已完成失效重编，不再二次全清）；格式只读闸生效时不编译（有缓存用缓存、无缓存跳过 runtime 段并记 `[runtime readOnly]`）。
-- **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败/未配置 → 本轮不召回（**显式降级**，`/state.recall` 可观测）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
+- **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败 → 本轮不召回（**显式降级**，`/state.recall` 可观测 + 面板红条）；端点**未配置/配不全** → 插件照常加载、召回显式关闭、面板红条指路（不 fail-open）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。此外还有三道成本闸门（打分门 / 空闲延迟合并 / 每会话上限，见[「提取触发门槛」](#提取触发门槛打分门空闲延迟与每会话上限)），不过闸的区间同样记 skip 并推进 cursor。
 - **模块清单**：`lib/redact.js`（脱敏纯函数，7 类固定模式，线性正则防回溯）、`lib/extract-gate.js`（打分门纯函数：`score = userWords + 2*toolKinds + 2*turns`）、`lib/tokens.js`（CJK 感知 token 估算）。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 随提取运行日志持久化（每次结算落一行，重启时同步重放重建），DSH 重启后重开旧会话从上次边界**续提**；但插件中途挂载的新会话或从没提取过的会话只提取存活期间新完成的轮次，不回扫历史。

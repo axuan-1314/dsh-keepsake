@@ -17,7 +17,7 @@ import { test } from "node:test";
 import { API_PREFIX } from "../lib/api.js";
 import { apply, resolveConfig } from "../lib/index.js";
 import { createJournal } from "../lib/journal.js";
-import { __resetMetricsForTest, extractionFailureSnapshot } from "../lib/metrics.js";
+import { __resetMetricsForTest, extractionFailureSnapshot, extractionObservationSnapshot } from "../lib/metrics.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { ADAPTER_SESSION_FIELDS, createSessionAdapter, routeFromEvents } from "../lib/session-recovery.js";
 import { resetSettingsCache } from "../lib/settings.js";
@@ -315,6 +315,251 @@ test("1-A 截断解析：kind=max-tokens 且正文零输出 → 仍是 llm-error
     assert.equal(extractionFailureSnapshot()["llm-error"], 1);
   } finally {
     cleanup(root, workspace);
+  }
+});
+
+// ================================================================
+// 1-A 零正文逃逸：预算耗尽且正文零输出时，先丢显式上限重发一次（不是一次判死）
+//   实测机制（本机 magpie/group/mozu1 → 网关 127.0.0.1:3425）：思考 token 与正文
+//   共享同一 maxTokens 预算、思考链先跑；max_tokens=64 时 reasoning 258 字符 /
+//   content 0 字符；不传 reasoning_effort 也照样思考（档位不是思考开关）。
+//   故唯一真正改变结果的手段是"改预算"：显式配了小上限 → 丢掉它改跟随模型重发。
+// ================================================================
+
+test("1-A 零正文逃逸：显式 maxOutputTokens + 两次零正文预算 → 丢上限重发后成功落盘（escapeRetried=1）", async () => {
+  resetSettingsCache(); resetFormatCache(); __resetMetricsForTest();
+  const { root, workspace } = freshRoots("budget-escape");
+  try {
+    const seen = [];
+    const { ctx, handlers, streamCalls } = fakeCtx((options) => {
+      seen.push(options);
+      // 真实形态：下发了 maxTokens（小上限）→ 思考吃光、正文零输出；
+      // 不下发 maxTokens（跟随模型）→ 正文正常产出。
+      if (Object.prototype.hasOwnProperty.call(options, "maxTokens")) {
+        return (async function* () {
+          yield { type: "finish", reason: { kind: "max-tokens" } };
+        })();
+      }
+      return okStream(OK_TEXT);
+    });
+    apply(ctx, {
+      enabled: true, storageRoot: root, provider: "prov", model: "model-x",
+      timeoutMs: 5000, extractIdleDelayMs: 0, retryAttempts: 1, maxOutputTokens: 4096,
+    });
+    const session = fakeSession("s-budget-escape", workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, { type: "session/mounted", seq: 0, data: {} });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 0, data: { turn: 1, reason: { kind: "completed" } } });
+    assert.equal(await waitFor(() => journalRuns(root).length > 0), true, "应留下一行结算");
+
+    // 最终结果①：真发起了第二趟，且第二趟不再带 maxTokens（这是"丢上限"的唯一证据）
+    assert.equal(seen.length, 2, "零正文必须先逃逸重发一次（不是一次判死）");
+    assert.equal(hasOwnProperty.call(seen[0], "maxTokens"), true, "第一趟必须带上配置的显式上限");
+    assert.equal(hasOwnProperty.call(seen[1], "maxTokens"), false, "逃逸那趟必须不再下发 maxTokens（改跟随模型）");
+
+    // 最终结果②：救回来了 → 照常落盘、journal outcome=written
+    const memoryDir = projectMemoryPaths(root, workspace).memoryDir;
+    assert.equal(existsSync(join(memoryDir, "route-works.md")), true, "逃逸成功即照常落盘");
+    const runs = journalRuns(root);
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].outcome, "written");
+
+    // 最终结果③：观测面记下这次逃逸（/state 看得见，不是静默）
+    assert.equal(extractionFailureSnapshot().escapeRetried, 1, "逃逸必须在 /state 计数");
+    assert.equal(extractionFailureSnapshot()["llm-error"], 0, "救回来的轮次不得记 llm-error");
+  } finally {
+    cleanup(root, workspace);
+  }
+});
+
+test("1-A 零正文逃逸：跟随模型（缺省未下发 maxTokens）且仍零正文 → 不逃逸、不重试、落 llm-error（成本纪律）", async () => {
+  resetSettingsCache(); resetFormatCache(); __resetMetricsForTest();
+  const { root, workspace } = freshRoots("budget-escape-noop");
+  try {
+    const seen = [];
+    const { ctx, handlers } = fakeCtx((options) => {
+      seen.push(options);
+      return (async function* () {
+        yield { type: "finish", reason: { kind: "max-tokens" } };
+      })();
+    });
+    // maxOutputTokens 缺省 0 = 跟随模型：本来就没下发上限，"丢上限"无从谈起。
+    // retryAttempts=3（默认档）：零正文**不在可重试族**——跟随模型仍零正文在实践中不可达，
+    // 为它开链级重采样最坏是 attempts × fallback 条数次满预算调用（复查 P0：成本纪律）。
+    // 变异（把自造 code 加回 RETRYABLE_FAILURE_CODES）→ 本用例会变成 3 次调用，必红。
+    apply(ctx, { enabled: true, storageRoot: root, provider: "prov", model: "model-x", timeoutMs: 5000, extractIdleDelayMs: 0, retryAttempts: 3 });
+    const session = fakeSession("s-budget-escape-noop", workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, { type: "session/mounted", seq: 0, data: {} });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 0, data: { turn: 1, reason: { kind: "completed" } } });
+    assert.equal(await waitFor(() => journalRuns(root).length > 0), true);
+
+    // 只跑一趟：没有可丢的上限，也不许进重试链凭空多打满预算调用
+    assert.equal(seen.length, 1, "缺省跟随模型时零正文不逃逸、不重试（一次显式判死，不烧预算）");
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "llm-error", "真失败仍显式判死，不静默当成功");
+    assert.equal(extractionFailureSnapshot().escapeRetried, 0, "未发生逃逸不得计数");
+  } finally {
+    cleanup(root, workspace);
+  }
+});
+
+test("1-A 零正文逃逸：逃逸那趟仍零正文 → 恰好两趟后 llm-error，且 escapeRetried 不计数（结果口径：发起≠成功）", async () => {
+  resetSettingsCache(); resetFormatCache(); __resetMetricsForTest();
+  const { root, workspace } = freshRoots("budget-escape-fail");
+  try {
+    let calls = 0;
+    const { ctx, handlers } = fakeCtx(() => {
+      calls += 1;
+      return (async function* () {
+        yield { type: "finish", reason: { kind: "max-tokens" } };
+      })();
+    });
+    apply(ctx, {
+      enabled: true, storageRoot: root, provider: "prov", model: "model-x",
+      timeoutMs: 5000, extractIdleDelayMs: 0, retryAttempts: 1, maxOutputTokens: 4096,
+    });
+    const session = fakeSession("s-budget-escape-fail", workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, { type: "session/mounted", seq: 0, data: {} });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 0, data: { turn: 1, reason: { kind: "completed" } } });
+    assert.equal(await waitFor(() => journalRuns(root).length > 0), true);
+
+    // 恰好两趟：一趟带上限、一趟逃逸；第二次零正文后不再循环（pass 上限 + 逃逸标志）
+    assert.equal(calls, 2, "逃逸只许一次，绝不允许无限重试");
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "llm-error", "两次都零正文 → 如实 llm-error（不 fail-open）");
+    // 逃逸重发**没拿到正文**就不许计数：escapeRetried 的口径是"重发成功 N 次"
+    //（面板文案如实说"重发成功"）。发起处计数会让健康卡在逃逸失败时同时显示
+    // "提取失败"与"重发成功"——复查抓到的「意图当结果」同型错误。
+    assert.equal(extractionFailureSnapshot().escapeRetried, 0, "逃逸重发失败不计数（结果口径，发起不计）");
+  } finally {
+    cleanup(root, workspace);
+  }
+});
+
+// ================================================================
+// 在途中止分类：超时 → TIMEOUT（可重试族）；dispose → aborted（不进 llm-error）
+// 本机实际环境 extraction-errors.log 13:28/13:37 两条 `llm-error … ABORTED` 的形状：
+// 120s 计时器把在途提取 abort 掉，宿主把它映射成 ABORTED（不在可重试族）→ 一次判死。
+// ================================================================
+
+test("1-E 在途超时：计时器 abort → 按执行结果挂 TIMEOUT（可重试族，链上退避重采样），不再一次判死", async () => {
+  resetSettingsCache(); resetFormatCache(); __resetMetricsForTest();
+  const { root, workspace } = freshRoots("inflight-timeout");
+  try {
+    // 模拟宿主：signal 被 abort 后才收口并抛 ABORTED 形状的错误（本机实际环境实测形状）
+    const { ctx, handlers } = fakeCtx((options) => (async function* () {
+      const signal = options.signal;
+      while (!signal?.aborted) await new Promise((resolve) => setTimeout(resolve, 5));
+      const e = new Error("ABORTED");
+      e.failure = { code: "ABORTED" };
+      throw e;
+    })());
+    apply(ctx, {
+      enabled: true, storageRoot: root, provider: "prov", model: "model-x",
+      timeoutMs: 60, extractIdleDelayMs: 0, retryAttempts: 2, retryBackoffMs: 10, retryMaxDelayMs: 20,
+    });
+    const session = fakeSession("s-inflight-timeout", workspace, [USER_EVENT]);
+    handlers.get("session/event")(session, { type: "session/mounted", seq: 0, data: {} });
+    handlers.get("session/event")(session, { type: "turn/end", seq: 0, data: { turn: 1, reason: { kind: "completed" } } });
+    assert.equal(await waitFor(() => journalRuns(root).length > 0, 10000), true);
+
+    // 超时属 TIMEOUT（可重试族）→ 链上真实重采样：retried 必须真实发生。
+    // 变异（摘掉 callLlmText 的 TIMEOUT 补挂）→ ABORTED 不在可重试族 → 1 次判死 → retried=0，必红。
+    assert.ok(extractionFailureSnapshot().retried >= 1, "在途超时必须走可重试族真实重采样（不再一次判死）");
+    const runs = journalRuns(root);
+    assert.equal(runs[0].outcome, "failed");
+    assert.equal(runs[0].reason, "llm-error", "重试用尽后仍如实落 llm-error");
+    // 用户面文案必须说清是超时（code=TIMEOUT 进 reason 摘要），不得露 ABORTED 谜团
+    const snap = extractionFailureSnapshot();
+    const last = Array.isArray(snap.recent) && snap.recent[0] ? String(snap.recent[0].message ?? "") : "";
+    assert.ok(last.includes("TIMEOUT"), `失败摘要应带 TIMEOUT 分类（实际：${last}）`);
+  } finally {
+    cleanup(root, workspace);
+  }
+});
+
+test("1-E dispose 在途：卸载打断在途 attempt → 按 aborted 收场，不进 llm-error 桶、不推失败连击", async () => {
+  // 为什么走补提路径：scheduler.dispose 会先有界 drain 在途在线提取（预算=min(60s,timeoutMs)），
+  // 然后才 lifetime.abort——在线路径的 abort 永远落在「两次 attempt 之间」（那里本就有
+  // pre-check 兜着），端到端根本到不了「attempt 中途被打断」这个分支（本轮实测两版假流
+  // 都是死路）。补提不经 scheduler：dispose 的 scheduler 段空转立即返回，lifetime.abort
+  // 直落进在途 attempt——本机实际环境 13:28（重启时在途提取被打断）正是这个形状。
+  resetSettingsCache(); resetFormatCache(); __resetMetricsForTest();
+  const { root } = freshRoots("dispose-inflight");
+  try {
+    const sessionId = "sess-dispose-inflight";
+    const events = [
+      { type: "request/header", seq: 0, data: { header: { config: { provider: "rec-prov", model: "rec-model" } } } },
+      { ...USER_EVENT, seq: 1 },
+    ];
+    const seed = createJournal({ storageRoot: root, log: silentLog });
+    await seed.recordRun({ sessionId, from: 0, to: 2, cursorAfter: 0, outcome: "failed", reason: "llm-error" });
+
+    // 自组 ctx：effects 捕获（拿 lifecycle disposer）+ 假持久化（喂补提读回）+ 假 llm
+    const persistence = fakePersistence({ sessions: new Map([[sessionId, events]]), headerOf: () => ({ cwd: root }) });
+    const effects = [];
+    const handlers = new Map();
+    const routes = [];
+    const ctx = {
+      logger: silentLog,
+      get(name) { return name === "sessionPersistence" ? persistence : void 0; },
+      on(type, fn) { handlers.set(type, fn); },
+      effect(fn, label) { effects.push({ fn, label }); },
+      inject(_deps, setup) {
+        const pending = [];
+        const sctx = { effect(fn) { pending.push(fn); }, webServer: { register(route) { routes.push(route); return () => {}; } } };
+        setup(sctx);
+        for (const fn of pending) fn();
+      },
+      systemPrompt: { section() { return () => {}; } },
+      llm: {
+        stream(options) {
+          // 挂起直到 signal 被 abort（模拟宿主流被取消），abort 后抛宿主形状的 ABORTED。
+          // 不能用"永不 yield 的死流"——它对 abort 无动于衷，extractSession 永远挂在
+          // for-await 上，dispose 路径根本走不到，测试会静默退化成假绿（本轮实测）。
+          return (async function* () {
+            const signal = options.signal;
+            if (!signal?.aborted) {
+              await new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+            }
+            const e = new Error("ABORTED");
+            e.failure = { code: "ABORTED" };
+            throw e;
+          })();
+        },
+      },
+    };
+    apply(ctx, {
+      enabled: true, storageRoot: root, injectChannel: "section", extractIdleDelayMs: 0,
+      timeoutMs: 60000, retryAttempts: 3,
+    });
+    const apiRoute = routes.find((r) => r.kind === "prefix" && r.path === API_PREFIX.replace(/\/$/, ""));
+    const call = async (method, path, body) => {
+      const res = mockRes();
+      await apiRoute.handler(mockReq({ method, url: API_PREFIX + path, body }), res);
+      return { status: res.status };
+    };
+    const rec = await call("POST", "sessions/recover", { sessionId, from: 0, to: 2 });
+    assert.equal(rec.status, 202);
+    await waitFor(() => extractionObservationSnapshot().extractionInFlight === true, 5000);
+    const snap0 = extractionFailureSnapshot();
+
+    // 卸载：scheduler 段无在线会话空转返回 → lifetime.abort → 补提在途 attempt 被打断
+    const disposeFns = effects.filter((e) => e.label === "dsh-keepsake lifecycle").map((e) => e.fn());
+    for (const dispose of disposeFns) await dispose();
+    await waitFor(() => extractionObservationSnapshot().extractionInFlight === false, 8000);
+
+    // dispose 打断的在途 attempt：不算 LLM 失败（不进 llm-error 桶）。
+    // 变异（摘掉 runAttemptChain 的 dispose 检查）→ 宿主形状的 ABORTED 落 llm-error → 必红。
+    const snap = extractionFailureSnapshot();
+    assert.equal(snap["llm-error"], snap0["llm-error"], "dispose 在途不得记 llm-error（是我们在卸载，不是模型失败）");
+    const runs = journalRuns(root);
+    const last = runs[runs.length - 1];
+    assert.ok(last, "补提结算必须留痕");
+    assert.notEqual(last.reason, "llm-error", "journal 也不得把 dispose 打断记成 LLM 失败");
+  } finally {
+    cleanup(root);
   }
 });
 

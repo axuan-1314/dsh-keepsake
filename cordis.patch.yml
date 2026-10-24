@@ -37,9 +37,13 @@
         extractIdleDelayMs: 3000
         extractMaxRunsPerSession: 50
         # 语义召回（可选，默认关）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦检索。
-        # 自带模型：配 embeddingBaseUrl + embeddingModel（任意 OpenAI 兼容嵌入服务，本地/远程均可）即可；
-        # 缺一启动即抛（fail loud）。不配置则不产生任何外部调用（记忆文本不出本机）。
+        # 自带模型：配 embeddingBaseUrl + embeddingModel（任意 OpenAI 兼容嵌入服务，本地/远程均可）即可。
+        # 缺键**不再启动即抛**：插件照常加载（记忆提取与注入不受影响），语义召回被显式关闭，
+        # 管理面板与门牌出红条点名缺哪个键、去哪补。端点 URL 不是 http(s) 属于配错，仍然启动即抛。
+        # 不配置则不产生任何外部调用（记忆文本不出本机）。
         # 示例：ollama http://127.0.0.1:11434/v1/embeddings ；LM Studio http://127.0.0.1:1234/v1/embeddings
+        # embeddingBaseUrl: http://127.0.0.1:1234/v1/embeddings   # 注意：只加注释示例，别直接开活键
+        # embeddingModel: nomic-embed-text                         # （degrade 检查：缺键时插件仍能起来）
         recallEnabled: false
         # 嵌入分批串行请求时，仅单请求超时不足以约束整轮耗时，故另有单轮整体时间预算；两者默认值如下（可按需覆盖）。
         # recallTimeoutMs: 8000        # 单次嵌入调用超时（毫秒）

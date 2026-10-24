@@ -340,29 +340,48 @@ test("8 新键 fail loud 矩阵：类型/边界非法即抛（nonNegInt 允许 0
   assert.equal(resolveConfig({ enabled: true, redactionEnabled: "no" }).redactionEnabled, true, "非 false 值不关（只有显式 false 才关，与 enabled 缺省关的严格性反向：安全默认）");
 });
 
-test("config 自带嵌入模型（provider-agnostic）：端点/模型缺一即抛、section 冲突、端点 scheme 收紧、阈值/超时越界", () => {
+test("config 自带嵌入模型（provider-agnostic）：端点/模型/通道不全 → 降级不抛；端点 scheme 收紧仍抛；阈值/超时越界仍抛", () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-entry-recall-"));
-  const { ctx } = fakeCtx();
-  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true }), /embeddingBaseUrl/);
-  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://x" }), /embeddingModel/);
-  assert.throws(
-    () => apply(ctx, { enabled: true, storageRoot: root, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingModel: "m" }),
-    /injectChannel/,
-    "section 模式召回永不执行 → 开即抛（不静默 no-op）",
-  );
-  assert.throws(
-    () => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "file:///etc/passwd", embeddingModel: "m" }),
-    /http/,
-    "嵌入端点收紧到 http(s)：非 http(s) scheme 即抛",
-  );
-  // 自带模型：只给端点 + 模型（不配 provider 标签）必须放行——用户点自己的本地嵌入模型即此形态
-  assert.doesNotThrow(() =>
-    apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://127.0.0.1:1234/v1/embeddings", embeddingModel: "nomic-embed-text" }),
-  );
-  // embeddingProvider 仅作面板标签：单独出现（无模型、未开召回）同样放行（不再强制与 model 成对）
-  assert.doesNotThrow(() => apply(ctx, { enabled: true, storageRoot: root, embeddingProvider: "local" }));
-  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallMinScore: 1.5 }), /recallMinScore/);
-  assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
+  try {
+    const { ctx } = fakeCtx();
+    // 配置不全 = 可选功能没配好，**不再**让整个插件起不来（v0.6.6：启动即抛 → 显式降级 + 面板红条）。
+    // 降级语义由 test/recall-degrade.test.mjs 走真 apply() + 真 /state + 真面板渲染逐条钉死；
+    // 这里只钉 resolveConfig 的返回值形状（诊断带上、召回被显式关掉）。
+    const missUrl = resolveConfig({ enabled: true, storageRoot: root, recallEnabled: true });
+    assert.equal(missUrl.recallEnabled, false, "缺端点 → 召回显式关闭（不是静默当没开过）");
+    assert.deepEqual(missUrl.recallDisabledReason, { missing: ["embeddingBaseUrl", "embeddingModel"], channelMismatch: false });
+    assert.equal(missUrl.recallRequested, true, "原始请求保留（面板据此区分「没开」与「开了但配错」）");
+
+    const missModel = resolveConfig({ enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://x" });
+    assert.equal(missModel.recallEnabled, false);
+    assert.deepEqual(missModel.recallDisabledReason, { missing: ["embeddingModel"], channelMismatch: false });
+
+    const sectioned = resolveConfig({
+      enabled: true, storageRoot: root, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingModel: "m",
+    });
+    assert.equal(sectioned.recallEnabled, false);
+    assert.deepEqual(sectioned.recallDisabledReason, { missing: [], channelMismatch: true }, "section 模式召回永不执行 → 显式摊牌（不静默 no-op）");
+    assert.doesNotThrow(() => apply(ctx, {
+      enabled: true, storageRoot: root, injectChannel: "section", recallEnabled: true, embeddingBaseUrl: "http://x", embeddingModel: "m",
+    }), "插件的核心功能（提取/注入）不得因可选功能配错而起不来");
+
+    // 配错（而不是配不全）仍然抛：非 http(s) 端点 URL 是明确错误，不是"少填一个键"。
+    assert.throws(
+      () => apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "file:///etc/passwd", embeddingModel: "m" }),
+      /http/,
+      "嵌入端点收紧到 http(s)：非 http(s) scheme 即抛",
+    );
+    // 自带模型：只给端点 + 模型（不配 provider 标签）必须放行——用户点自己的本地嵌入模型即此形态
+    assert.doesNotThrow(() =>
+      apply(ctx, { enabled: true, storageRoot: root, recallEnabled: true, embeddingBaseUrl: "http://127.0.0.1:1234/v1/embeddings", embeddingModel: "nomic-embed-text" }),
+    );
+    // embeddingProvider 仅作面板标签：单独出现（无模型、未开召回）同样放行（不再强制与 model 成对）
+    assert.doesNotThrow(() => apply(ctx, { enabled: true, storageRoot: root, embeddingProvider: "local" }));
+    assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallMinScore: 1.5 }), /recallMinScore/);
+    assert.throws(() => apply(ctx, { enabled: true, storageRoot: root, recallTimeoutMs: 2147483648 }), /recallTimeoutMs/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ---- 补钉（此前零覆盖的新行为，必须有回归测试） ----

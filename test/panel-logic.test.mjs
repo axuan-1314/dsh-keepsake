@@ -257,7 +257,7 @@ test("recentExpireDays：keepDays - age，下限 0；第二参数缺省/非法�
   const now = Date.parse("2026-10-08T12:00:00Z");
   assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 30, now), 27);
   assert.equal(recentExpireDays("2026-09-01T00:00:00Z", 30, now), 0);
-  // 第二参数按 keepDays 走（不再写死 30）——面板 用 /state.recentKeepDays 传入
+  // 第二参数按 keepDays 走（不再写死 30）——面板经 /state.recentKeepDays 传入
   assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 7, now), 4);
   assert.equal(recentExpireDays("2026-10-05T12:00:00Z", 90, now), 87);
   // 第二参数缺省才落 30
@@ -432,7 +432,7 @@ test("extractionNoticeText：新版带病因+模型短名；streak 0 → 空；�
 test("reasoningDegradedText：>0 出「思考档降级 N 次」摘要；零值/缺失/脏值 → null（不渲染）", () => {
   const t = reasoningDegradedText({ reasoningDegraded: 3 });
   assert.match(t, /思考档降级 3 次/, "必须含次数");
-  assert.match(t, /降级/, "必须含「降级」字样（测试关键词）");
+  assert.match(t, /降级/, "必须含「降级」字样（用户面文案测试关键词）");
   assert.match(t, /该路由不支持所配档位/, "必须说清原因（用户据此决定换不换档位）");
   // 零值 / 缺字段 / 旧数字形态 / 脏值 → null（不印 0 装饰）
   assert.equal(reasoningDegradedText({ reasoningDegraded: 0 }), null);
@@ -455,7 +455,7 @@ test("extractionNoticeText：失败原因中文化（复用 EXTRACTION_REASON_LA
     assert.doesNotMatch(text, ENUM_RE, `原因 ${token} 不得以英文枚举出现在面板：${text}`);
     assert.ok(text.includes(zh), `原因 ${token} 应显示为「${zh}」：${text}`);
   }
-  // 用户实际看到的形态（实现侧实测的 no-route 场景）
+  // 用户实际看到的形态（实测的 no-route 场景）
   assert.equal(
     extractionNoticeText({ streak: 5, recent: [{ reason: "no-route", model: "mozu1" }] }),
     "自动提取失败 5 次 · 最近：无模型路由（mozu1）",

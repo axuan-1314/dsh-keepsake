@@ -1128,24 +1128,24 @@ test("embedding/test：已存密钥只发往它所属端点（不随请求体任
   const alt = await startEmbedSink();
   try {
     // ① 请求体自带 key → 用它发往请求体指定的地址
-    const a = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: alt.baseUrl, model: "m", apiKey: "body-key" });
+    const a = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "EXAMPLE_KEY_STORED" }, { baseUrl: alt.baseUrl, model: "m", apiKey: "EXAMPLE_KEY_BODY" });
     assert.equal(a.status, 200);
     assert.equal(a.json.ok, true);
     assert.equal(alt.seen.length, 1);
-    assert.equal(alt.seen[0].authorization, "Bearer body-key");
+    assert.equal(alt.seen[0].authorization, "Bearer EXAMPLE_KEY_BODY");
     assert.equal(eff.seen.length, 0, "未向生效端点发请求");
 
     // ② baseUrl ≠ 生效端点且未带 key → 绝不外发已存密钥
-    const b = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: alt.baseUrl, model: "m" });
+    const b = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "EXAMPLE_KEY_STORED" }, { baseUrl: alt.baseUrl, model: "m" });
     assert.equal(b.status, 200);
     assert.equal(alt.seen.length, 2);
     assert.equal(alt.seen.at(-1).authorization, void 0, "未带 key 时不得携带已存密钥");
 
     // ③ baseUrl = 生效端点且未带 key → 使用已存密钥
-    const c = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "stored-secret" }, { baseUrl: eff.baseUrl, model: "m" });
+    const c = await callEmbeddingTest(root, { baseUrl: eff.baseUrl, model: "m", apiKey: "EXAMPLE_KEY_STORED" }, { baseUrl: eff.baseUrl, model: "m" });
     assert.equal(c.status, 200);
     assert.equal(eff.seen.length, 1);
-    assert.equal(eff.seen[0].authorization, "Bearer stored-secret");
+    assert.equal(eff.seen[0].authorization, "Bearer EXAMPLE_KEY_STORED");
   } finally {
     await eff.close();
     await alt.close();
@@ -1166,7 +1166,7 @@ test("state：embeddingConfig/embeddingEffective baseUrl 剥离 URL 内嵌凭据
         configSummary: () => ({
           timeoutMs: 120000,
           retryAttempts: 3,
-          embeddingEffective: { source: "settings", enabled: true, baseUrl: "http://user:EXAMPLE_PASSWORD@example.com@embed.local/v1/embeddings", model: "m", provider: "p", apiKey: "secret", topK: 5, minScore: 0, timeoutMs: 5000 },
+          embeddingEffective: { source: "settings", enabled: true, baseUrl: "http://user:EXAMPLE_PASSWORD@example.com/v1/embeddings", model: "m", provider: "p", apiKey: "secret", topK: 5, minScore: 0, timeoutMs: 5000 },
         }),
       },
     });
@@ -1177,9 +1177,9 @@ test("state：embeddingConfig/embeddingEffective baseUrl 剥离 URL 内嵌凭据
     const json = JSON.parse(res.body);
     assert.equal(json.embeddingConfig.baseUrl.includes("user"), false, "embeddingConfig.baseUrl 剥离 username");
     assert.equal(json.embeddingConfig.baseUrl.includes("pass"), false, "embeddingConfig.baseUrl 剥离 password");
-    assert.equal(json.embeddingConfig.baseUrl, "http://embed.local/v1/embeddings");
+    assert.equal(json.embeddingConfig.baseUrl, "http://example.com/v1/embeddings");
     assert.equal(json.embeddingEffective.baseUrl.includes("user"), false, "embeddingEffective.baseUrl 剥离凭据");
-    assert.equal(json.embeddingEffective.baseUrl, "http://embed.local/v1/embeddings");
+    assert.equal(json.embeddingEffective.baseUrl, "http://example.com/v1/embeddings");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -130,7 +130,7 @@ The built-in list is **7 fixed patterns** (the list is fixed; user-supplied rege
 2. Bearer / Basic / Token credentials in `Authorization` / `Proxy-Authorization` headers;
 3. Standalone Bearer / Basic tokens (16+ characters);
 4. Common vendor key shapes: `sk-` prefixed keys, GitHub PATs (`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` / `github_pat_`), AWS access keys (`AKIA`), Slack tokens (`xox`), Google API keys (`AIza`), JWTs (three-segment `eyJ` form);
-5. Credentials embedded in URLs: `scheme://user:EXAMPLE_PASSWORD@example.com@host` keeps the scheme and host, replacing only the userinfo;
+5. Credentials embedded in URLs: `scheme://<user>:<password>@host` keeps the scheme and host, replacing only the userinfo;
 6. Sensitive key-value assignments: values after `:` or `=` for keys like `password` / `secret` / `token` / `api_key` / `private_key` / `credentials`;
 7. Private IPv4 addresses: `10.x.x.x` / `172.16-31.x.x` / `192.168.x.x`.
 

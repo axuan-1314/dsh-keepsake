@@ -375,7 +375,7 @@ test("hardfactPolicy 指路：面板不得为该键新增任何控件（定案�
   // 输入/下拉/开关一律不许有——用户拨到 block 会让合法更新被回滚（方案 v2 4.3）。
   // 切片边界用「下一张卡的锚点」（`data-settingsHealth` / `<h3>数据</h3>`），
   // 不用 </div> 计数——数不准会让边界悄悄落到文件尾，本用例就退化成了全文扫描
-  // （曾实测：加了下拉框仍然全部通过，等于没拦）。
+  // （曾实测：加了下拉框测试仍然全部通过，等于没拦）。
   const cardStart = panelHtml.indexOf('id="card-retention"');
   assert.ok(cardStart >= 0, "保留策略卡必须存在");
   const after = panelHtml.slice(cardStart);

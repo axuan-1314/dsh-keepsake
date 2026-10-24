@@ -4,28 +4,28 @@
 
 ## [0.7.0] - 2026-10-24
 
-**批 3：召回端点故障可见化 + 硬事实守护指路 + 在途中止分类 + 零正文失败路径（复查后收口版）。** 施工由三个并行模块并行完成，随后三路对抗复查（假绿猎杀 / 自伤猎杀 / 终端用户视角）揪出 2 条施工 P0、2 条复查 P0、若干 P1，实现侧逐条裁定修复。先交代三件对账事实，防止后续翻案：
+**召回端点故障可见化 + 硬事实守护指路 + 在途中止分类 + 零正文失败路径。** 本批由三个模块并行开发、随后经三路独立检查（测试有效性 / 自伤路径 / 终端用户视角）发现 2 条实现 P0、2 条检查 P0 与若干 P1，逐条修复后收口。先交代三件对账事实，防止后续翻案：
 - **方案 v2 §4.1（放弃闸重设计）的前提不成立，本批不动放弃闸。** 重启后 journal 里 0 条 `no-route`（级联已断），唯一残留失败族是 `ABORTED`（见修复③）。
-- **「max-tokens 复发」被证伪。** 施工前实现侧把重启后一条 `llm-error` 误读成 `kind=max-tokens`——逐字节核验原文是 `ABORTED`；最后一条真正的 max-tokens（`11:22:48Z`）早于插件重启（`13:32:50Z`）。注意插件是 `link:D:/dsh-keepsake` 直连工作树，**代码生效看重启时刻，不看提交时刻**。
-- **但「零正文 max-tokens」这个失败模式本身是真的**（批 1 之前 81/88 条 llm-error 都是它），且机制被本机实际环境网关实测坐实：思考 token 与正文**共享同一个 `maxTokens` 预算、思考链先跑**（`max_tokens=64` → reasoning 258 字符 / content 0 字符），丢 `reasoningEffort` 救不了（不传档位模型照样思考）。本批修的是它的失败路径——有界、不重演批 1。
+- **「max-tokens 复发」被证伪。** 此前把重启后一条 `llm-error` 误读成 `kind=max-tokens`——逐字节核验原文是 `ABORTED`；最后一条真正的 max-tokens（`11:22:48Z`）早于插件重启（`13:32:50Z`）。注意插件经 npm link 开发安装、直连本仓工作树，**代码生效看重启时刻，不看提交时刻**。
+- **但「零正文 max-tokens」这个失败模式本身是真的**（上一批之前 81/88 条 llm-error 都是它），且机制已在本机网关实测坐实：思考 token 与正文**共享同一个 `maxTokens` 预算、思考链先跑**（`max_tokens=64` → reasoning 258 字符 / content 0 字符），丢 `reasoningEffort` 救不了（不传档位模型照样思考）。本批修的是它的失败路径——有界、不重演上一批。
 
 ### 修复
 
-- **在途中止按「执行结果」分类（本机实际环境真故障，本批含金量最高的一件）**。本机实际环境 `extraction-errors.log` 13:28/13:37 两条 `llm-error … ABORTED`：插件 `callLlmText` 的单次超时计时器（默认 120s）`controller.abort()` 后，宿主把它映射成 `code=ABORTED`——**不在可重试族** → 一次判死；1291-seq 的大区间（越长越有价值）最容易被它吃掉。修法两条，判据全是执行结果、不猜错误形状：① 计时器超时 → 按 `controller.signal.reason === timeoutError` 补挂宿主同形 `code=TIMEOUT`（既有可重试族）→ 链上退避重采样；② dispose 在途（卸载打断在途 attempt）→ `runAttemptChain` 捕获处先查 `lifetime.signal` 本尊 → 按 `aborted` 收场，不进 `llm-error` 桶、不推失败连击（是我们在卸载，不是模型失败）。
-- **零正文 `max-tokens`：显式配小上限的用户有界逃逸；跟随模型不进重试链（成本纪律）**。显式配了 `maxOutputTokens > 0` 时零正文 → **丢掉该上限、改跟随模型重发一次**（唯一真正改变预算的手段，实测同一 prompt 不下发上限时正文正常产出），只逃逸一次，且**重发拿到正文才计数**（`escapeRetried` 在成功返回点记，发起不计——复查抓过"逃逸失败时健康卡同时显示『提取失败』与『重发成功』"的意图当结果）。**刻意不给它开链级重采样**：施工版曾自造 `code=OUTPUT_BUDGET_EXHAUSTED` 进 `RETRYABLE_FAILURE_CODES`，复查算账后移除——跟随模型（本机 25 万 token 预算）仍零正文在实践中不可达，为它重采样最坏是 `retryAttempts × fallback 条数` 次满预算调用（实测 `retryAttempts=10` + 3 条 fallback = **84 次**），拿真金白银换一个几乎不存在的场景。`RETRYABLE_FAILURE_CODES` 保持宿主 `DEFAULT_RETRYABLE_CODES` 五项镜像（有测试钉住集合本体）。
+- **在途中止按「执行结果」分类（本机真实故障，本批含金量最高的一件）**。本机 `extraction-errors.log` 13:28/13:37 两条 `llm-error … ABORTED`：插件 `callLlmText` 的单次超时计时器（默认 120s）`controller.abort()` 后，宿主把它映射成 `code=ABORTED`——**不在可重试族** → 一次判死；1291-seq 的大区间（越长越有价值）最容易被它吃掉。修法两条，判据全是执行结果、不猜错误形状：① 计时器超时 → 按 `controller.signal.reason === timeoutError` 补挂宿主同形 `code=TIMEOUT`（既有可重试族）→ 链上退避重采样；② dispose 在途（卸载打断在途 attempt）→ `runAttemptChain` 捕获处先查 `lifetime.signal` 本尊 → 按 `aborted` 收场，不进 `llm-error` 桶、不推失败连击（是我们在卸载，不是模型失败）。
+- **零正文 `max-tokens`：显式配小上限的用户有界逃逸；跟随模型不进重试链（成本纪律）**。显式配了 `maxOutputTokens > 0` 时零正文 → **丢掉该上限、改跟随模型重发一次**（唯一真正改变预算的手段，实测同一 prompt 不下发上限时正文正常产出），只逃逸一次，且**重发拿到正文才计数**（`escapeRetried` 在成功返回点记，发起不计——此前检查抓过"逃逸失败时健康卡同时显示『提取失败』与『重发成功』"的意图当结果）。**刻意不给它开链级重采样**：实现版曾自造 `code=OUTPUT_BUDGET_EXHAUSTED` 进 `RETRYABLE_FAILURE_CODES`，权衡后移除——跟随模型（本机 25 万 token 预算）仍零正文在实践中不可达，为它重采样最坏是 `retryAttempts × fallback 条数` 次满预算调用（实测 `retryAttempts=10` + 3 条 fallback = **84 次**），拿真金白银换一个几乎不存在的场景。`RETRYABLE_FAILURE_CODES` 保持宿主 `DEFAULT_RETRYABLE_CODES` 五项镜像（有测试钉住集合本体）。
 - **召回端点配错：从「启动即抛、整个插件起不来」改为「插件照常加载 + 面板/门牌红条指路」**（方案 v2 §4.2 降级落地，不加开关）。原实现：`resolveConfig` 对「`recallEnabled: true` 但缺 `embeddingBaseUrl`/`embeddingModel`、或 `injectChannel` 不是 `message`」直接 `throw`，而 `apply()` 第一行就调它——用户没填一个**可选功能**的端点，代价是连核心的对话记忆提取与注入一起起不来。现在拆成两类：
-  - **静态配置类**：不再抛错。`recallEnabled` 被**显式置 false**（运行时零嵌入调用，不是"开着但每轮白撞"的 fail-open），诊断经 `/state.recallDiagnostics` 透出，红条文案（`L.recallDisabledNoticeText`，面板/门牌/启动日志同一出处）**三岔口径、全部按当前生效配置每轮现算**：①缺端点/模型 → 点名键名 + 面板「嵌入服务」卡 + **必须同时打开「开启语义召回」开关**（复查 P0：开关预填 false，用户照旧文案填完端点后红条让位、召回静默不工作）；②`injectChannel` 不是 message → 只能改 `cordis.patch.yml`（明说面板改不了；用户补齐端点后红条改为只报通道问题，不再谎报缺键——复查 P0）；③配置齐了但开关没开 → 显式 `switchOff` 红条（复查两路各自独立抓到的 fail-open：旧 `rescuedBySettings` 只看端点/模型不看开关）。诊断每轮现算的副产品：**热恢复**——用户补齐配置后不重启即恢复（有测试）。仍然启动即抛的只有"配错"（URL 非 http(s)、键类型非法），与其它配置键 fail-loud 同口径。
+  - **静态配置类**：不再抛错。`recallEnabled` 被**显式置 false**（运行时零嵌入调用，不是"开着但每轮白撞"的 fail-open），诊断经 `/state.recallDiagnostics` 透出，红条文案（`L.recallDisabledNoticeText`，面板/门牌/启动日志同一出处）**三岔口径、全部按当前生效配置每轮现算**：①缺端点/模型 → 点名键名 + 面板「嵌入服务」卡 + **必须同时打开「开启语义召回」开关**（检查 P0：开关预填 false，用户照旧文案填完端点后红条让位、召回静默不工作）；②`injectChannel` 不是 message → 只能改 `cordis.patch.yml`（明说面板改不了；用户补齐端点后红条改为只报通道问题，不再谎报缺键——检查 P0）；③配置齐了但开关没开 → 显式 `switchOff` 红条（两路检查各自独立抓到的 fail-open：旧 `rescuedBySettings` 只看端点/模型不看开关）。诊断每轮现算的副产品：**热恢复**——用户补齐配置后不重启即恢复（有测试）。仍然启动即抛的只有"配错"（URL 非 http(s)、键类型非法），与其它配置键 fail-loud 同口径。
   - **运行时故障类（端点连不上/超时/HTTP 错）**：熔断语义一字未改（3 次 → 冷却 60s），只补可见性——`/state.recall.errors` 非零时面板与门牌出红条（与静态类互斥显示），文案注明「只影响语义召回，其它功能不受影响」。
-- **硬事实守护策略（`hardfactPolicy`）面板指路**（方案 v2 §4.3，按定案只加文案不加控件）：设置页「保留策略」卡一段说明——守护什么（正文里的数字、版本号、十六进制标识、字节尺寸这类写错一个字符就可能跑不通的内容）、当前值（warn/block 各自意味着什么；脏值如实标「不认识（按 warn 生效）」，不冒充现值）、去哪改（settings.json 的 `hardfactPolicy` 键，下一轮生效），并如实说明为什么不给控件（拨到 block 会把合法更新一起回滚，用户看到「我改的记忆自己变回去了」）。复查修正两处：**路径不再写死 `~/.dsh`**（`storageRoot` 可配，改由 `/state.storageRoot` 现算，自定义路径的用户不再被指错路）；删掉「当前值 warn——warn：」的自我复述。
+- **硬事实守护策略（`hardfactPolicy`）面板指路**（方案 v2 §4.3，按既定设计只加文案不加控件）：设置页「保留策略」卡一段说明——守护什么（正文里的数字、版本号、十六进制标识、字节尺寸这类写错一个字符就可能跑不通的内容）、当前值（warn/block 各自意味着什么；脏值如实标「不认识（按 warn 生效）」，不冒充现值）、去哪改（settings.json 的 `hardfactPolicy` 键，下一轮生效），并如实说明为什么不给控件（拨到 block 会把合法更新一起回滚，用户看到「我改的记忆自己变回去了」）。检查后修正两处：**路径不再写死 `~/.dsh`**（`storageRoot` 可配，改由 `/state.storageRoot` 现算，自定义路径的用户不再被指错路）；删掉「当前值 warn——warn：」的自我复述。
 - **红条指路路径动态化（同上口径）**：召回红条里的 settings.json 路径同样由 `/state.storageRoot` 现算，缺省才回落 `~/.dsh/memory/settings.json`；`/state.recallDiagnostics` 增 `requested` 字段（entry 是否请求过召回），单独透传的 `recallRequested` 死字段移除。
 
-### 测试测试（1126 → 1152，+26）
+### 测试（1126 → 1152，+26）
 
 - **零正文逃逸（3 条 + 集合钉 1 条）**：显式上限 + 两趟零正文 → 逃逸重发成功落盘且 `escapeRetried=1`；跟随模型 + 零正文 → **恰好 1 次调用**（不逃逸、不进重试链——变异：把自造 code 同时加回集合与补挂 → 必红）；逃逸那趟仍零正文 → 恰好两趟后 llm-error 且 `escapeRetried=0`（结果口径）；`RETRYABLE_FAILURE_CODES` 集合本体 deepEqual 宿主五项（防将来混入自造 code）。
 - **在途中止分类（2 条，全走真 `apply()` / 真 REST 面）**：①在途超时 → `retried≥1`（真实重采样）、失败摘要带 TIMEOUT（变异：摘掉 TIMEOUT 补挂 → 必红）；②dispose 在途（**走补提路径触发**——scheduler.dispose 会先有界 drain 在线提取，在线路径的 abort 永远落在两次 attempt 之间，只有补提不经 scheduler 才能确定命中"attempt 中途被打断"）→ `llm-error` 桶不增、journal 不记 llm-error（变异：摘掉 dispose 检查 → 必红）。**变异期间抓掉两个假测试**：假流"永不 yield 的死流"对 abort 信号无动于衷、extractSession 永远挂在 for-await 上，dispose 路径根本没走到——改为挂起至 signal abort 后抛宿主形状 ABORTED。
-- **召回降级（`test/recall-degrade.test.mjs`，14 条；全走真入口）**：缺键不抛 + 插件照常加载 + `/state` 诊断形状；只缺 model / 通道 section 各自精确；**有候选前提下**零嵌入调用（复查 P1：无条目时 fail-open 也不会发请求，断言无区分力——现在先 `createEntry` 再断言 0）；面板红条渲染级（含自定义 storageRoot 路径 + switchOff 岔 + 不得谎报缺键）；门牌兜底表驱动逐字一致（含 switchOff）；运行时故障端到端 + 推行锚；熔断常量 3 次/60s 未动；边界（配错仍抛 / 没请求过不出红条 / 配齐无诊断）；**switchOff 显式红条**（变异：摘掉 switchOff 岔 → 2 条红）；**热恢复**（补开开关不重启即恢复）。
-- **hardfact 指路（2 条渲染级）**：真实行模板求值（warn/block/缺失/脏值 + 自定义 storageRoot 路径 + 路径参数兜底）；无控件判据升级为「卡内白名单外一律违规」（复查 P1：旧判据只认带 `keepHardfact` 的标签，radio/checkbox 可绕过）。
-- **推行锚补强（复查 P1：只锁 const 行锁不住"算了但没 push"）**：`escapeLine` 与 `recallFailureLine` 的 push 行各有测试。
+- **召回降级（`test/recall-degrade.test.mjs`，14 条；全走真入口）**：缺键不抛 + 插件照常加载 + `/state` 诊断形状；只缺 model / 通道 section 各自精确；**有候选前提下**零嵌入调用（检查 P1：无条目时 fail-open 也不会发请求，断言无区分力——现在先 `createEntry` 再断言 0）；面板红条渲染级（含自定义 storageRoot 路径 + switchOff 岔 + 不得谎报缺键）；门牌兜底表驱动逐字一致（含 switchOff）；运行时故障端到端 + 推行锚；熔断常量 3 次/60s 未动；边界（配错仍抛 / 没请求过不出红条 / 配齐无诊断）；**switchOff 显式红条**（变异：摘掉 switchOff 岔 → 2 条红）；**热恢复**（补开开关不重启即恢复）。
+- **hardfact 指路（2 条渲染级）**：真实行模板求值（warn/block/缺失/脏值 + 自定义 storageRoot 路径 + 路径参数兜底）；无控件判据升级为「卡内白名单外一律违规」（检查 P1：旧判据只认带 `keepHardfact` 的标签，radio/checkbox 可绕过）。
+- **推行锚补强（检查 P1：只锁 const 行锁不住"算了但没 push"）**：`escapeLine` 与 `recallFailureLine` 的 push 行各有测试。
 
 ## [0.6.5] - 2026-10-23
 
@@ -44,9 +44,9 @@
 
 - **token / 成本观测（P0）**：`callLlmText` 此前只认 `text-delta` 与 `finish`，把宿主的 `{type:"usage", usage:{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?}}` chunk **直接丢弃**——于是 `maxOutputTokens` 从 4096 抬到模型默认（本机 250000，61 倍）之后，单次输出上限放大 61 倍、成本可能被带飞而完全看不见。现在每趟（含降档重发第二趟）收口时记账，新面 `/state.extractionFailures.extractionTokens` = `{ input, output, total, calls }`。口径：`calls` 记真实发起的调用次数（含降档重发那趟、含失败途），宿主没发 usage chunk（旧适配器）时 token 记 0 但 `calls` 仍计数——「调了几次」与「花了多少 token」分开报；`total` 取宿主 `totalTokens`（含 cache 读写，缺失才回落 `input + output`），不自己凑数。
 - **`/state` 去重口径（P0）**：新增 `/state.extractionLog.coverage` = `{ distinctFailedRanges, distinctWrittenRanges, distinctAbandonedRanges, writtenRangeRate, writtenRangesTotal, failedRangesTotal, abandonedRangesTotal, scope: "range" }`。**这是验收的唯一判据**：修复生效后「不再反复白撞同一区间」会让 `failed` 计数下降，但那不等于记忆变多——只有 distinct `(sessionId, from, to)` 区间数说得清。口径如实标注为**区间口径不是轮次口径**：宿主不提供总轮次数，故 `writtenRangeRate` = `written / (written + failed + abandoned)`（区间级成功率），分母不含 skipped/zero-ops（无区间成败语义），也不编一个轮次数。`*RangesTotal` 是不去重行数，与 distinct 并排，`行数/distinct` 即「平均每区间结账几次」。journal 侧进程内累计 + 重放同源（`runs` ring 只有 30 条且会被轮转裁掉，从 ring 现算必少算）；`parseReplayLine`/`shapeRun` 白名单语义未动（不新增盘上字段，纯读侧统计）。
-- **截断与降档上用户面（P1）**：`truncatedParse > 0` 的 `written` 行标签附「（输出被截断，可能少存）」（`extractionRunLabel`）；`reasoningDegraded > 0` 时健康卡与门牌各显示一行「思考档降级 N 次（该路由不支持所配档位…）」（新增纯函数 `reasoningDegradedText` + `EXTRACTION_BUCKET_KEYS` 增桶）；面板最近失败表的 reason 列改走 `L.reasonLabelOf(...)` 与测试中文化口径统一（复查点名的遗留：此前直接 `esc(r.reason)`，面板上会露 `no-route` / `llm-error` 这类英文枚举）。门牌侧同步内联兜底（`reasoningDegradedTextFallback`），双端逐字一致。
+- **截断与降档上用户面（P1）**：`truncatedParse > 0` 的 `written` 行标签附「（输出被截断，可能少存）」（`extractionRunLabel`）；`reasoningDegraded > 0` 时健康卡与门牌各显示一行「思考档降级 N 次（该路由不支持所配档位…）」（新增纯函数 `reasoningDegradedText` + `EXTRACTION_BUCKET_KEYS` 增桶）；面板最近失败表的 reason 列改走 `L.reasonLabelOf(...)` 与测试中文化口径统一（检查点名的遗留：此前直接 `esc(r.reason)`，面板上会露 `no-route` / `llm-error` 这类英文枚举）。门牌侧同步内联兜底（`reasoningDegradedTextFallback`），双端逐字一致。
 
-### 测试测试
+### 测试
 
 - 新增 `test/extract-route-resilience.test.mjs`（12 条）：预算缺省 0 且 options 无 `maxTokens` 键、思考档缺省/显式/非法、`UNSUPPORTED_REASONING_EFFORT` 降级重发一次且同路由不再白撞、截断可解析即落盘 + `truncatedParse` 跨 journal 实例重放仍在、半截 JSON 走 `parse-error`、零输出仍判死、`llm-error` 后同会话下一轮不产生 `no-route`、失败后新 `source` 能顶替旧路由、`routeFromEvents` 优先级、补提经真 REST 面发起真调用且路由来自读回事件。全部走真 `apply()` 入口/真 REST 面，未复刻接线。逐条做过拆改验证（摘掉对应修复 → 必红）。
 - 新增 token/成本面测试（6 条）：`test/observability.test.mjs` 3 条（累计/两次累加/cache 时 host total 优先、脏 usage 钳零 + 无 usage 只计 calls、快照拷贝不可变）+ `test/extract-route-resilience.test.mjs` 4 条端到端（假 llm 发 usage chunk → 真 REST `/state` 快照 `input=100/output=500/total=600/calls=1`；两次调用累加；降档重发第二趟也计；旧适配器无 usage chunk 不抛错且 `calls` 仍计 1）。
@@ -56,7 +56,7 @@
 
 ## [0.6.4] - 2026-10-22
 
-**上两批修复自己引入的缺陷 + 五路复查 P2/P3 收尾。** v0.6.2/v0.6.3 修掉了真问题，但复查（含对「修复本身」的对抗复查）发现其中两条修法各有反向副作用、另有若干遗留。本批把 2 个 P0 级回归、5 个 P2、5 个 P3 全部收口，并补上复查点名的最大的测试空白（memo 链路端到端）。无新增开关、`FORMAT_VERSION` 仍为 2。
+**上两批修复自身引入的缺陷 + 五路检查 P2/P3 收尾。** v0.6.2/v0.6.3 修掉了真问题，但后续独立检查（含对「修复本身」的复查）发现其中两条修法各有反向副作用、另有若干遗留。本批把 2 个 P0 级回归、5 个 P2、5 个 P3 全部收口，并补上检查点名的最大测试空白（memo 链路端到端）。无新增开关、`FORMAT_VERSION` 仍为 2。
 
 ### 修复（P0：上批修复自身引入的回归）
 
@@ -78,9 +78,9 @@
 - **日期式命名 `report.tmp-2026-10-22` 被当孤儿删**：判定从 `\.tmp-\d+-\d+` 收紧到「pid + 13 位毫秒时间戳」（2xxx 年），与仓库内所有真实 tmp 命名（`${pid}-${Date.now()}`）一致，用户手建的日期式名字不再误删。
 - **`evictedNote` 的「退条目」分支无任何测试**：新增 `retreated` 可观测量并从 `buildArtifact` 返回，便于面板/测试观测该防御分支是否生效。
 
-### 测试测试
+### 测试
 
-- **补上复查点名的最大空白：memo 链路端到端**。此前 compile 端点只测「回调被调用」（计数），`runtimeMemo.clear()` 只有一条源码正则——**影子 Map / `clear()` 变空操作 / 失效函数整体空转三种退化都能全部通过通过**。现在新增：真实插件实例 + 同一 TTL 窗口内连做两次注入、中间触发 compile，验证第二次必须看到新内容（实测该测试对 `onRuntimeCompiled` 变空操作敏感）。
+- **补上检查点名的最大空白：memo 链路端到端**。此前 compile 端点只测「回调被调用」（计数），`runtimeMemo.clear()` 只有一条源码正则——**影子 Map / `clear()` 变空操作 / 失效函数整体空转三种退化都能全部通过**。现在新增：真实插件实例 + 同一 TTL 窗口内连做两次注入、中间触发 compile，验证第二次必须看到新内容（实测该测试对 `onRuntimeCompiled` 变空操作敏感）。
 - 其余新增测试：P0-A 撞名 2 条 + 反向（普通名不加后缀）、P0-B 双向 2 条、P2-a 不变量扫描、P2-b 幽灵计数、P2-c 成功清理 / 失败保留 2 条、P2-d 双写 2 条、P3-a 空目录消息、P3-b 3 条、P3-c/d 3 条。测试总数 1067 → 1087。
 
 ### 已知取舍
@@ -90,7 +90,7 @@
 
 ## [0.6.3] - 2026-10-22
 
-P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理完，另补 3 处测试测试。共 2 项数据保全、3 项并发安全、4 项可观测/文案，无新增开关、`FORMAT_VERSION` 仍为 2。
+P2/P3 收尾批：把 v0.6.2 检查里「提出但未动」的 9 项全部处理完，另补 3 处测试。共 2 项数据保全、3 项并发安全、4 项可观测/文案，无新增开关、`FORMAT_VERSION` 仍为 2。
 
 ### 修复
 
@@ -104,9 +104,9 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 - **`firstSeenAt` 字段名与语义不符**：它从不记录「首次出现」，每次编译都写成当次 `compiledAt`，排障时会让人误以为「这条候选今天才出现」。改名为 **`lastSeenAt`**（`runtime.json.evictCandidates[].lastSeenAt`），契约 §四 同步。该字段无面板消费方，改名无兼容层。
 - **面板对「尚未编译」的文案像报错**：读到 `E_NO_ARTIFACTS` 时会把 `无编译产物（scope …）` 直接拼在「未能读取产物：」后面，读成「未能读取产物：无编译产物」，绕且像故障。现在按 code 分流：未编译过属正常初态，给「点上方『重新编译』立即生成」的人话引导；真错误仍如实显示服务端 message 与排查建议。
 
-### 测试测试
+### 测试
 
-- **`writeEntryDirect` 的 origin 保留补测试**：v0.6.2 修了「归档 origin 三字段被普通编辑剥掉」，但 `writeEntryDirect`（导入覆盖 / 提取覆写全局走它）当时无测试——摘掉其 origin 保留全部通过（对抗复查实测 M5' 存活）。现补 2 条（保留 + 非归档分类不凭空长出）。
+- **`writeEntryDirect` 的 origin 保留补测试**：v0.6.2 修了「归档 origin 三字段被普通编辑剥掉」，但 `writeEntryDirect`（导入覆盖 / 提取覆写全局走它）当时无测试——摘掉其 origin 保留测试仍全部通过（独立检查实测 M5' 存活）。现补 2 条（保留 + 非归档分类不凭空长出）。
 - **`runtimeMemo.clear()` 从源码正则改为行为测试**：此前只有 `assert.match(src, /runtimeMemo\.clear\(\)/)`——把语句删掉或挪进永不执行的分支，正则仍绿而行为已坏（M16d 存活）。现按设计承诺测两件事：TTL 窗口内结果稳定不抖动、越过 TTL 必须看到盘上新内容（记忆会过期而非永久钉死）。
 - **删掉一条 `|| true` 恒真死断言**：`restoreBackup` 用例里对 `compile-journal.jsonl` 的检查原本恒真（等于没测）。改为真实断言：scope 目录失效不删 runtime 根下的编译观测日志。
 
@@ -116,7 +116,7 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 
 ## [0.6.2] - 2026-10-22
 
-五路独立复查（运行时记忆层 / 核心记忆管线 / 公开面泄露与文档漂移 / 测试测试自证式审查 / 0.6.1 修复真实性对抗复查）后的一轮修复批。修掉 7 个真实缺陷——其中 2 个会让**记忆对注入面静默消失**、2 个会让**用户按面板指引做完全无效的操作**——并补强 2 处**失效的测试测试**（0.6.1 声称「11 项变异全部被抓住」，实测 3 项存活）。无新增开关、无存储格式变更（`FORMAT_VERSION` 仍为 2）。
+五路独立检查（运行时记忆层 / 核心记忆管线 / 公开面泄露与文档漂移 / 测试自证式审查 / 0.6.1 修复真实性复查）后的一轮修复批。修掉 7 个真实缺陷——其中 2 个会让**记忆对注入面静默消失**、2 个会让**用户按面板指引做完全无效的操作**——并补强 2 处**失效的测试**（0.6.1 声称「11 项变异全部被抓住」，实测 3 项存活）。无新增开关、无存储格式变更（`FORMAT_VERSION` 仍为 2）。
 
 ### 修复（按影响面排序）
 
@@ -133,10 +133,10 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 - README 中英双版的安装命令此前硬编码 `v0.6.1.tar.gz`，而远端只有 v0.1.0/v0.2.0/v0.3.0/v0.3.1 四个 tag（`git ls-remote --tags` 实测）——用户照首屏复制即 404。现改为带引号的版本占位 `".../tags/v<版本号>.tar.gz"` 并注明「版本号见 Releases」，避免每次发版都要改文档。
 - README 中英双版版本号 0.6.0 → 0.6.2（对齐 `package.json`）。
 
-### 测试测试
+### 测试
 
-- **修掉一条自证式回归测试**：`runtime-regress` 的「只读态 stale 清单」用例此前用 `compileScope()`（纯内存编译、不写 `runtime.json`），于是注入侧走的是「无缓存」早退分支，**被测的指纹比对代码根本没执行**——删掉该守卫测试仍全部通过（实测）。改用 `ensureCompiled()` 让清单真落盘后，删守卫即变红。
-- **补上配额预留的测试**：0.6.1 把「淘汰提示行事后追加」改成「装填时预留字节」，但没有测试钉它——恢复旧实现仍全部通过（实测能构造出 `bytes=10283 > quota=10240` 却 `status=ok`）。新增边界扫描用例（10 组不同条目宽度），任一处越界即红。
+- **修掉一条自证式回归测试**：`runtime-regress` 的「只读态 stale 清单」用例此前用 `compileScope()`（纯内存编译、不写 `runtime.json`），于是注入侧走的是「无缓存」早退分支，**被测的指纹比对代码根本没执行**——删掉该守卫测试仍然全部通过（实测）。改用 `ensureCompiled()` 让清单真落盘后，删守卫即变红。
+- **补上配额预留的测试**：0.6.1 把「淘汰提示行事后追加」改成「装填时预留字节」，但没有测试钉它——恢复旧实现仍然全部通过（实测能构造出 `bytes=10283 > quota=10240` 却 `status=ok`）。新增边界扫描用例（10 组不同条目宽度），任一处越界即红。
 - 新增 `pin-name-stability`（4 条）、`runtime-compile-memo`（4 条）两个测试文件，以及全局硬事实比对 3 条、pinnedOver reason 2 条、delete→write 终态 2 条、`renderMemoryFile` 换行转义 1 条。测试总数 1035 → 1053。
 
 ### 已知取舍
@@ -146,7 +146,7 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 
 ## [0.6.1] - 2026-10-21
 
-运行时记忆层的**缺陷修复批**：三路独立复查 + 逐条实测复现后，修掉 2 个会真正丢记忆可见性的缺陷（写入后面板 404、被淘汰条目两头不可见）、1 个会把记忆静默清空的读失败路径，以及 4 个一致性问题（面板开关状态谎报、归档可逆被普通编辑破坏、审计中断静默丢候选、文档与实现漂移）。无新增开关、无格式变更（`FORMAT_VERSION` 仍为 2）。
+运行时记忆层的**缺陷修复批**：三路独立检查 + 逐条实测复现后，修掉 2 个会真正丢记忆可见性的缺陷（写入后面板 404、被淘汰条目两头不可见）、1 个会把记忆静默清空的读失败路径，以及 4 个一致性问题（面板开关状态谎报、归档可逆被普通编辑破坏、审计中断静默丢候选、文档与实现漂移）。无新增开关、无格式变更（`FORMAT_VERSION` 仍为 2）。
 
 ### 修复（按影响面排序）
 
@@ -162,7 +162,7 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 - **极小预算下发零内容空壳块**：`0 < maxChars < 固定开销`（包裹符 + 取代声明 + 免责行 + 告警行）时，锁定段被截空后仍会返回一个不含任何记忆的 500 字符块，绕开了「不发空壳」的意图。现在内容段全空即返回空文本（与 `maxChars<=0` 的不注入口径对齐）。
 - **overQuota 指引不可执行**：面板文案说「调高配额需改配置文件」，但配额是编译期常量（`RUNTIME_QUOTAS`），配置改不到。已订正文案为真能做的三件事（解 pin / 精简条目 / 归档到 long-term），解 pin 预警文案同步。
 
-### 复查后补修（第二轮对抗复查发现，含本次修复自身引入的缺陷）
+### 检查后补修（第二轮独立复查发现，含本次修复自身引入的缺陷）
 
 - **【P0，本批引入】审计失败时已搬走的条目被谎报为「已跳过」**：上一轮把中断改成了「停止搬运但走完流程」，但守卫写在了快照/写副本/删源**之后**——于是第 2..N 条其实已经搬完（源已删、副本已写）却被记进 `skipped[audit-failed]`，进度谎报。守卫已移到循环体**最前面**：审计坏掉后后续条目一个都不动，源文件原样留在原位。
 - **【P1，本批引入】淘汰提示行不计入配额**：`[runtime evicted: N …]` 是事后追加的，装填时没占额度，导致产物可能 `bytes > quota` 却仍 `status=ok`（实测 4102/4096），面板出现「用量条爆红 + 状态绿灯」的自相矛盾。现在提示行按配额预留：放不下先降级成短行（`[runtime evicted: N over quota; see keepsake panel]`），短行仍放不下才退条目——**记忆内容优先于提示的详细程度**。
@@ -180,7 +180,7 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 - **拆改验证**：把 11 个修复点逐条关掉后重跑全量测试，**11/11 全部变红**（0 存活）——确保这些测试真的能抓住对应回归，而不是同义反复。
 - 修正一条随时间流逝必红的测试：`runtimeRestoreRows` 现在接受 `now` 入参，`panel-logic.test.mjs` 传入固定时刻（此前用 `Date.now()` 默认值，跑在"1 小时前"数据上跨过一天就变成「1 天前」）。
 - 同步更新受行为变更影响的既有测试（`/state.settings` 出参契约、项目索引去重、极小预算空壳、面板 `api()` 结构钉改为允许挂 details 但仍钉住「message 优先、error 回落」）。
-- 测试：`npm run check` + `npm test` → **1035 项全部通过**（0.6.0 为 1023 项）。
+- 质量关：`npm run check` + `npm test` → **1035 项全部通过**（0.6.0 为 1023 项）。
 - 现网数据复验（复制 `~/.dsh/memory` 到临时目录，不碰真数据）：3 个 scope 全部 `bytes ≤ quota`；有 48 条淘汰候选的那个项目产物带提示行且 10236/10240 恰好不越界；覆盖分类正确退出索引；26 条项目条目将按「已进产物」剔重。
 
 ### 回滚
@@ -196,7 +196,7 @@ P2/P3 收尾批：把 v0.6.2 复查里「提出但未动」的 9 项全部处理
 - **运行时记忆层（`runtimeEnabled`，默认关；面板「设置」页开关）**：L0 = 每轮注入的紧凑记忆。编译规则——pinned（`pinned: true`）条目全部优先入选、剩余额度按「权重 desc, mtimeMs desc」顺序装填、装不下即停；配额 **USER.md ≤ 4096 字节 / MEMORY.md ≤ 10240 字节**（UTF-8 字节口径，含文件头声明与告警行）。候选池 = 全局分类 + 当前项目条目（`long-term` / `recent-activity` 不进、`reference` 不入正文）。
 - **编译产物与清单**：`<storageRoot>/runtime/<scope>/`（`global` 与 `projects/<slug>-<hash16>` 各一份）落 `USER.md` / `MEMORY.md` / `runtime.json`。`runtime.json` 记选条明细（`entries[]` 含 `pinned` / `included` / `bytes`）、`status`（`ok` / `overQuota` / `error`）、`sourceHash`（候选池路径+mtimeMs+size+配额+算法版本）与 `evictCandidates[]`；同输入同产物（确定性编译）。**产物不是真源**：整目录可删可重建，手工修改会被下次编译覆盖。
 - **`pin`（「关键」）**：条目 frontmatter 可选 `pinned: true`（全局与项目条目皆可）。pinned 条目在候选池内永不淘汰、优先入选；合计超配额时**不截断、不静默**——`status=overQuota` + 面板红灯 + 注入块内告警行。五条覆写路径（面板保存 / 提取覆写 / 导入覆盖 / pin 端点 / 归档重写）均透传 `pinned`（有 roundtrip 测试钉死）。
-- **淘汰候选 + 面板确认归档**：编译只**登记**候选（`runtime.json.evictCandidates`），绝不搬文件；用户在面板「运行时记忆」页勾选后点「执行归档」才落盘。执行序列：抢 `extract.lock`（被占 409）→ 逐条复查仍为候选（过期项进响应 `skipped[]`）→ **手术式快照**到 `backups/evict-<ts>/<n>-<name>`（只快照被搬文件，保留最近 10 份）→ 按 long-term 扩展 schema 重写进 `global/long-term/`（`originProject` / `originType` / `originSessionId` 三字段承载出处）→ 索引对账 → **持久审计** `evict-audit.jsonl` 追加一行（5000 行轮转留尾 2500，不随 `runtime/` 清理）→ 失效并全量重编受影响 scope。**归档 ≠ 删除**，可逆：面板「从归档移回」按 origin 三字段落回原位（`POST runtime/global/archive/restore`），快照与审计存证。
+- **淘汰候选 + 面板确认归档**：编译只**登记**候选（`runtime.json.evictCandidates`），绝不搬文件；用户在面板「运行时记忆」页勾选后点「执行归档」才落盘。执行序列：抢 `extract.lock`（被占 409）→ 逐条核对仍为候选（过期项进响应 `skipped[]`）→ **手术式快照**到 `backups/evict-<ts>/<n>-<name>`（只快照被搬文件，保留最近 10 份）→ 按 long-term 扩展 schema 重写进 `global/long-term/`（`originProject` / `originType` / `originSessionId` 三字段承载出处）→ 索引对账 → **持久审计** `evict-audit.jsonl` 追加一行（5000 行轮转留尾 2500，不随 `runtime/` 清理）→ 失效并全量重编受影响 scope。**归档 ≠ 删除**，可逆：面板「从归档移回」按 origin 三字段落回原位（`POST runtime/global/archive/restore`），快照与审计留档。
 - **面板「运行时记忆」页签**：scope 切换（全局 / 各项目）、`USER.md` / `MEMORY.md` 只读预览、字节用量进度条（越界红显）、淘汰候选列表（勾选 + 执行归档 + 计数徽标）、「重新编译」、从归档移回；开关关闭时给一句引导文案。执行归档前自动刷新候选清单。
 - **runtime API 六端点**：`GET runtime/<scope>`（只读产物与清单）、`POST runtime/<scope>/compile`、`POST runtime/compile-all`、`POST runtime/<scope>/pin`、`POST runtime/<scope>/evict`、`POST runtime/global/archive/restore`。scope 值含斜杠，走专用匹配 `matchRuntime`；scope 不存在 404、参数非法 400、锁被占 409、编译失败 500（保留上一版产物）。
 - **`compile-journal.jsonl`**：每次编译一行（`trigger` / `selected` / `candidates` / `overQuota` / `bytes` / `sourceHash`），独立实现（不复用 `journal.js` 的会话语义），达 2000 行轮转留尾 1000。

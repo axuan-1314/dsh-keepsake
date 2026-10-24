@@ -143,7 +143,7 @@ test("写后校验口径：嵌套条目 name 与真实相对路径逐字一致�
 // ---- writeEntryDirect 的 origin 三字段保留（2026-10-22 补测试）----
 // 语境：v0.6.1 修了「归档 origin 三字段被普通编辑剥掉」，updateEntry 路径有测试，
 // 但 writeEntryDirect（导入覆盖 / 提取覆写全局走它）当时无测试——摘掉其 origin 保留
-// 测试仍全部通过（对抗复查实测 M5' 存活）。此用例专钉该路径。
+// 测试仍全部通过（独立验证实测 M5' 存活）。此用例专钉该路径。
 
 test("writeEntryDirect：覆写 long-term 条目必须保留 origin 三字段（否则移回恒 400）", async () => {
   const { writeEntryDirect, readEntry } = await import("../lib/global-store.js");

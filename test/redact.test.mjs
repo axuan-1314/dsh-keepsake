@@ -13,7 +13,7 @@ import {
 } from "../lib/redact.js";
 
 test("模式 1：私钥块 - 完整 PEM 格式命中", () => {
-  const input = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
+  const input = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END ENCRYPTED PRIVATE KEY-----";
   const result = redactSensitive(input);
   assert.equal(result, REDACTION_PLACEHOLDER);
 });
@@ -24,11 +24,11 @@ test("模式 1：私钥块 - 多行 PEM 命中", () => {
       key: |
         -----BEGIN ENCRYPTED PRIVATE KEY-----
         MHcCAQEEIF...
-        -----END EC PRIVATE KEY-----
+        -----END ENCRYPTED PRIVATE KEY-----
   `;
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("BEGIN EC PRIVATE KEY"));
+  assert.ok(!result.includes("BEGIN ENCRYPTED PRIVATE KEY"));
 });
 
 test("模式 1：私钥块 - 不命中普通文本", () => {
@@ -38,7 +38,7 @@ test("模式 1：私钥块 - 不命中普通文本", () => {
 });
 
 test("模式 2：Authorization 头 - Bearer 命中", () => {
-  const input = "Authorization: Bearer sk-FAKEFAKEFAKEFAKEFAKE";
+  const input = "Authorization: Bearer sk-FAKE0000000000000";
   const result = redactSensitive(input);
   assert.equal(result, `Authorization: Bearer ${REDACTION_PLACEHOLDER}`);
 });
@@ -50,19 +50,19 @@ test("模式 2：Authorization 头 - Basic 命中", () => {
 });
 
 test("模式 2：Authorization 头 - Token 命中", () => {
-  const input = "Authorization: Token ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456";
+  const input = "Authorization: Token ghp_FAKE000000000000000000000000000000000FAKE";
   const result = redactSensitive(input);
   assert.equal(result, `Authorization: Token ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 2：Authorization 头 - Proxy-Authorization 命中", () => {
-  const input = "Proxy-Authorization: Bearer mytoken123456789012";
+  const input = "Proxy-Authorization: Bearer tokenEXAMPLE1234567890";
   const result = redactSensitive(input);
   assert.equal(result, `Proxy-Authorization: Bearer ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 2：Authorization 头 - 大小写不敏感", () => {
-  const input = "authorization: bearer sk-FAKEFAKEFAKEFAKEFAKE";
+  const input = "authorization: bearer sk-FAKE0000000000000";
   const result = redactSensitive(input);
   assert.equal(result, `authorization: bearer ${REDACTION_PLACEHOLDER}`);
 });
@@ -89,31 +89,31 @@ test("模式 3：独立令牌 - 短令牌不命中（<16 字符）", () => {
 });
 
 test("模式 4：厂商 key - sk- OpenAI 风格命中", () => {
-  const input = "api_key: sk-FAKEFAKEFAKEFAKEFAKEFAKE";
+  const input = "api_key: sk-FAKE0000000000000000X";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("sk-FAKEFAKEFAKEFAKEFAKEFAKE"));
+  assert.ok(!result.includes("sk-FAKE0000000000000000X"));
 });
 
 test("模式 4：厂商 key - ghp_ GitHub PAT 命中", () => {
-  const input = "token: ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
+  const input = "token: ghp_FAKE0000000000000000FAKE";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE"));
+  assert.ok(!result.includes("ghp_FAKE0000000000000000FAKE"));
 });
 
 test("模式 4：厂商 key - github_pat_ Fine-grained 命中", () => {
-  const input = "token: github_pat_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEuvwx";
+  const input = "token: github_pat_FAKE0000000000000000000000000000000000000000000000000000FAKE";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
   assert.ok(!result.includes("github_pat_"));
 });
 
 test("模式 4：厂商 key - AKIA AWS Access Key 命中", () => {
-  const input = "accessKeyId: AKIAFAKEFAKEFAKEFAKE01";
+  const input = "accessKeyId: AKIAFAKE000000000001";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("AKIAFAKEFAKEFAKEFAKE01"));
+  assert.ok(!result.includes("AKIAFAKE000000000001"));
 });
 
 test("模式 4：厂商 key - xoxb Slack token 命中", () => {
@@ -124,10 +124,10 @@ test("模式 4：厂商 key - xoxb Slack token 命中", () => {
 });
 
 test("模式 4：厂商 key - AIza Google API key 命中", () => {
-  const input = "google_key: AIzaFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEabcde";
+  const input = "google_key: AIzaFAKE0000000000000000000000000000000";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("AIzaFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEabcde"));
+  assert.ok(!result.includes("AIzaFAKE0000000000000000000000000000000"));
 });
 
 test("模式 4：厂商 key - AIza 尾串超 35 位仍命中（宁多勿漏的取舍钉）", () => {
@@ -143,10 +143,10 @@ test("模式 4：厂商 key - AIza 尾串超 35 位仍命中（宁多勿漏的�
 });
 
 test("模式 4：厂商 key - JWT 命中", () => {
-  const input = "jwt: eyJFAKEhbGciOiJIUzI1NiJ9.FAKEcGF5bG9hZC5wYXlsb2Fk.FAKEc2lnbmF0dXJlX3NpZ25hdHVyZQ";
+  const input = "jwt: eyJFAKEhbGciOiJIUzI1NiJ9.FAKEeyJzdWIiOiIxMjM0NTY3ODkwIn0.FAKESflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"));
+  assert.ok(!result.includes("eyJFAKEhbGciOiJIUzI1NiJ9"));
 });
 
 test("模式 4：厂商 key - 普通 hex 不误伤", () => {
@@ -162,15 +162,15 @@ test("模式 5：URL 凭据 - http://user:EXAMPLE_PASSWORD@example.com@host 命�
 });
 
 test("模式 5：URL 凭据 - https 保留 scheme 和 host", () => {
-  const input = "connect: https://user:EXAMPLE_PASSWORD@example.com@internal.server:8080/path";
+  const input = "connect: https://user:EXAMPLE_PASSWORD@example.org:8080/path";
   const result = redactSensitive(input);
-  assert.equal(result, `connect: https://${REDACTION_PLACEHOLDER}@internal.server:8080/path`);
+  assert.equal(result, `connect: https://${REDACTION_PLACEHOLDER}@example.org:8080/path`);
 });
 
 test("模式 5：URL 凭据 - ftp 保留 scheme", () => {
-  const input = "ftp://user:EXAMPLE_PASSWORD@example.com@ftp.example.com/file";
+  const input = "ftp://user:EXAMPLE_PASSWORD@example.net/file";
   const result = redactSensitive(input);
-  assert.equal(result, `ftp://${REDACTION_PLACEHOLDER}@ftp.example.com/file`);
+  assert.equal(result, `ftp://${REDACTION_PLACEHOLDER}@example.net/file`);
 });
 
 test("模式 5：URL 凭据 - 无凭据 URL 不动", () => {
@@ -193,37 +193,37 @@ test("模式 6：敏感键值 - passwd 命中", () => {
 });
 
 test("模式 6：敏感键值 - pwd 命中", () => {
-  const input = "pwd: secret456";
+  const input = "pwd: EXAMPLE_PASSWORD";
   const result = redactSensitive(input);
   assert.equal(result, `pwd: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - secret 命中", () => {
-  const input = "secret: mykey789";
+  const input = "secret: EXAMPLE_PASSWORD";
   const result = redactSensitive(input);
   assert.equal(result, `secret: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - token 命中", () => {
-  const input = "token: abc123xyz";
+  const input = "token: EXAMPLE_TOKEN";
   const result = redactSensitive(input);
   assert.equal(result, `token: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - api_key 命中", () => {
-  const input = "api_key: xyz789abc";
+  const input = "api_key: EXAMPLE_KEY";
   const result = redactSensitive(input);
   assert.equal(result, `api_key: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - apikey 命中", () => {
-  const input = "apikey: test123";
+  const input = "apikey: EXAMPLE_KEY";
   const result = redactSensitive(input);
   assert.equal(result, `apikey: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - access_key 命中", () => {
-  const input = "access_key: AKIAFAKEFAKEFAKEFAKE01";
+  const input = "access_key: AKIAFAKE000000000001";
   const result = redactSensitive(input);
   assert.equal(result, `access_key: ${REDACTION_PLACEHOLDER}`);
 });
@@ -235,13 +235,13 @@ test("模式 6：敏感键值 - private_key 命中", () => {
 });
 
 test("模式 6：敏感键值 - credential 命中", () => {
-  const input = "credential: cred123";
+  const input = "credential: EXAMPLE_CRED";
   const result = redactSensitive(input);
   assert.equal(result, `credential: ${REDACTION_PLACEHOLDER}`);
 });
 
 test("模式 6：敏感键值 - credentials 命中", () => {
-  const input = "credentials: creds456";
+  const input = "credentials: EXAMPLE_CRED";
   const result = redactSensitive(input);
   assert.equal(result, `credentials: ${REDACTION_PLACEHOLDER}`);
 });
@@ -259,7 +259,7 @@ test("模式 6：敏感键值 - 单引号值保留引号", () => {
 });
 
 test("模式 6：敏感键值 - 大小写不敏感", () => {
-  const input = "PASSWORD: mysecret";
+  const input = "PASSWORD: EXAMPLE_PASSWORD";
   const result = redactSensitive(input);
   assert.equal(result, `PASSWORD: ${REDACTION_PLACEHOLDER}`);
 });
@@ -326,7 +326,7 @@ test("幂等性 - 已脱敏文本再跑不变", () => {
 });
 
 test("幂等性 - 多次脱敏结果一致", () => {
-  const input = "password: EXAMPLE_PASSWORD\nBearer sk-FAKEFAKEFAKEFAKEFAKE";
+  const input = "password: EXAMPLE_PASSWORD\nBearer sk-FAKE0000000000000";
   const first = redactSensitive(input);
   const second = redactSensitive(first);
   const third = redactSensitive(second);
@@ -341,7 +341,7 @@ test("计数准确 - 单次命中", () => {
 });
 
 test("计数准确 - 多次命中", () => {
-  const input = "password: EXAMPLE_PASSWORD\nBearer sk-FAKEFAKEFAKEFAKEFAKE\nAuthorization: Bearer token123456789012";
+  const input = "password: EXAMPLE_PASSWORD\nBearer sk-FAKE0000000000000\nAuthorization: Bearer tokenEXAMPLE1234567890";
   const { count } = redactSensitiveWithCount(input);
   assert.equal(count, 3);
 });
@@ -405,7 +405,7 @@ test("redactOps - title 字段脱敏", () => {
     {
       action: "write",
       name: "test.md",
-      title: "API key sk-FAKEFAKEFAKEFAKEFAKE",
+      title: "API key sk-FAKE0000000000000",
     },
   ];
   const { ops: newOps, count } = redactOps(ops);
@@ -419,7 +419,7 @@ test("redactOps - description 字段脱敏", () => {
     {
       action: "write",
       name: "test.md",
-      description: "Auth: Bearer token123456789012",
+      description: "Auth: Bearer tokenEXAMPLE1234567890",
     },
   ];
   const { ops: newOps, count } = redactOps(ops);
@@ -433,7 +433,7 @@ test("redactOps - indexLine 字段脱敏", () => {
     {
       action: "write",
       name: "test.md",
-      indexLine: "- [Test](test.md) — key sk-FAKEFAKEFAKEFAKEFAKE",
+      indexLine: "- [Test](test.md) — key sk-FAKE0000000000000",
     },
   ];
   const { ops: newOps, count } = redactOps(ops);
@@ -569,8 +569,8 @@ test("性能 - 100KB 文本不炸", () => {
 test("性能 - 超长文本多模式命中", () => {
   const parts = [
     "password: EXAMPLE_PASSWORD\n",
-    "Bearer sk-FAKEFAKEFAKEFAKEFAKE\n",
-    "http://user:EXAMPLE_PASSWORD@example.com@host.com\n",
+    "Bearer sk-FAKE0000000000000\n",
+    "http://user:EXAMPLE_PASSWORD@example.com\n",
     "10.0.0.1\n",
   ];
   const longText = parts.join("").repeat(500); // ~40KB
@@ -584,7 +584,7 @@ test("性能 - 超长文本多模式命中", () => {
 test("混合场景 - 多种模式同时命中", () => {
   const input = `
     config:
-      api_key: sk-FAKEFAKEFAKEFAKEFAKE
+      api_key: sk-FAKE0000000000000
       db_url: http://admin:secret@10.0.0.1:5432/db
       auth:
         password: EXAMPLE_PASSWORD
@@ -592,7 +592,7 @@ test("混合场景 - 多种模式同时命中", () => {
   `;
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("sk-FAKEFAKEFAKEFAKEFAKE"));
+  assert.ok(!result.includes("sk-FAKE0000000000000"));
   assert.ok(!result.includes("admin:secret"));
   assert.ok(!result.includes("10.0.0.1"));
   assert.ok(!result.includes("EXAMPLE_PASSWORD"));
@@ -600,15 +600,15 @@ test("混合场景 - 多种模式同时命中", () => {
 });
 
 test("URL 凭据 - 特殊字符密码（不含 @）", () => {
-  const input = "url: http://user:p%ssw0rd!@host.com";
+  const input = "url: http://user:EXAMPLE%2BPASSWORD!@host.example.com";
   const result = redactSensitive(input);
-  assert.equal(result, `url: http://${REDACTION_PLACEHOLDER}@host.com`);
+  assert.equal(result, `url: http://${REDACTION_PLACEHOLDER}@host.example.com`);
 });
 
 test("URL 凭据 - 多个 URL", () => {
-  const input = "url1: http://user1:EXAMPLE_PASSWORD@example.com@host1.com\nurl2: https://user2:EXAMPLE_PASSWORD@example.com@host2.com";
+  const input = "url1: http://user1:EXAMPLE_PASSWORD@example.com\nurl2: https://user2:EXAMPLE_PASSWORD@example.org";
   const result = redactSensitive(input);
-  assert.equal(result, `url1: http://${REDACTION_PLACEHOLDER}@host1.com\nurl2: https://${REDACTION_PLACEHOLDER}@host2.com`);
+  assert.equal(result, `url1: http://${REDACTION_PLACEHOLDER}@example.com\nurl2: https://${REDACTION_PLACEHOLDER}@example.org`);
 });
 
 test("敏感键值 - 等号和冒号混用", () => {
@@ -628,12 +628,12 @@ test("敏感键值 - 值含空格被截断", () => {
 });
 
 test("GitHub PAT - 所有前缀命中", () => {
-  const input = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456 gho_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456 ghu_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456 ghs_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456 ghr_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456";
+  const input = "ghp_FAKE00000000000000000000000000000000FAKE gho_FAKE00000000000000000000000000000000FAKE ghu_FAKE00000000000000000000000000000000FAKE ghs_FAKE00000000000000000000000000000000FAKE ghr_FAKE00000000000000000000000000000000FAKE";
   const result = redactSensitive(input);
   assert.ok(result.includes(REDACTION_PLACEHOLDER));
-  assert.ok(!result.includes("ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456"));
-  assert.ok(!result.includes("gho_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456"));
-  assert.ok(!result.includes("ghu_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE123456"));
+  assert.ok(!result.includes("ghp_FAKE00000000000000000000000000000000FAKE"));
+  assert.ok(!result.includes("gho_FAKE00000000000000000000000000000000FAKE"));
+  assert.ok(!result.includes("ghu_FAKE00000000000000000000000000000000FAKE"));
 });
 
 test("Slack token - 所有前缀命中", () => {
@@ -663,7 +663,7 @@ test("内网 IP - 172.30.x.x 命中", () => {
 
 test("redactOps：name 字段里的密钥形态必须脱敏（不许带进文件名/索引/注入）", () => {
   const { ops, count } = redactOps([
-    { action: "write", name: "sk-FAKE0000000000000000000000000001", title: "T", description: "d", content: "正文" },
+    { action: "write", name: "sk-FAKEabcdefghijklmnopqrstuvwxyz012345", title: "T", description: "d", content: "正文" },
   ]);
   assert.ok(count > 0, "name 里的密钥必须计命中");
   assert.doesNotMatch(ops[0].name, /sk-abcdefghijklmnop/, "密钥片段不得留在 name 里");
@@ -673,13 +673,13 @@ test("redactOps：name 字段里的密钥形态必须脱敏（不许带进文件
 test("redactOps：AWS AKIA 形态（大写）写在 name 里被脱敏；小写形态是已知边界", () => {
   // 大写 AKIA 是模式 4 的定义形态 → 必须命中
   const upper = redactOps([
-    { action: "write", name: "AKIAFAKEFAKEFAKEFAKE01", title: "T", description: "d", content: "正文" },
+    { action: "write", name: "AKIAFAKE000000000001", title: "T", description: "d", content: "正文" },
   ]);
   assert.ok(upper.count > 0, "大写 AKIA 形态必须命中脱敏");
-  assert.doesNotMatch(upper.ops[0].name, /AKIAFAKEFAKEFAKEFAKE01/, "密钥串不得留在 name 里");
+  assert.doesNotMatch(upper.ops[0].name, /AKIAFAKE000000000001/, "密钥串不得留在 name 里");
   // 小写不命中：模式大小写敏感，属已知边界（明确断言，不写恒真式）
   const lower = redactOps([
-    { action: "write", name: "akiaiosfodnn7example", title: "T", description: "d", content: "正文" },
+    { action: "write", name: "akiafake000000000001", title: "T", description: "d", content: "正文" },
   ]);
   assert.equal(lower.count, 0, "小写 AKIA 不命中是模式大小写敏感的已知边界");
 });
@@ -701,8 +701,8 @@ test("redactOps：name 里没有敏感串时原样保留（不误伤普通文件
 test("redactOps：两条不同密钥名的条目，脱敏后落盘名必须不同（不得合并成一条）", async () => {
   const { sanitizeMemoryName } = await import("../lib/filename.js");
   const { ops } = redactOps([
-    { action: "write", name: "sk-FAKE000000000000000000000002", title: "A", description: "d", content: "记忆A" },
-    { action: "write", name: "sk-FAKE000000000000000000000003", title: "B", description: "d", content: "记忆B" },
+    { action: "write", name: "sk-FAKEabcdefghijklmnopqrstuvwxyz01", title: "A", description: "d", content: "记忆A" },
+    { action: "write", name: "sk-FAKEzyxwvutsrqponmlkjihgfedcba02", title: "B", description: "d", content: "记忆B" },
   ]);
   const n1 = sanitizeMemoryName(ops[0].name);
   const n2 = sanitizeMemoryName(ops[1].name);
@@ -715,7 +715,7 @@ test("redactOps：两条不同密钥名的条目，脱敏后落盘名必须不�
 
 test("redactOps：delete 一条密钥名条目，不得指向盘上无关的 redacted.md", async () => {
   const { sanitizeMemoryName } = await import("../lib/filename.js");
-  const { ops } = redactOps([{ action: "delete", name: "sk-FAKE0000000000000000000000000004" }]);
+  const { ops } = redactOps([{ action: "delete", name: "sk-FAKEdeadbeefdeadbeefdeadbeefdead" }]);
   const target = sanitizeMemoryName(ops[0].name);
   assert.notEqual(target, "redacted.md", "delete 目标不得落到通用的 redacted.md（那会误删无关条目）");
   assert.match(String(target), /^redacted-[0-9a-f]{8}\.md$/, "应是「占位符 + 指纹」形态");

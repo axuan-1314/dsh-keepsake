@@ -2150,7 +2150,7 @@ async function renderActivityPage() {
           <td><code class="k">${esc(g.target)}</code><div class="meta">${esc(scopeLabelOf(g.scope))}</div></td>
           <td>${esc(String(g.count ?? 0))}</td>
           <td class="meta">${esc(L.relativeTimeOf(g.lastAt))} · 改 ${esc(String(g.writes ?? 0))} / 删 ${esc(String(g.deletes ?? 0))}</td>
-          <td class="meta">${esc((g.kinds || []).join("、"))}</td>
+          <td class="meta">${esc((g.kinds || []).map((k) => L.correctionKindText(k)).join("、"))}</td>
           <td><button class="btn sm" data-hist="${i}">看历史</button></td>
         </tr>`).join("")}
       </table></div>`;
@@ -2441,8 +2441,8 @@ function openBatchCorrectionDialog(hits, onDone) {
 function openCorrectionHistoryDialog(group) {
   const g = group && typeof group === "object" ? group : {};
   const rows = Array.isArray(g.rows) ? g.rows : [];
-  const kinds = L.correctionKindOptions();
-  const kindLabel = (v) => kinds.find((k) => k.value === v)?.label ?? (v || "—");
+  // 与归组列表共用同一个翻译函数（单一出处：此前两处各写一套，归组那处漏了翻译）
+  const kindLabel = (v) => L.correctionKindText(v) || "—";
   const layer = document.createElement("div");
   layer.innerHTML = `
     <div class="mask">

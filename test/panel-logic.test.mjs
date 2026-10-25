@@ -1502,3 +1502,35 @@ test("turnActivityNote：区分『没接上』与『这段时间确实没活动�
     /只显示最新的部分/,
   );
 });
+
+test("correctionKindText：面板任何展示「原因」的地方都必须过它（不许露英文枚举）", async () => {
+  const L = await import("../lib/panel-logic.js");
+  assert.equal(L.correctionKindText("wrong-fact"), "记错事实");
+  assert.equal(L.correctionKindText("outdated"), "已过时");
+  assert.equal(L.correctionKindText("wrong-scope"), "放错位置");
+  assert.equal(L.correctionKindText("duplicate"), "重复");
+  assert.equal(L.correctionKindText("other"), "其它");
+  // 未知值原样返回：不丢信息，也不编一个中文名冒充认识它
+  assert.equal(L.correctionKindText("brand-new-kind"), "brand-new-kind");
+  assert.equal(L.correctionKindText(""), "");
+  assert.equal(L.correctionKindText(null), "");
+  // 五种下拉选项必须全部有中文（与 corrections 模块枚举同口径）
+  for (const opt of L.correctionKindOptions()) {
+    assert.equal(L.correctionKindText(opt.value), opt.label, `${opt.value} 下拉与翻译必须一致`);
+  }
+});
+
+test("面板源码不把 kinds 原样拼进 HTML（归组视图曾因此露出 wrong-fact）", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const html = readFileSync(join(here, "..", "web", "panel.html"), "utf8");
+  // 禁止 `(x.kinds || []).join(...)` 这种直接拼接——必须先 map 过 correctionKindText
+  assert.doesNotMatch(
+    html,
+    /\(g\.kinds\s*\|\|\s*\[\]\)\.join\(/,
+    "kinds 必须先经 L.correctionKindText 翻译再拼接",
+  );
+  assert.match(html, /kinds \|\| \[\]\)\.map\(\(k\) => L\.correctionKindText\(k\)\)/, "归组列表必须走翻译函数");
+});

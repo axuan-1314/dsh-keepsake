@@ -200,11 +200,11 @@ test("metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ �
   // 空态：字段恒在（缺失=旧版判据），值全零（throttled/superseded 为同源替换两计数；
   // lastTokens/totalTokens 为 token 口径两计数）
   assert.deepEqual(injectionSnapshot(), {
-    count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, throttled: 0, superseded: 0, renderFailures: 0, lastAt: null,
+    count: 0, lastChars: 0, totalChars: 0, resends: 0, droppedSegments: 0, compactedSegments: 0, throttled: 0, superseded: 0, renderFailures: 0, lastAt: null,
     lastTokens: 0, totalTokens: 0,
   });
   recordInjection({ chars: 120, tokens: 60 });
-  recordInjection({ chars: 80, tokens: 40, dropped: ["globalIndex", "persona"], resend: true });
+  recordInjection({ chars: 80, tokens: 40, dropped: ["globalIndex", "persona"], compacted: ["projectIndex"], resend: true });
   const snap = injectionSnapshot();
   assert.equal(snap.count, 2);
   assert.equal(snap.lastChars, 80, "lastChars = 最近一次 chars");
@@ -213,6 +213,7 @@ test("metrics：recordInjection 记账（count/chars/resend/dropped/lastAt）+ �
   assert.equal(snap.totalTokens, 100, "totalTokens 累加");
   assert.equal(snap.resends, 1, "resend 为真才计补发");
   assert.equal(snap.droppedSegments, 2, "dropped.length 计入丢段累计");
+  assert.equal(snap.compactedSegments, 1, "compacted.length 计入紧凑降级累计");
   assert.equal(typeof snap.lastAt, "number");
   // 缺省入参：chars 0 / tokens 0 / dropped 空 / 非 resend 不额外计数
   recordInjection();

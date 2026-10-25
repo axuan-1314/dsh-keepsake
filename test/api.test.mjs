@@ -49,8 +49,8 @@ function mockRes() {
   };
 }
 
-async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal, recovery, maintenance, extraction }) {
-  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal, recovery, maintenance, extraction });
+async function callApi(storageRoot, { method, path, body, headers, remoteAddress, journal, recovery, maintenance, extraction, pages }) {
+  const routes = makeApiRoutes({ storageRoot, log: silentLog, onGlobalWrite: () => {}, journal, recovery, maintenance, extraction, pages });
   const handler = routes[0].handler;
   assert.equal(routes[0].kind, "prefix");
   assert.equal(routes[0].path, API_PREFIX.replace(/\/$/, "")); // 内核 prefix 不带尾斜杠（实证）
@@ -104,6 +104,7 @@ test("GET state：轻态六要素（开关/称呼/人设摘要/计数/项目概�
       projectMemory: true,
       globalExtraction: true,
       runtimeEnabled: false,
+      idleReviewEnabled: false,
       surgicalKeep: 30,
       trashKeepDays: 30,
       recentKeepDays: 30,
@@ -979,7 +980,7 @@ test("state：injection 注入面字段在场（服务端恒在；缺失=旧版�
     // 契约字段恒在（字段缺失=旧版宿主，面板 tolerant 消费）
     // throttled/superseded：同源替换两计数（想发没发 / 发了作废旧块），契约恒在；
     // lastTokens/totalTokens：token 口径两计数（token 预算观测面）
-    for (const k of ["count", "lastChars", "totalChars", "lastTokens", "totalTokens", "resends", "droppedSegments", "throttled", "superseded", "renderFailures", "lastAt"]) {
+    for (const k of ["count", "lastChars", "totalChars", "lastTokens", "totalTokens", "resends", "droppedSegments", "compactedSegments", "throttled", "superseded", "renderFailures", "lastAt"]) {
       assert.ok(Object.prototype.hasOwnProperty.call(inj, k), `injection 缺字段 ${k}`);
     }
     assert.equal(typeof inj.count, "number");
@@ -1542,6 +1543,60 @@ test("collectMaintenanceInputs：递归收集——嵌套（含多段）条目�
       entries.some((e) => e.category === "project:demo-aabb0011223344" && e.name === "demo-aabb0011223344/deep/inner/note.md" && e.title === "深层"),
       "嵌套项目条目进 entries（name 为相对路径、title 取 frontmatter）",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 知识页：读取 / 手动生成 / 错误分流 ----
+test("知识页 API：read 未生成返回 available=false、非法 id 400；generate 参数/错误分流", async () => {
+  const root = freshRoot();
+  const projectId = "project-8469841b416be31b";
+  const unknownProject = "project-1111111111111111";
+  const fakePages = {
+    read: (id) => (id === projectId
+      ? { version: 1, generatedAt: "2026-10-25T00:00:00.000Z", pages: [{ id: "component-map", title: "组件地图", summary: "摘要", content: "# 组件地图" }] }
+      : null),
+    generate: async (id) => {
+      if (id === unknownProject) {
+        const error = new Error("尚无可用模型路由");
+        error.code = "E_NO_ROUTE";
+        throw error;
+      }
+      return { manifest: { version: 1, pages: [{ id: "component-map" }] } };
+    },
+    state: () => ({ generations: 1, errors: 0, lastAt: 1, lastError: null, lastScope: projectId, lastChars: 10 }),
+  };
+  try {
+    let r = await callApi(root, { method: "GET", path: `${API_PREFIX}pages/read?projectId=bad`, pages: fakePages });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.code, "E_INVALID_PROJECT");
+
+    r = await callApi(root, { method: "GET", path: `${API_PREFIX}pages/read?projectId=${projectId}`, pages: fakePages });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.available, true);
+    assert.equal(r.json.pages[0].title, "组件地图");
+
+    r = await callApi(root, { method: "GET", path: `${API_PREFIX}pages/read?projectId=${unknownProject}`, pages: fakePages });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.available, false);
+
+    r = await callApi(root, { method: "POST", path: `${API_PREFIX}pages/generate`, body: { projectId: "../evil" }, pages: fakePages });
+    assert.equal(r.status, 400);
+
+    r = await callApi(root, { method: "POST", path: `${API_PREFIX}pages/generate`, body: { projectId: unknownProject }, pages: fakePages });
+    assert.equal(r.status, 503);
+    assert.equal(r.json.code, "E_NO_ROUTE");
+
+    r = await callApi(root, { method: "POST", path: `${API_PREFIX}pages/generate`, body: { projectId }, pages: fakePages });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.ok, true);
+    assert.equal(r.json.manifest.pages.length, 1);
+
+    r = await callApi(root, { method: "GET", path: `${API_PREFIX}state`, pages: fakePages });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.pages.generations, 1);
+    assert.equal(r.json.pages.lastScope, projectId);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

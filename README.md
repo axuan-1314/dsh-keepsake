@@ -34,6 +34,8 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
   - [运行时记忆层（可选，默认关）](#运行时记忆层可选默认关)
   - [内容脱敏：密钥类内容进不了记忆与提示词](#内容脱敏密钥类内容进不了记忆与提示词)
   - [语义召回（可选）](#语义召回可选)
+  - [项目知识页（手动生成，默认不自动跑）](#项目知识页手动生成默认不自动跑)
+  - [空闲整理（idle review，默认关）](#空闲整理idle-review默认关)
   - [记忆管理面板](#记忆管理面板)
   - [管道健康卡与「立即重试提取」](#管道健康卡与立即重试提取)
   - [提取运行日志与跨重启续提](#提取运行日志与跨重启续提)
@@ -79,7 +81,7 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **无需手动操作**：每一轮对话正常结束（`turn/end` 且 `reason.kind === "completed"`）后自动触发一次提取判断；纯寒暄、命令式短句（不足 3 个词的用户散文）这类没内容可记的轮次自动跳过，不白花 token。
 - **增量提取**：插件为每个会话维护提取进度（cursor），只提炼新完成的轮次；提取失败时进度不推进，下一轮自动连本带利重提（自动补提），不会漏记也不会重复记。
 - **提取走会话路由**：默认复用你当前对话所用的模型路由（与 session-title 同款捕获策略），不单独配置也能跑；也可以在 `cordis.patch.yml` 显式指定更稳的 `provider` / `model`。
-- **跨会话六段注入**：之后每轮对话，插件把记忆作为一条**插件自有的用户消息**注入会话（默认走 durable 消息通道，对所有预设——包括 `complete:true` 的极简预设——都生效，这是 v0.2.0 对旧版"极简模式静默失忆"的根治点；`injectChannel: "section"` 可回退到旧的系统提示词注入）。注入受**双预算**约束：字符口径 `injectMaxChars`（默认 30000）与 token 口径 `injectMaxTokens`（默认 **24000**，CJK 感知估算；0 = 关闭 token 预算、只用字符口径）——超限按优先级整段丢弃，两个上限同时生效。这条消息由六段组成（人设与两段运行时为**锁定段**，不进整段丢弃序列；只有全局索引 / 项目说明 / 项目索引可被整段丢弃），模型据此"记得"你：
+- **跨会话六段注入**：之后每轮对话，插件把记忆作为一条**插件自有的用户消息**注入会话（默认走 durable 消息通道，对所有预设——包括 `complete:true` 的极简预设——都生效，这是 v0.2.0 对旧版"极简模式静默失忆"的根治点；`injectChannel: "section"` 可回退到旧的系统提示词注入）。注入受**双预算**约束：字符口径 `injectMaxChars`（默认 30000）与 token 口径 `injectMaxTokens`（默认 **24000**，CJK 感知估算；0 = 关闭 token 预算、只用字符口径）——超限按优先级整段丢弃，两个上限同时生效；**索引段（全局 / 项目）超限时先降级为紧凑索引**（分类计数 + 最新 N 行 + 完整索引路径），仍装不下才整段丢弃，避免预算紧时模型完全看不到记忆目录。这条消息由六段组成（人设与两段运行时为**锁定段**，不进整段丢弃序列；只有全局索引 / 项目说明 / 项目索引可被整段丢弃），模型据此"记得"你：
 
 | 注入段 | 模型看到什么 | 预算 |
 |---|---|---|
@@ -147,6 +149,26 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **自带模型（provider-agnostic）**：插件不绑定任何嵌入模型或厂商——只要你的服务提供 OpenAI 兼容的嵌入端点（绝大多数本地部署都提供），填上 `embeddingBaseUrl` + `embeddingModel` 即可，本地自选模型（EmbeddingGemma、bge-m3 等）同样适用。`embeddingProvider` 只是显示标签，配不配都行。
 - **配置不全 = 显式降级，插件照常起**：`recallEnabled: true` 但缺 `embeddingBaseUrl` / `embeddingModel`（或 `injectChannel` 不是 `message`）时，插件**不再启动失败**——召回被显式关闭（零嵌入调用），面板与门牌出红条按【当前生效配置】每轮现算着指路：缺哪个键、去面板「嵌入服务」卡补（**要同时打开同卡的「开启语义召回」开关**——开关预填为关，只填端点不打开开关的话红条会一直提示到打开为止）、通道问题只能改 `cordis.patch.yml`（面板救不了）；配置齐了但开关没开也有一条专门的「打开开关」红条，绝不静默不召回。红条里的 settings.json 路径按 `/state.storageRoot` 现算（自定义了数据目录的用户看到的是真实路径）。用户补齐配置后**不重启即恢复**（诊断每轮现算）。其它功能（对话记忆提取与注入）完全不受影响。端点 URL 不是 http(s) 属于「配错」而非「配不全」，仍然启动即抛。
 - **失败显式降级**：端点配齐但超时/报错时本轮不召回（不阻塞、不臆造），计数进 `/state.recall`，面板与门牌同时出红条（连续失败 3 次后自动暂停召回 60 秒）。
+
+### 项目知识页（手动生成，默认不自动跑）
+
+把项目记忆合成 5 页稳定视图：**组件地图 / 核心概念 / 约定与模式 / 关键决策 / 进行中事项**。参照 hindsight 的 knowledge-page taxonomy，但保持本地 markdown、零依赖、单次 LLM 调用。
+
+- **派生视图，不是真源**：页面落在 `<storageRoot>/pages/<projectId>/`（`<page-id>.md` + `manifest.json`），可删可重建；记忆条目仍是唯一真源，页面只是压缩视图。
+- **手动生成**：面板「项目记忆」页 → 项目卡片「知识页」→「生成 / 重新生成」。一次点击 = 一次 LLM 调用；不随提取自动触发，不给每轮对话增加成本。生成中按钮 busy，单飞防并发。
+- **注入形态**：只注入页面摘要（标题 + 一行钩子 + 页面路径，排在原始项目索引之前），不注入全文；模型需要细节时按路径 Read 对应页面。记忆索引在生成后发生变化会附 `[stale]` 提示，提醒重新生成。
+- **失败不覆盖旧页**：解析/LLM/落盘任一失败都保留上一版 `manifest.json`；`/state.pages` 记生成次数与最近错误，面板可查。
+- **安全**：进 prompt 前与落盘前都过脱敏；页面正文全部经 `esc()` 渲染，页面路径由 page id 推导（不信任 manifest 里的路径）。
+
+### 空闲整理（idle review，默认关）
+
+有新增项目记忆时，在空闲后让模型做一次「合并 / 更新 / 清理」审查；默认关，不自动烧 token。
+
+- **触发**：提取结算 `written`（确实写了新条目）后才调度；延迟 60 秒起跑，避开用户正在进行的轮次。
+- **闸门**：每会话两次审查最小间隔 10 分钟、最多 5 次；全局单飞（同一时刻只有一次整理）；插件卸载会清掉挂起定时器。
+- **产出**：一次 LLM 调用最多 3 个 project-scope op（write / delete），提示词要求合并近重复、更新过期、清理已废弃；**不碰全局记忆**。落盘仍走 `applyScopedOps` 的批锁、快照、sha1 覆盖闸与写后校验，`delete` 进回收站，不是硬删。
+- **模型只提案、host 落盘**：解析失败 / 调用失败 / 落盘失败只记 `/state.idleReview` 与日志，不中断提取主链路；写成功后索引与 runtime 缓存失效，下一次注入可见。
+- **开关**：面板「设置」页「空闲整理（自动合并/清理）」；写在 `settings.json` 的 `idleReviewEnabled`（缺省 false，只有显式 true 才开）。
 
 ### 记忆管理面板
 
@@ -333,7 +355,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 |---|---|---|
 | `enabled` | **false（代码缺省关，fail-closed）** | 总开关；`cordis.patch.yml` 显式 `enabled: true`，安装即启用且开关可见于 YAML |
 | `injectChannel` | **`"message"`** | 注入通道：`"message"`=durable 用户消息通道（默认，全预设生效）；`"section"`=旧 systemPrompt 注入通道（一键回滚；v0.6.0 起同样承载六段，含 runtime 两段） |
-| `injectMaxChars` | 30000 | 消息通道注入**总**预算（字符口径）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级整段丢弃并附可见 WARNING。v0.4.2 起默认由 60000 下调（块首取代声明 / 免责两行固定开销 + 节流收敛，见[「工作原理」](#工作原理)）；需要更大预算时显式配置即可覆盖 |
+| `injectMaxChars` | 30000 | 消息通道注入**总**预算（字符口径）：召回块与主块共享此预算，**主块为召回块让位**；超限按优先级丢弃并附可见 WARNING——索引段先降级为紧凑索引（分类计数 + 最新 N 行 + 索引路径），仍装不下才整段丢。v0.4.2 起默认由 60000 下调（块首取代声明 / 免责两行固定开销 + 节流收敛，见[「工作原理」](#工作原理)）；需要更大预算时显式配置即可覆盖 |
 | `injectMaxTokens` | 24000 | 消息通道注入总预算的 **token 口径**（CJK 感知估算；含召回块，主块让位；与 `injectMaxChars` 双上限同时生效，取更严者）。**0 = 关闭 token 预算**，退回纯字符口径。v0.6.0 起默认由 16000 上调：为运行时记忆层留预算（persona 8000 字符 ≈12000 tokens + runtime 两段常驻 ≈7170 tokens ≈ 19170）。token 估算是近似值（CJK 字 ≈1.5 token/字、其余 ≈0.25 token/字），非精确分词 |
 | `redactionEnabled` | **true** | 内容脱敏总开关（见[「内容脱敏」](#内容脱敏密钥类内容进不了记忆与提示词)）：提取提示词与落盘写入两道位置的密钥类内容替换为 `[redacted]`；**false = 完全不脱敏**，回旧行为 |
 | `storageRoot` | `~/.dsh/memory` | 记忆总根（测试/迁移用，一般不动） |
@@ -386,7 +408,7 @@ cordis entry config（见 `cordis.patch.yml`）：
 ├── keepsake-format.json                   # 存储格式版本标记（本插件内部用；见 FORMAT.md 第八节）
 ├── extract.lock                           # 提取/恢复批互斥锁（插件自管，可安全删除）
 ├── extraction-journal.jsonl               # 提取运行日志（观测 + 续提边界，非真源，可安全删除）
-├── settings.json                          # 三层开关 + 运行时记忆开关 + 保留策略（面板可改，每轮读取）
+├── settings.json                          # 三层开关 + 运行时/空闲整理开关 + 保留策略（面板可改，每轮读取）
 ├── settings.last-good.json                # 开关影子档（每次成功写入同步刷新，settings.json 损坏时从它恢复）
 ├── settings.corrupt                       # 损坏标记（settings.json 解析失败时落，重新保存设置后清除；红条持久可见）
 ├── settings.json.corrupt-<ts>             # settings.json 损坏时的保留原档（改名保留，原内容不失访）
@@ -397,6 +419,9 @@ cordis entry config（见 `cordis.patch.yml`）：
 │   ├── global/                            # 每 scope 一份：USER.md / MEMORY.md / runtime.json
 │   ├── projects/<slug>-<hash16>/
 │   └── compile-journal.jsonl              # 编译观测日志（达 2000 行轮转留尾 1000）
+├── pages/<projectId>/                     # 项目知识页（派生视图，非真源，可删可重建）
+│   ├── manifest.json                      # 生成时间 / 来源指纹 / 五页摘要
+│   └── component-map.md 等 5 页           # 组件地图 / 核心概念 / 约定 / 决策 / 进行中
 ├── evict-audit.jsonl                      # 淘汰归档审计（持久记录，不随 runtime/ 清理；5000 行轮转留尾 2500）
 ├── global/                                # 全局记忆
 │   ├── persona.md                         # 人设（出厂默认模板起步）
@@ -478,9 +503,11 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **去重口径覆盖率（区间口径，不是轮次口径）**：`extractionLog.coverage` = `{ distinctFailedRanges, distinctWrittenRanges, distinctAbandonedRanges, writtenRangeRate, writtenRangesTotal, failedRangesTotal, abandonedRangesTotal, scope: "range" }`。这是判断「修复真的生效」的唯一判据：修复生效后「不再反复白撞同一区间」会让 `failed` 计数下降，但那**不等于**记忆变多——只有 distinct `(sessionId, from, to)` 区间数说得清。`writtenRangeRate` = `written / (written + failed + abandoned)`（区间级成功率；宿主不提供总轮次数，故**不编造轮次口径**，分母也不含 skipped/zero-ops——它们没有区间成败语义）。`*RangesTotal` 是不去重的行数，与 distinct 并排给出，`行数/distinct` 就是「平均每区间结账几次」（重复放大的直接读数）。这些数进程内累计 + 重放同源，`runs` ring 被轮转裁掉也不影响。**每个区间只归一种终态**（written > abandoned > failed，强终态覆盖弱终态）：先失败、后被补提救回的区间只算成功，不会同时计入失败——否则成功率会被系统性低估。
 - **会话补提面（v0.4.2）**：`GET /dsh-keepsake/api/sessions/pending`（`hostSupported` + `items[]`，每条带 `sessionId` / `from` / `to` / `at` / `reason` / `kind`（failed / abandoned）/ `sessionAvailable`）；`POST /dsh-keepsake/api/sessions/recover`（202 异步，409 单飞 / 404 会话不在 / 503 宿主未提供会话持久化）；`/state` 的 `recover` 字段（`inFlight` / `lastAt` / `lastOutcome` / `lastSessionId`，v0.5.0 增自动补提四键 `autoEnabled` / `autoAttempts` / `lastAutoAt` / `lastAutoTrigger`——`lastAutoTrigger` 记录触发面 `disposed` / `turn/end` / `startup` / `manual`）观测执行进度。
 - **记忆整理面（v0.4.2）**：`GET /dsh-keepsake/api/maintenance/suggestions`（`duplicates` / `stale` / `indexHealth`（`dangling` / `orphans` / `emptyCategories`）/ `counts` / `generatedAt`）；`POST /dsh-keepsake/api/maintenance/repair-index`（`fixed` 已应用动作明细数组 / `fixedCount` / `unchanged`）。
-- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；v0.5.0 新增 token 口径两计数——`lastTokens`（最近一次注入 token 估算）/ `totalTokens`（累计，CJK 感知口径，见 `lib/tokens.js`）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 渲染失败 / 变更节流 / 取代 / token 预算占用「最近 ≈X tokens / 上限 Y」，`injectMaxTokens` 为 0 时退回字符展示）。渲染失败显式计入 `renderFailures`（不静默丢）。
+- **注入面（v0.2.0）**：`/state` 的 `injection` 字段（`count` / `lastChars` / `totalChars` / `resends` / `droppedSegments` / `compactedSegments` / `renderFailures` / `lastAt`）；v0.4.2 新增同源替换两计数——`throttled`（变更被节流、本轮没发的次数）/ `superseded`（被取代声明作废的旧块次数）；v0.5.0 新增 token 口径两计数——`lastTokens`（最近一次注入 token 估算）/ `totalTokens`（累计，CJK 感知口径，见 `lib/tokens.js`）；`compactedSegments` 记索引段降级为紧凑版的累计次数（不是丢弃）；面板健康卡附一行注入摘要（注入次数 / 最近字符 / 丢段 / 紧凑降级 / 渲染失败 / 变更节流 / 取代 / token 预算占用「最近 ≈X tokens / 上限 Y」，`injectMaxTokens` 为 0 时退回字符展示）。渲染失败显式计入 `renderFailures`（不静默丢）。
 - **写入安全面（v0.4.0）**：`/state` 的 `safety` 字段共十个：盘上三项（`surgicalBackups` / `lastSnapshotAt` / `trashPending`，每次请求实时现算）+ 进程内七项计数（`verifyFailed` / `hardfactDrops` / `hardfactBlocks` / `expectedSha1Mismatches` / `blindWriteDowngrades` / `lockConflicts` / `snapshotFailures`，**重启清零**）；面板「管道健康卡」增一行摘要，「快照」「回收站」两页可查可恢复。
 - **运行时记忆面（v0.6.0）**：`GET /dsh-keepsake/api/runtime/<scope>`（`scope` = `global` 或 `projects/<slug>-<hash16>`；返回产物文本 / 字节 / 配额 / `status` / 淘汰候选）、`POST /api/runtime/<scope>/compile`、`POST /api/runtime/compile-all`、`POST /api/runtime/<scope>/pin`、`POST /api/runtime/<scope>/evict`、`POST /api/runtime/global/archive/restore`；观测文件是 `runtime/compile-journal.jsonl`（每次编译一行）与 `evict-audit.jsonl`（每次执行归档一行）。scope 不存在 404、参数非法 400、锁被占 409、编译失败 500（保留上一版产物）。
+- **知识页面（手动生成）**：`GET /dsh-keepsake/api/pages/read?projectId=<slug>-<hash16>`（`available=false` = 未生成；返回 manifest + 五页正文）、`POST /api/pages/generate`（body `{projectId}`，同步一次 LLM 调用；非法 id 400 / 开关关或并发 409 / 无路由 503 / 解析或调用失败 502 / 落盘失败 500）、`/state.pages`（`generations` / `errors` / `lastAt` / `lastError` / `lastScope` / `lastChars`）。生成失败保留上一版 manifest。
+- **空闲整理面**：`/state.idleReview`（`runs` / `written` / `deletes` / `skipped` / `errors` / `lastAt` / `lastOutcome` / `lastWrites` / `lastDeletes` / `lastError`）。默认关；只在提取写入新条目后调度，每会话最小间隔 10 分钟、最多 5 次，全局单飞。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-keepsake/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。
@@ -508,7 +535,7 @@ npm run check  # 语法快检 lib/*.js（跨平台 node -e 循环，cmd/bash 均
 - **API 冒烟**：`tools/api-walkthrough.sh` 对一次性测试实例把全部 REST 端点走一遍（默认拒绝执行，须显式 `WALKTHROUGH_CONFIRM=yes`；会清空目标实例的记忆数据）。
 - **参与贡献**：开发环境、提交约定与 PR 流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本变更记录见 [CHANGELOG.md](CHANGELOG.md)；后续方向与「有意不做」清单见 [ROADMAP.md](ROADMAP.md)。
 
-模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入/自动补提）、`lib/inject-channel.js`（注入块拼装/双预算裁剪/锁定段/来源判据）、`lib/runtime.js`（运行时记忆层：候选池/选条/渲染/配额/`runtime.json`）、`lib/runtime-archive.js`（淘汰归档执行与从归档移回）、`lib/runtime-log.js`（`compile-journal.jsonl` / `evict-audit.jsonl`）、`lib/state.js`（提取状态机：单飞/空闲延迟/每会话上限）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/transcript.js`（转录渲染与 skip，含第一道脱敏）、`lib/redact.js`（脱敏纯函数）、`lib/extract-gate.js`（打分门纯函数）、`lib/tokens.js`（CJK 感知 token 估算）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关 + 运行时记忆开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
+模块结构：`lib/index.js`（入口：订阅/路由捕获/重试链/注入/自动补提/知识页/空闲整理调度）、`lib/inject-channel.js`（注入块拼装/双预算裁剪/锁定段/来源判据/紧凑兜底）、`lib/runtime.js`（运行时记忆层：候选池/选条/渲染/配额/`runtime.json`）、`lib/runtime-archive.js`（淘汰归档执行与从归档移回）、`lib/runtime-log.js`（`compile-journal.jsonl` / `evict-audit.jsonl`）、`lib/state.js`（提取状态机：单飞/空闲延迟/每会话上限）、`lib/extract.js`（输出解析 + scoped 落盘）、`lib/pages.js`（知识页：5 页 taxonomy / 生成编排 / 摘要）、`lib/idle-review.js`（空闲整理：审查 prompt / 解析 / 一次执行）、`lib/transcript.js`（转录渲染与 skip，含第一道脱敏）、`lib/redact.js`（脱敏纯函数）、`lib/extract-gate.js`（打分门纯函数）、`lib/tokens.js`（CJK 感知 token 估算）、`lib/manifest.js` / `lib/filename.js`（索引与文件名安全）、`lib/global-store.js`（全局记忆 CRUD/备份/恢复）、`lib/settings.js`（三层开关 + 运行时/空闲整理开关）、`lib/metrics.js`（失败计数/失败分类/退避/注入面）、`lib/errorlog.js`（失败日志）、`lib/api.js` + `lib/panel.js` + `lib/panel-logic.js`（REST API / 面板供给 / 面板纯逻辑，双端共享进检查）、`lib/client.js`（设置页门牌）、`web/panel.html`（面板单文件前端）。
 
 ## 已知限制
 

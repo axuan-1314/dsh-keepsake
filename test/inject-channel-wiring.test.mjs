@@ -6,12 +6,13 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { apply } from "../lib/index.js";
 import { createEntry, categoryDir, writePersona } from "../lib/global-store.js";
 import { projectMemoryPaths } from "../lib/paths.js";
 import { writeSettings, resetSettingsCache } from "../lib/settings.js";
+import { PAGE_DEFS, writePages } from "../lib/pages.js";
 import { __resetMetricsForTest, injectionSnapshot, recallSnapshot, recordInjection, recordInjectionSuperseded, recordInjectionThrottled } from "../lib/metrics.js";
 import { estimateTokens } from "../lib/tokens.js";
 import { MEMORY_CONTEXT_INTRO, MEMORY_CONTEXT_SUPERSEDE_NOTE } from "../lib/inject-channel.js";
@@ -976,6 +977,75 @@ test('token 预算接线：上限禁用（0）同样内容不丢段（对照）'
     const snap = injectionSnapshot();
     assert.equal(snap.droppedSegments, 0, 'token 预算禁用时不丢段');
     assert.ok(text.includes('述'.repeat(50)), '重 CJK 内容全量在场');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 紧凑索引兜底接线：项目 MEMORY.md 太大时不整段消失，降级为「总数 + 最新 N 行 + 路径」 ----
+
+test("紧凑索引兜底接线：项目索引超预算时注入 compact 版并记账 compactedSegments", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const { memoryDir } = projectMemoryPaths(root, root);
+    mkdirSync(memoryDir, { recursive: true });
+    const lines = [];
+    for (let i = 1; i <= 40; i += 1) {
+      lines.push(`- [entry-${i}](entry-${i}.md) — 这是一条用于预算测试的项目记忆索引行，编号 ${i}，后面补足字符让完整索引确实放不下。`);
+    }
+    writeFileSync(join(memoryDir, "MEMORY.md"), lines.join("\n"));
+
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root, injectMaxChars: 3200 });
+    const handler = handlers.get("agent/pre-step");
+    const decision = { kind: "enter", messages: [userMsg("继续做预算测试")] };
+    const agent = makeAgent({ cwd: root });
+    const out = await run(handler, payloadOf({ agent, messages: decision.messages }), decision);
+
+    assert.equal(out.messages.length, 2, "应追加一条注入消息");
+    const text = textOf(out.messages[1]);
+    assert.match(text, /Project memory index \(MEMORY\.md\) — compact/, "项目索引应降级为紧凑版");
+    assert.match(text, /40 entries; showing latest 8/, "紧凑版应给出总数与展示条数");
+    assert.match(text, /entry-40/, "紧凑版应保留最新条目");
+    assert.ok(!text.includes("entry-1]"), "紧凑版不应保留最旧条目（证明不是完整索引）");
+    assert.match(text, /\[memory-context truncated: compacted projectIndex\]/, "截断提示应点名紧凑降级");
+    assert.equal(injectionSnapshot().compactedSegments, 1, "compactedSegments 应记一笔");
+    assert.equal(injectionSnapshot().droppedSegments, 0, "紧凑降级不是整段丢弃");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("知识页摘要接线：有页面时排在项目索引前，模型先看到知识地图", async () => {
+  __resetMetricsForTest();
+  const root = freshRoot();
+  try {
+    const { memoryDir } = projectMemoryPaths(root, root);
+    mkdirSync(memoryDir, { recursive: true });
+    writeFileSync(join(memoryDir, "p.md"), "---\nname: p\ntitle: P\n---\n正文\n");
+    writeFileSync(join(memoryDir, "MEMORY.md"), "- [P](p.md) — 项目条目\n");
+    const projectId = basename(dirname(memoryDir));
+    writePages(root, projectId, PAGE_DEFS.map((definition) => ({
+      id: definition.id,
+      title: definition.title,
+      summary: `${definition.title} 一行摘要`,
+      content: `# ${definition.title}\n\n- 来自 [[p]]`,
+    })), { generatedAt: "2026-10-25T00:00:00.000Z" });
+
+    const { ctx, handlers } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root });
+    const handler = handlers.get("agent/pre-step");
+    const decision = { kind: "enter", messages: [userMsg("继续")] };
+    const agent = makeAgent({ cwd: root });
+    const out = await run(handler, payloadOf({ agent, messages: decision.messages }), decision);
+    const text = textOf(out.messages[1]);
+    assert.match(text, /Project knowledge pages/, "应注入知识页摘要");
+    assert.match(text, /组件地图/, "五页标题应在摘要里");
+    assert.ok(
+      text.indexOf("Project knowledge pages") < text.indexOf("Project memory index"),
+      "知识页应排在原始索引之前（先地图、后索引）",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

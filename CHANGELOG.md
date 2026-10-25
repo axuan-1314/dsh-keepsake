@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)，变更记录格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 新增
+
+- **项目知识页（手动生成，默认不自动跑）**：每个项目可把现有记忆合成 5 页稳定视图（组件地图 / 核心概念 / 约定与模式 / 关键决策 / 进行中事项），参照 hindsight knowledge-page taxonomy，保持本地 markdown、零依赖、单次 LLM 调用。产物落 `<storageRoot>/pages/<projectId>/`（5 个 `*.md` + `manifest.json`），是**派生视图**，真源仍是条目；删掉可重建。面板「项目记忆」页新增「知识页」入口（查看 / 生成 / 重新生成，busy 单飞）；注入侧只带「标题 + 一行摘要 + 页面路径」并排在项目索引之前，记忆变化后标 `[stale]`；生成失败保留上一版 manifest。API：`GET /api/pages/read?projectId=…`、`POST /api/pages/generate`、`/state.pages`。生成走当前/最近会话路由（无会话时用 last-known），不自动触发、不增加每轮成本。
+- **空闲整理（idle review，默认关）**：提取写入新条目后，延迟 60s 让模型做一次合并/更新/清理审查（最多 3 个 project-scope op，不碰全局）；每会话最小间隔 10 分钟、最多 5 次、全局单飞；模型只提案，落盘仍走批锁/快照/sha1/写后校验，delete 进回收站。失败只记 `/state.idleReview` 与日志，不中断提取。开关 `idleReviewEnabled` 在面板「设置」页，缺省 false。测试：`test/idle-review.test.mjs`（提示词契约 / global 过滤 / 最多 3 op / 落盘前脱敏 / 三类失败 + 记账）。
+
+### 修复
+
+- **注入预算紧凑索引兜底**：索引段（`globalIndex` / `projectIndex`）整段放不下时，先降级为紧凑索引（分类计数 + 最新 N 行 + 完整索引路径），仍装不下才整段丢弃；不再出现「runtime 开着时全局索引与项目索引同时被挤掉、模型看不到记忆目录」的情况。实现：`buildMemoryContext` 新增惰性 `fallbacks`（可丢段专用，锁定段永不替换；fallback 生成失败按无兜底处理），`/state.injection` 新增 `compactedSegments`（紧凑降级累计，区别于 `droppedSegments`），面板健康卡摘要同步显示「紧凑降级 N」。测试：`inject-channel` 6 条 fallback 单测 + 接线级项目索引 compact 测试（40 条索引超预算 → 注入 `40 entries; showing latest 8` 并记账 `compactedSegments=1`，`droppedSegments=0`）。无新增配置键、无数据迁移。
+
 ## [0.7.0] - 2026-10-24
 
 **召回端点故障可见化 + 硬事实守护指路 + 在途中止分类 + 零正文失败路径。** 本批由三个模块并行开发、随后经三路独立检查（测试有效性 / 自伤路径 / 终端用户视角）发现 2 条实现 P0、2 条检查 P0 与若干 P1，逐条修复后收口。先交代三件对账事实，防止后续翻案：

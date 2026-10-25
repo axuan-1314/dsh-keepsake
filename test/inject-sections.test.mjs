@@ -354,17 +354,19 @@ test("token 预算接线钉：desiredMemoryContext 收 token 预算、主块为�
   assert.ok(/function desiredMemoryContext\(agent, maxChars = cfg\.injectMaxChars, maxTokens = cfg\.injectMaxTokens\)/.test(src),
     "desiredMemoryContext 应增 token 预算参数（缺省取 cfg.injectMaxTokens）");
   // 传给 buildMemoryContext 的两口径
-  const anchor = src.indexOf("buildMemoryContext(segments, { maxChars");
-  assert.ok(anchor > 0, "buildMemoryContext 调用应显式传 maxChars");
-  const region = src.slice(anchor, anchor + 260);
+  const anchor = src.indexOf("buildMemoryContext(segments, {");
+  assert.ok(anchor > 0, "buildMemoryContext 调用应显式传 segments 选项");
+  const region = src.slice(anchor, anchor + 320);
+  assert.ok(region.includes("maxChars"), "buildMemoryContext 调用应显式传 maxChars");
   assert.ok(region.includes("maxTokens"), "buildMemoryContext 调用应同传 maxTokens（双上限）");
+  assert.ok(region.includes("fallbacks"), "索引段应传紧凑兜底（预算紧时不整段消失）");
   assert.ok(region.includes("tokens"), "返回对象应带 tokens（记账用）");
   // 召回让位双口径：mainTokens = max(0, injectMaxTokens − costOf(recallText) − costOf("\n\n"))
   assert.ok(/const mainTokens = cfg\.injectMaxTokens > 0/.test(src), "主块 token 预算应在 injectMaxTokens>0 时计算");
   assert.ok(/estimateTokens\(recallText\) \+ estimateTokens\("\\n\\n"\)/.test(src), "召回让位口径：costOf(recallText)+costOf(\\n\\n)");
-  // recordInjection 传 tokens（缺失回落 estimateTokens）
-  assert.ok(/recordInjection\(\{ chars: built\.text\.length, dropped: built\.dropped, resend: prior !== void 0, tokens: built\.tokens \?\? estimateTokens\(built\.text\) \}\)/.test(src),
-    "recordInjection 应传 tokens（built.tokens ?? estimateTokens(built.text)）");
+  // recordInjection 传 tokens（缺失回落 estimateTokens）与紧凑降级段
+  assert.ok(/recordInjection\(\{ chars: built\.text\.length, dropped: built\.dropped, compacted: built\.compacted, resend: prior !== void 0, tokens: built\.tokens \?\? estimateTokens\(built\.text\) \}\)/.test(src),
+    "recordInjection 应传 tokens 与 compacted（built.tokens ?? estimateTokens(built.text)）");
   // estimateTokens 从 lib/tokens.js 引（不是 embedding.js 转发）
   assert.ok(/import \{ estimateTokens \} from "\.\/tokens\.js"/.test(src), "estimateTokens 引自强模块 lib/tokens.js");
 });

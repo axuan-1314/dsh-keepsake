@@ -231,6 +231,7 @@ originSessionId: "sess_…"       # 可选；原 originSessionId 透传
 - `injectMaxTokens` 默认 **16000 → 24000**（lib/index.js:262 缺省值 + cordis.patch.yml:19 同步改）。
 - 数学：8000 字符 × 1.5 token/字 = 12000；runtime 常驻 14336 字节 ≈ 4779 中文字符（UTF-8 中文 3 字节/字口径）≈ **7170 tokens**（lib/tokens.js 口径）；12000 + 7170 ≈ 19170 < 24000 ✓。字符口径：8000 + 4779 ≈ 12779 < injectMaxChars 30000 ✓。开销项余量：头声明 + 根路径声明 + 告警行合计约 300 字节/450 字符量级，计入后两端仍富余（19170+450 < 24000；12779+300 < 30000）。
 - 锁定段优先级：persona > runtimeUser > runtimeMemory（§七兜底截断反向）。
+- **索引段兜底**：`globalIndex` / `projectIndex` 超出双预算时，先替换为紧凑索引（分类计数 + 最新 N 行 + 完整索引路径；`buildMemoryContext` 的惰性 `fallbacks`），仍装不下才按 §七的丢弃顺序整段丢。`/state.injection.compactedSegments` 记降级次数（不是丢弃）；面板健康卡显示「紧凑降级 N」。这保证「预算紧」不会演变成「模型完全看不到记忆目录」。
 
 ### 10.3 globalIndex 去重（定案 10-20④）
 

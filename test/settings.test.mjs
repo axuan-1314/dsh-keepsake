@@ -289,7 +289,8 @@ test("写入：合并式 patch（未提及键保持现值）", () => {
     const onDisk = JSON.parse(readFileSync(settingsPath(root), "utf8"));
     // v0.4.0：安全面三项并入 settings（缺键走默认，旧 settings.json 无需迁移）
     // 0.6.0：runtimeEnabled 并入（运行时记忆层总开关，缺省关）
-    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "hardfactPolicy", "projectMemory", "runtimeEnabled", "surgicalKeep", "trashKeepDays", "version"]);
+    // Unreleased：idleReviewEnabled 并入（空闲整理，缺省关）
+    assert.deepEqual(Object.keys(onDisk).sort(), ["conversationMemory", "globalExtraction", "hardfactPolicy", "idleReviewEnabled", "projectMemory", "runtimeEnabled", "surgicalKeep", "trashKeepDays", "version"]);
     assert.equal(onDisk.version, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -673,4 +674,20 @@ test("effectiveEmbedding：面板设置优先于 entry config（含显式关闭�
   assert.equal(fromSettings.topK, 5);
   const off = effectiveEmbedding({ ...cfg, recallEnabled: true }, { embedding: { enabled: false, baseUrl: "http://h", model: "m" } });
   assert.equal(off.enabled, false, "面板显式关闭覆盖 entry 的开启");
+});
+
+test("idleReviewEnabled：默认关、显式 true 才开、patch 未提及保持现值", () => {
+  const root = freshRoot();
+  try {
+    assert.equal(readSettings(root).idleReviewEnabled, false, "默认关");
+    const on = writeSettings(root, { idleReviewEnabled: true });
+    assert.equal(on.idleReviewEnabled, true);
+    assert.equal(readSettings(root).idleReviewEnabled, true);
+    const preserved = writeSettings(root, { conversationMemory: false });
+    assert.equal(preserved.idleReviewEnabled, true, "未提及的 idleReviewEnabled 保持现值");
+    const off = writeSettings(root, { idleReviewEnabled: false });
+    assert.equal(off.idleReviewEnabled, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -368,6 +368,89 @@ function confirmDialog({ title, body, dangerText = "确认", onConfirm }) {
   cancelBtn.focus(); // 打开即聚焦首个按钮（键盘/读屏可达）
 }
 
+// ============ 知识页弹窗（项目记忆派生视图；手动生成，不自动烧 token） ============
+// 页面正文全部走 esc()；生成一次 = 一次 LLM 调用，按钮 busy 防连点。
+function openPagesDialog(projectId) {
+  const layer = document.createElement("div");
+  layer.innerHTML = `
+    <div class="mask">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(900px,96vw);max-height:88vh;display:flex;flex-direction:column">
+        <h2>知识页 · <code class="k">${esc(projectId)}</code></h2>
+        <div class="meta" data-status>加载中…</div>
+        <div data-body style="overflow:auto;flex:1;min-height:220px;padding:4px 2px"></div>
+        <div class="foot">
+          <button class="btn" data-x>关闭</button>
+          <button class="btn" data-gen>生成知识页</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.appendChild(layer);
+  const bodyEl = layer.querySelector("[data-body]");
+  const statusEl = layer.querySelector("[data-status]");
+  const genBtn = layer.querySelector("[data-gen]");
+  let current = null;
+  const close = () => {
+    offFocus();
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const offFocus = L.trapFocus(layer, close);
+  layer.querySelector("[data-x]").addEventListener("click", close);
+  layer.querySelector(".mask").addEventListener("mousedown", (e) => { if (e.target.classList.contains("mask")) close(); });
+
+  const renderPages = (data) => {
+    current = data;
+    if (data === null || data.available !== true || !Array.isArray(data.pages) || data.pages.length === 0) {
+      statusEl.textContent = "还没有知识页";
+      bodyEl.innerHTML = '<div class="empty">还没有知识页。生成一次会把现有项目记忆合成 5 页：组件地图 / 核心概念 / 约定与模式 / 关键决策 / 进行中事项。页面是派生视图，真源仍是条目文件。</div>';
+      genBtn.textContent = "生成知识页";
+      return;
+    }
+    const when = data.generatedAt ? fmtTime(new Date(data.generatedAt).getTime()) : "时间未知";
+    statusEl.textContent = `已生成 ${data.pages.length} 页 · ${when}${data.model ? ` · ${data.model}` : ""}`;
+    bodyEl.innerHTML = '<div class="meta" style="margin-bottom:8px">派生视图：每轮注入只带标题 + 摘要，全文在页面文件里；记忆条目仍是真源。</div>'
+      + data.pages.map((page) => `
+        <div class="card"><h3>${esc(page.title)}</h3>
+        ${page.summary ? `<div class="meta">${esc(page.summary)}</div>` : ""}
+        <div class="entry-body" style="max-height:260px;overflow:auto">${esc(page.content ?? "")}</div></div>`).join("");
+    genBtn.textContent = "重新生成知识页";
+  };
+
+  const load = async () => {
+    statusEl.textContent = "加载中…";
+    try {
+      renderPages(await api(`pages/read?projectId=${encodeURIComponent(projectId)}`));
+    } catch (err) {
+      statusEl.textContent = "加载失败：" + err.message;
+      bodyEl.innerHTML = "";
+    }
+  };
+
+  genBtn.addEventListener("click", async () => {
+    if (genBtn.disabled) return;
+    genBtn.disabled = true;
+    genBtn.textContent = "生成中…（一次 LLM 调用）";
+    statusEl.textContent = "生成中…（一次 LLM 调用，可能需要几十秒）";
+    try {
+      const out = await apiPost("pages/generate", { projectId });
+      toast(`已生成 ${out.manifest?.pages?.length ?? 5} 页`);
+      await load();
+    } catch (err) {
+      statusEl.textContent = "生成失败：" + err.message;
+      toast("知识页生成失败：" + err.message, "err");
+    } finally {
+      genBtn.disabled = false;
+      if (current === null || current.available !== true) genBtn.textContent = "生成知识页";
+      else genBtn.textContent = "重新生成知识页";
+    }
+  });
+
+  load();
+  layer.querySelector("[data-x]").focus();
+}
+
 // ============ 条目编辑卡片（分类页/长期页共用） ============
 function entryCard(cat, e, reload, keepDays) {
   const card = document.createElement("div");
@@ -1348,8 +1431,11 @@ async function renderProjectsPage() {
   page.innerHTML = projects.map((p) => `
     <div class="card"><h3><code class="k">${esc(p.id)}</code></h3>
     <div class="meta">${p.entries} 条 · 最后更新 <span title="${esc(fmtTime(p.lastMtimeMs))}">${esc(L.relativeTimeOf(p.lastMtimeMs))}</span></div>
-    <div class="row" style="margin-top:8px"><button class="btn sm" data-pexport="${esc(p.id)}">导出此项目（JSON）</button></div></div>`).join("")
-    + '<div class="meta">项目记忆只读——由对话自动维护；全量导出走「设置」页。</div>';
+    <div class="row" style="margin-top:8px"><button class="btn sm" data-pexport="${esc(p.id)}">导出此项目（JSON）</button> <button class="btn sm" data-pages="${esc(p.id)}">知识页</button></div></div>`).join("")
+    + '<div class="meta">项目记忆只读——由对话自动维护；知识页是派生视图，手动生成（一次 LLM 调用），生成摘要会进入每轮注入；全量导出走「设置」页。</div>';
+  for (const btn of Array.from(page.querySelectorAll("[data-pages]"))) {
+    btn.addEventListener("click", () => openPagesDialog(btn.getAttribute("data-pages")));
+  }
   for (const btn of Array.from(page.querySelectorAll("[data-pexport]"))) {
     btn.addEventListener("click", async () => {
       const id = btn.getAttribute("data-pexport");
@@ -2142,12 +2228,20 @@ async function renderSettingsPage() {
   const s = data.settings ?? {};
   // 总开关现值（三态 tolerant：后端字段优先 → 本会话回填 → 缺省关；见 L.runtimeEnabledOf）
   const curRuntimeOn = L.runtimeEnabledOf(data.settings, runtimeEnabledLocal);
-  // 开关行：三开关是「缺省开」（!== false），运行时记忆是「缺省关」（=== true，规矩：开关默认关、可回滚）
-  const switchRow = (key, label, hint) => `
+  // 开关行：三开关是「缺省开」（!== false），runtime / idle review 是「缺省关」（=== true，规矩：开关默认关、可回滚）
+  const switchRow = (key, label, hint) => {
+    const defaultOff = key === "runtimeEnabled" || key === "idleReviewEnabled";
+    const checked = key === "runtimeEnabled"
+      ? curRuntimeOn
+      : defaultOff
+        ? s[key] === true
+        : s[key] !== false;
+    return `
     <div class="kv"><b>${label}</b>
-      <span class="switchWrap"><label class="switch"><input type="checkbox" data-sw="${key}" ${key === "runtimeEnabled" ? (curRuntimeOn ? "checked" : "") : (s[key] !== false ? "checked" : "")}><span class="slider"></span></label></span>
+      <span class="switchWrap"><label class="switch"><input type="checkbox" data-sw="${key}" ${checked ? "checked" : ""}><span class="slider"></span></label></span>
       <span class="meta">${hint}</span>
     </div>`;
+  };
   const backups = backupsData.backups ?? [];
   // /state 新字段 tolerant 消费（可观测）：缺失时 falsy 零影响
   const corruptBits = [];
@@ -2171,6 +2265,7 @@ async function renderSettingsPage() {
       ${switchRow("projectMemory", "项目记忆", "关闭后不再注入/记录项目记忆")}
       ${switchRow("globalExtraction", "全局自动提取", "关闭后不再自动记录全局记忆（已有条目照常注入）")}
       ${switchRow("runtimeEnabled", "运行时记忆（每轮注入的紧凑记忆层）", `${esc(L.RUNTIME_GUIDE_TEXT)}；开启后按配额编译 USER.md / MEMORY.md 注入，超出配额的条目进淘汰候选（只登记不搬动）。`)}
+      ${switchRow("idleReviewEnabled", "空闲整理（自动合并/清理）", "默认关。开启后有新增项目记忆时，空闲后跑一次模型整理（合并近重复/清理过期，最多 3 个 op），每会话有上限；会消耗 token。")}
       <div class="meta" data-swHint>保存后下一轮对话生效。</div>
     </div>
     <div data-pipeHealth></div>

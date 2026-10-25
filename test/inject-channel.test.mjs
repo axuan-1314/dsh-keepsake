@@ -43,11 +43,11 @@ test("常量：来源标识/ form / 顺序", () => {
 });
 
 test("① 全空段 → text 为空、不丢不截", () => {
-  assert.deepEqual(buildMemoryContext({}), { text: "", dropped: [], truncated: false, tokens: 0 });
-  assert.deepEqual(buildMemoryContext(undefined), { text: "", dropped: [], truncated: false, tokens: 0 });
+  assert.deepEqual(buildMemoryContext({}), { text: "", dropped: [], compacted: [], truncated: false, tokens: 0 });
+  assert.deepEqual(buildMemoryContext(undefined), { text: "", dropped: [], compacted: [], truncated: false, tokens: 0 });
   assert.deepEqual(
     buildMemoryContext({ persona: "", globalIndex: undefined, usage: "", projectIndex: "" }),
-    { text: "", dropped: [], truncated: false, tokens: 0 },
+    { text: "", dropped: [], compacted: [], truncated: false, tokens: 0 },
   );
 });
 
@@ -691,3 +691,111 @@ test("㉜ 回归门（引擎侧）：六段调用中 runtime 两段为空 = 四�
   assert.equal(undefinedRuntime.text, fourResult.text);
 });
 
+
+// ---- 紧凑索引兜底（fallbacks）：预算装不下 full 时先换紧凑版，装不下才丢 ----
+
+test("㉝ fallback：整段索引放不下时降级为紧凑版，不整段消失", () => {
+  const segments = {
+    persona: "P".repeat(50),
+    globalIndex: "G".repeat(400),
+    projectIndex: "J".repeat(400),
+  };
+  const { text, dropped, compacted, truncated, tokens } = buildMemoryContext(segments, {
+    maxChars: 250,
+    fallbacks: { globalIndex: "G-COMPACT", projectIndex: "J-COMPACT" },
+  });
+  assert.deepEqual(dropped, [], "有紧凑兜底时不应整段丢弃");
+  assert.deepEqual(compacted, ["globalIndex", "projectIndex"], "按可丢顺序记录降级段");
+  assert.ok(text.includes("G-COMPACT"), "全局紧凑索引应在文本里");
+  assert.ok(text.includes("J-COMPACT"), "项目紧凑索引应在文本里");
+  assert.ok(!text.includes("G".repeat(30)), "完整全局索引不应出现");
+  assert.equal(truncated, true, "紧凑降级也算截断");
+  assert.match(text, /\[memory-context truncated: compacted globalIndex, projectIndex\]/);
+  assert.ok(tokens > 0);
+});
+
+test("㉞ fallback：紧凑版仍装不下 → 照旧整段丢弃，compacted 不虚报", () => {
+  const segments = {
+    persona: "P".repeat(50),
+    globalIndex: "G".repeat(400),
+    projectIndex: "J".repeat(400),
+  };
+  const { text, dropped, compacted } = buildMemoryContext(segments, {
+    maxChars: 150,
+    fallbacks: { globalIndex: "G".repeat(300), projectIndex: "J".repeat(300) },
+  });
+  assert.deepEqual(dropped, ["globalIndex", "projectIndex"]);
+  assert.deepEqual(compacted, []);
+  assert.ok(!text.includes("G".repeat(300)), "装不下的紧凑版也不能留在文本里");
+});
+
+test("㉟ fallback：只给部分段兜底，未给的段照旧丢；空串/同文视为无兜底", () => {
+  const segments = {
+    persona: "P".repeat(40),
+    globalIndex: "G".repeat(300),
+    projectIndex: "J".repeat(300),
+  };
+  const partial = buildMemoryContext(segments, {
+    maxChars: 220,
+    fallbacks: { projectIndex: "J-COMPACT" },
+  });
+  assert.deepEqual(partial.dropped, ["globalIndex"], "全局索引没有兜底 → 照旧丢");
+  assert.deepEqual(partial.compacted, ["projectIndex"], "项目索引走兜底");
+  assert.ok(partial.text.includes("J-COMPACT"));
+
+  const empty = buildMemoryContext(segments, {
+    maxChars: 220,
+    fallbacks: { globalIndex: "", projectIndex: "J".repeat(300) },
+  });
+  assert.deepEqual(empty.dropped, ["globalIndex", "projectIndex"], "空串 / 同文不算有效兜底");
+  assert.deepEqual(empty.compacted, []);
+});
+
+test("㊱ fallback 只作用于可丢段：锁定段的 fallback 不被采用", () => {
+  const { text, dropped, compacted } = buildMemoryContext(
+    { persona: "P".repeat(200), globalIndex: "G".repeat(300) },
+    { maxChars: 120, fallbacks: { persona: "SHORTP", globalIndex: "G-COMPACT" } },
+  );
+  assert.ok(!text.includes("SHORTP"), "persona 是锁定段，只能用截断、不能换 fallback");
+  assert.ok(!compacted.includes("persona"));
+  assert.ok(!dropped.includes("persona"), "锁定段永不进 dropped");
+  assert.ok(dropped.includes("globalIndex") || compacted.includes("globalIndex"));
+});
+
+test("㊲ fallback 在预算充足时不启用，输出与旧形态逐字节一致", () => {
+  const segments = { persona: "人格", globalIndex: "全局索引", projectIndex: "项目索引" };
+  const plain = buildMemoryContext(segments, { maxChars: 1000 });
+  const withFallback = buildMemoryContext(segments, {
+    maxChars: 1000,
+    fallbacks: { globalIndex: "G-COMPACT", projectIndex: "J-COMPACT" },
+  });
+  assert.equal(withFallback.text, plain.text);
+  assert.deepEqual(withFallback.compacted, []);
+  assert.deepEqual(withFallback.dropped, []);
+});
+
+test("㊳ fallback 惰性求值：预算充足不调用；生成失败按无兜底处理", () => {
+  let calls = 0;
+  const loose = buildMemoryContext(
+    { persona: "人格", globalIndex: "全局索引" },
+    { maxChars: 1000, fallbacks: { globalIndex: () => { calls += 1; return "G-COMPACT"; } } },
+  );
+  assert.equal(calls, 0, "预算充足时不应调用 fallback 函数");
+  assert.deepEqual(loose.compacted, []);
+
+  calls = 0;
+  const tight = buildMemoryContext(
+    { persona: "P".repeat(50), globalIndex: "G".repeat(400), projectIndex: "J".repeat(300) },
+    {
+      maxChars: 200,
+      fallbacks: {
+        globalIndex: () => { calls += 1; return "G-COMPACT"; },
+        projectIndex: () => { throw new Error("compact failed"); },
+      },
+    },
+  );
+  assert.equal(calls, 1, "超预算时调用 fallback 函数");
+  assert.ok(tight.text.includes("G-COMPACT"), "正常的惰性 fallback 应生效");
+  assert.deepEqual(tight.compacted, ["globalIndex"], "抛错的 fallback 按无兜底处理");
+  assert.deepEqual(tight.dropped, ["projectIndex"], "生成失败的段照旧整段丢弃");
+});

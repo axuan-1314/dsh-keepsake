@@ -1,6 +1,6 @@
 // pages-wiring：知识页生成走 apply() 的真实接线——路由捕获 → callLlmText → 写盘 → API 读取。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -125,6 +125,60 @@ test("知识页接线：侧栏无 session 用 last-known 路由，生成后 API 
     assert.equal(read.json.available, true);
     assert.equal(read.json.pages.length, 5);
     assert.match(read.json.pages[0].content, /来自 \[\[p\]\]/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// pages.lock 被别的实例占住时，对用户就是「稍后再试」——必须和进程内单飞
+// （E_BUSY → 409）给同一个可读反馈。曾经被包成 E_WRITE → 500「详情见服务端日志」，
+// 看起来像插件坏了。
+test("知识页接线：pages.lock 被别的实例占住 → 409 E_PAGES_BUSY 而不是 500", async () => {
+  resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-pages-busy-"));
+  try {
+    const { memoryDir } = projectMemoryPaths(root, root);
+    mkdirSync(memoryDir, { recursive: true });
+    const projectId = basename(dirname(memoryDir));
+    writeFileSync(join(memoryDir, "p.md"), [
+      "---",
+      'name: "p"',
+      'description: "项目事实"',
+      "metadata:",
+      "  type: project",
+      'node_type: "memory"',
+      "---",
+      "",
+      "项目用 pnpm。",
+    ].join("\n"));
+    writeFileSync(join(memoryDir, "MEMORY.md"), "- [P](p.md) — 项目事实\n");
+
+    // 另一个实例留下的新鲜锁（token 任意，只要没过期）
+    writeFileSync(join(root, "pages.lock"), JSON.stringify({ token: "other-instance", at: Date.now() }));
+
+    async function* stream() {
+      yield { type: "text-delta", text: JSON.stringify({
+        pages: PAGE_DEFS.map((d) => ({ id: d.id, title: d.title, summary: "s", content: `# ${d.title}` })),
+      }) };
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+    const { ctx, handlers, webRoutes } = fakeCtx(stream);
+    apply(ctx, { enabled: true, storageRoot: root });
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+    handlers.get("session/event")(
+      { id: "session-pages-busy" },
+      { type: "request/header", data: { header: { config: { provider: "p", model: "m" } } } },
+    );
+
+    const out = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/generate`,
+      body: { projectId },
+    });
+    assert.equal(out.status, 409, `应回 409（可重试），实际 ${out.status}：${JSON.stringify(out.json)}`);
+    assert.equal(out.json.code, "E_PAGES_BUSY");
+    // 别人的锁不能被这次失败拆掉
+    assert.equal(JSON.parse(readFileSync(join(root, "pages.lock"), "utf8")).token, "other-instance");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -1472,6 +1472,22 @@ test("pagesGenerationSummary：生成与失败都可见，零值不装饰", asyn
   assert.equal(L.pagesGenerationSummary({ errors: 1, lastError: "路由缺失" }), "失败 1 次（路由缺失）");
 });
 
+// 契约外的 lastError（对象/数字/null…）：String() 会把对象变成 "[object Object]" 冒充错误详情。
+// 口径：只认字符串，其余只报次数——既不把内部结构序列化上界面，也不留假详情。
+test("pagesGenerationSummary：非字符串 lastError 不出 [object Object]，失败次数仍可见", async () => {
+  const L = await import("../lib/panel-logic.js");
+  for (const bad of [{ a: 1 }, 42, null, undefined, ["x"], true, { message: "内部错误" }]) {
+    const text = L.pagesGenerationSummary({ generations: 1, errors: 2, lastError: bad });
+    assert.ok(typeof text === "string" && text.length > 0, `有失败就必须有文案（lastError=${String(bad)}）`);
+    assert.match(text, /生成 1 次/, "生成次数照常");
+    assert.match(text, /失败 2 次(?!（)/, `失败次数必须可见且不带详情（lastError=${String(bad)}）`);
+    assert.doesNotMatch(text, /\[object Object\]/, `不得把对象字符串化上界面（lastError=${String(bad)}）`);
+  }
+  // 字符串形态照旧（防护不能顺手丢掉真详情），两端空白仍剥掉
+  assert.equal(L.pagesGenerationSummary({ errors: 1, lastError: "  路由缺失  " }), "失败 1 次（路由缺失）");
+  assert.equal(L.pagesGenerationSummary({ errors: 1, lastError: 42 }), "失败 1 次", "数字也不当详情展示");
+});
+
 test("correctionRows：四种结局人话化，坏行跳过，相对时间容错", async () => {
   const L = await import("../lib/panel-logic.js");
   const rows = L.correctionRows([
@@ -1511,6 +1527,70 @@ test("结构校验：CORRECTION_KIND_TEXT 键集 ⊇ CORRECTION_KINDS（加新�
   for (const kind of C.CORRECTION_KINDS) {
     assert.notEqual(L.correctionKindText(kind), kind, `${kind} 未翻译，界面上会露出英文枚举`);
   }
+});
+
+// 结构校验：JSDoc 声明的 outcome 档位必须覆盖实现**实际会产出**的档位。
+//
+// 判据用**运行时枚举**而非源码正则：正则版对合法重排（三元改 if/else、变量改名、
+// 字面量抽成常量）会误报，而对「新增一档但写成局部变量再 return」会静默漏报——
+// 漏报恰恰是这道校验唯一要防的东西。运行时枚举天然免疫重排，也能抓到新档位。
+test("结构校验：applyCorrections 的 JSDoc outcome 枚举 ⊇ 运行时实际产出的档位", async () => {
+  const { readFileSync } = await import("node:fs");
+  const C = await import("../lib/corrections.js");
+
+  // JSDoc 侧：@returns 里 outcome 的联合类型字面量（唯一的文本依赖，容忍换行）
+  const src = readFileSync(new URL("../lib/corrections.js", import.meta.url), "utf8");
+  const at = src.indexOf("export async function applyCorrections(");
+  assert.ok(at > 0, "找不到 applyCorrections 定义（本测试的锚点漂了）");
+  const before = src.slice(0, at);
+  const doc = before.slice(before.lastIndexOf("/**"));
+  assert.match(doc, /失败隔离/, "锚到的不是 applyCorrections 的 JSDoc（锚点漂了）");
+  const docUnion = doc.match(/outcome:\s*((?:"[^"]+"\s*\|\s*)*"[^"]+")/);
+  assert.ok(docUnion, "@returns 里找不到 outcome 联合类型（注释形态变了，先更新本测试的提取式）");
+  const docSet = new Set([...docUnion[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+  assert.ok(docSet.size >= 2, `JSDoc outcome 枚举提取失败：${JSON.stringify([...docSet])}`);
+
+  // 实现侧：真的跑出每一档。stub 掉 LLM / 解析 / 落盘，只观察 top-level outcome。
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-outcome-enum-"));
+  const okOps = { writes: 1, deletes: 0, verifyFailed: 0 };
+  const seen = new Set();
+  const run = async (items, { callLlm, parseOps, applyOps } = {}) => {
+    const out = await C.applyCorrections({
+      storageRoot: root,
+      items,
+      parseOps: parseOps ?? (() => ({ kind: "ops", ops: [{ action: "write", name: "a.md" }] })),
+      callLlm: callLlm ?? (async () => ({ text: "{}" })),
+      applyOps: applyOps ?? (() => okOps),
+    });
+    seen.add(out.outcome);
+    return out;
+  };
+  try {
+    C.__resetCorrectionsForTest();
+    await run([{ target: "a.md", reason: "r" }, { target: "b.md", reason: "r" }]); // applied
+    let n = 0;
+    await run([{ target: "a.md", reason: "r" }, { target: "b.md", reason: "r" }], {
+      callLlm: async () => { n += 1; if (n > 1) throw new Error("boom"); return { text: "{}" }; },
+    }); // partial
+    await run([{ target: "a.md", reason: "r" }], { callLlm: async () => { throw new Error("boom"); } }); // error
+    // no-change：一条都没成但也没失败（全 needs-input）
+    await run([{ target: "a.md", reason: "r" }, { target: "b.md", reason: "r" }], {
+      callLlm: async () => ({ text: "NEEDS_USER_INPUT" }),
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    C.__resetCorrectionsForTest();
+  }
+
+  // 先判「实现产出的档位有没有漏写进 JSDoc」——这是校验的主命题，
+  // 也是新增档位时最该先看到的错误（放在四档断言之前，否则会被它抢先报「构造失败」）。
+  const missing = [...seen].filter((v) => !docSet.has(v));
+  assert.deepEqual(missing, [], `实现会产出的档位没有写进 @returns：${missing.join(", ")}`);
+  // 再钉「四档都能被真实跑出来」——否则上面那句可能是空验（一条都没跑到）
+  assert.deepEqual([...seen].sort(), ["applied", "error", "no-change", "partial"], "四档都要能被真实跑出来");
 });
 
 test("turnActivityRows：失败事件涂红标记，坏行跳过，时间格式化", async () => {

@@ -20,7 +20,7 @@
 
 ## [0.7.1] - 2026-10-25
 
-**全面检查后的修复批：2 条 P0 + 4 条 P1 + 8 条 P2/P3 + 一项测试债务。** 对 0.7.0 之后四个提交（组织层三件套 / 纠错闭环与检索命令 / 纠错增强 / 面板枚举翻译）做了四路独立审查，每条发现都用隔离探针复现过；随后又做了两轮独立对抗式审查，抓出的问题（片段定位线性漂移、422 丢掉原因、两阶段落盘的备份空窗与静默回滚失败、安全闸被放宽、两处假绿测试）已在本批内修完。无新增开关、无配置键变更、无数据迁移；测试 1253 → 1286（+33）。
+**全面检查后的修复批：2 条 P0 + 4 条 P1 + 全部 P2/P3 + 一项测试债务。** 对 0.7.0 之后四个提交（组织层三件套 / 纠错闭环与检索命令 / 纠错增强 / 面板枚举翻译）做了四路独立审查，每条发现都用隔离探针复现过；随后又做了三轮独立对抗式审查，抓出的问题（片段定位线性漂移、422 丢掉原因、两阶段落盘的备份空窗与静默回滚失败、安全闸被放宽、清扫器会删掉回滚材料、多处假绿测试）已在本批内全部修完。无新增开关、无配置键变更、无数据迁移；测试 1253 → 1304（+51），skip 从 1 降到 **0**。
 
 ### 修复
 
@@ -54,7 +54,20 @@
 - **`listMemoryEntries` 性能与上限口径（P2）**：改为「先 stat 排序、只读入选的 top-N 正文」（原先全量读正文，7500 条约 5 秒）；同时把「每目录扫描上限」与「因 limit 截断」分开，新增 `scanTruncated` 如实回报（原注释声称总量上界是全局的，实际是每目录）。
 - **两处假绿测试（P2）**：①「阶段一失败零残留」实际只跑了重复 id 预检，从未触发阶段一失败——删掉清理循环全仓仍全绿；改为钉住 `Date.now` 精确占住临时文件路径，真正触发 `EISDIR`。②「同长度改写 + mtime 复原」的 size 前提断言拿同一个字符串比字节数，是恒真式（换成等字符数但不等字节的中文就退化成假绿）；改为与**生成时记下的真实 size** 比。
 
-### 测试（1253 → 1286，+33）
+### 修复（第三轮审查，跨文件耦合）
+
+- **清扫器会删掉回滚材料（P2）**：`copyFileSync` 在 Windows 上**继承源文件 mtime**，而清扫器按 mtime 判到龄（1 小时）。于是「隔了一小时以上重新生成」的备份一落地就是「到龄孤儿」——另一实例此刻跑启动清扫会删掉还没用完的回滚材料，换入失败时回滚直接 ENOENT，留下半新半旧 + 旧 manifest（正是两阶段提交要消灭的混合态）。已端到端复现。修法：备份后用 `utimesSync` 把 mtime 钉成诞生时刻（抽成 `makeRollbackBackup` 便于直接验证——正常路径备份寿命只有毫秒级，从外部观察不到）。
+- **撞锁时白烧一次模型调用（P2）**：`generatePages` 原先先调 LLM 再抢锁，而「另一个实例在写」是撞锁最常见的场景——每次都要先花掉一次调用才知道该重试。新增 `isPagesWriteBusy` 预检（在 LLM 之前）。**不**把锁拉到 LLM 之前：锁窗会从毫秒级变成几十秒，且锁是 storageRoot 级的会把不同项目的生成串行化；预检只负责省调用、不承担互斥，因此 TOCTOU 无害（退化成原状）。
+- **`pages/` 的临时档永久驻留（P3）**：`sweepTmpOrphans` 的扫描面不含 `pages/`，且 `isAtomicTmpName` 不认 `.tmp-new-*` / `.tmp-old-*` 两种形态（`new`/`old` 夹在 `.tmp-` 与 pid 之间）。现在扫描面加入 `pages/` 与各 projectId 子目录，判据扩到三种形态（仍是精确尾部匹配，不退化成 `includes(".tmp-")`——那会误删用户手建的 `xxx.tmp-notes.md`）。
+- **`/memory` 列表「共 4 条」只列 3 条（P3）**：`listMemoryEntries` 新增的 `skipped` / `scanTruncated` 原先无人消费，缺口对用户不可见。现在列表文案分会话说明「其中 N 条读取失败，未列出」与「条目数超出单次扫描上限」；API 契约注释同步。
+- **结构校验两头不可靠（P3）**：源码正则版对合法重排（三元改 if/else、变量改名、字面量抽常量）会误报，而对「新增一档但写成局部变量再 return」**静默漏报**——漏报恰恰是这道校验唯一要防的。改为运行时枚举：真实跑出四档再做集合比对，天然免疫重排且能抓新档位。
+- **存储根不可用被误报成「稍后重试」（P3）**：`mkdirSync` 对「storageRoot 被同名文件占住」抛 `EEXIST`，被当成「锁被占」→ `E_PAGES_BUSY`，用户会一直重试一个永远不可能成功的操作。现在分流前先判是不是目录，不是则报 `E_WRITE` 并说明原因。
+- **`E_PAGES_BUSY` 的文案与计数（P3）**：它走的是「知识页落盘失败」前缀（其实可能连盘都没碰，还会有双 `dsh-keepsake:` 前缀），且被计进 `pagesState.errors` 永久失败数。现在用独立前缀「知识页生成被占用」、不进错误计数（争用不是故障，计入会让面板长期挂着一条永不自愈的失败）。
+- **`recordPagesError` 收窄（P3）**：原先 `String(error)` 会把对象存成 `"[object Object]"`——面板那层 `typeof === "string"` 守卫因此挡不住它声称要挡的东西。改为只收字符串，非字符串按「没有详情」记（错误计数照记）。
+- **依赖方向倒挂（P3）**：`global-store`（基础设施层）曾 `import { PAGES_DIR_NAME } from "./pages.js"`（特性层），只为拿一个字符串；将来任何 `pages → global-store` 的需要都会立刻变成环。常量移到叶子模块 `filename.js`。
+- **结构测试**：`test/search.test.mjs` 的符号链接用例改用 **junction 兜底**（Windows 非管理员建不了 symlink），并补一层「POSIX 视图」重分类——因为 junction 的 `Dirent` 是 `isSymbolicLink=true` 但 `isDirectory=false`，光靠真实 junction 在守卫失效时**不会变红**（等于换了个姿势的假防护）。现在守卫被删时该用例确定变红，skip 数由 1 降为 0。
+
+### 测试（1253 → 1304，+51）
 
 - **新增 `test/corrections-wiring.test.mjs`（11 条，全走真实 `apply()`）**：补的正是「文档承诺了、实现是对的、但没有任何回归保护」的四项——并发第二次纠错 409 `E_BUSY`（单条 + 批量互斥各一条）、开关关 409 `E_DISABLED` 且零 LLM 调用、ops 全被闸拦下 422 `no-op-applied`、`recent` 与盘上 ledger 行数对账；外加两条 P0 回归（批量定位失败时的逐条隔离与「已落盘条目必须留在 results 里」、越界读取不得把目录外内容喂进提示词）、一条 `no-change` 口径，以及安全闸的两个反向约束（目录内非规范化真实文件名**必须**能读到 / 目录内的索引、黑名单段、非 `.md` 文件**不得**读到）。
 - **`test/turn-activity.test.mjs` +4**：越界数字时间戳不炸、合法但久远的时间戳仍保留（防夹取写成一律丢弃）、`since > until` 不产生负宽度、`since=1e308` 同样钳住。
@@ -63,7 +76,7 @@
 - **`test/panel-logic.test.mjs` +4**：`verifyFailed` 必须单独露面、`idleReviewSummary` 的挡回带原因（且区分「仍被挡」与「曾挡回」、未知原因不编）、`pagesGenerationSummary` 的成功与失败各自可见、**结构校验**「`CORRECTION_KIND_TEXT` 键集 ⊇ `CORRECTION_KINDS`」（原先只有硬编码的"五值都在"测试，加第六种类型时面板不会红）。
 - **`test/corrections.test.mjs` +3**：verifyFailed 三处链路（回报/ledger/累计计数）、`no-op-applied` 路径也要带并累计 verifyFailed、批量顶部汇总等于逐条之和。
 - **`test/memory-command.test.mjs` +1 / `test/idle-review.test.mjs` +2**：命令文案里被打回的改动必须明说（含 default 分支的校验回滚文案）；挡回单独计数且不污染 `runs`、挡回原因作为历史事实保留而「仍被挡」由时间戳判定。
-- **变异验证（12 处）**：折叠退回纯小写、指纹退回 `mtimeMs:size`、移除回滚循环、删掉阶段一清理、`verifyFailed` 恒 0、命令文案恒空、`recordIdleReviewRejected` 空实现、`pagesGenerationSummary` 恒 null、往 `CORRECTION_KINDS` 塞没中文的类型、`listMemoryEntries` 退化成全量读正文、删掉精确匹配分支、`isInsideRoot` 换成 `startsWith`——每处都让对应测试变红，恢复后转绿。**其中两个测试第一版是假绿，都已修**：① Windows/NTFS 时间戳精度 100ns 而 Node 的 Date 只有 ms，直接写回原 `mtime` 会差出亚毫秒，指纹「其实变了」所以照样标 stale（改为钉整秒 + 三条前提断言）；②「阶段一失败零残留」从未真正触发阶段一失败（改为钉住 `Date.now` 用目录占住临时路径，触发 `EISDIR`）。
+- **变异验证（20 处）**：折叠退回纯小写、指纹退回 `mtimeMs:size`、移除回滚循环、删掉阶段一清理、`verifyFailed` 恒 0、命令文案恒空、`recordIdleReviewRejected` 空实现、`pagesGenerationSummary` 恒 null、往 `CORRECTION_KINDS` 塞没中文的类型、`listMemoryEntries` 退化成全量读正文、删掉精确匹配分支、`isInsideRoot` 换成 `startsWith`、去掉 `pages/` 清扫面、`scanTruncated` off-by-one、去掉锁的 finally 释放、陈锁判据失效、`E_PAGES_BUSY` 不进 409 分支、不钉备份 mtime、去掉 `/memory` 缺口说明、删掉 symlink 守卫——每处都让对应测试变红，恢复后转绿。**其中三个测试第一版是假绿，都已修**：① Windows/NTFS 时间戳精度 100ns 而 Node 的 Date 只有 ms，直接写回原 `mtime` 会差出亚毫秒，指纹「其实变了」所以照样标 stale（改为钉整秒 + 三条前提断言）；②「阶段一失败零残留」从未真正触发阶段一失败（改为钉住 `Date.now` 触发 `EISDIR`）；③「回滚备份 mtime」最初在测试里自己调 `utimesSync`，与被测实现无关，改坏实现仍绿（改为直接验证 `makeRollbackBackup` 原语的产出，并用真正的清扫器裁决）。
 
 
 ## [0.7.0] - 2026-10-24

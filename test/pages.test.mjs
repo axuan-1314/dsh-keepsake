@@ -1,15 +1,19 @@
 // pages：项目知识页（派生视图）——解析、落盘、摘要注入、生成编排。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   PAGE_DEFS,
+  PAGES_LOCK_FILENAME,
+  PAGES_LOCK_STALE_MS,
   __resetPagesStateForTest,
+  acquirePagesLock,
   buildPagesPayload,
   collectPageSources,
   generatePages,
+  isPagesWriteBusy,
   isValidProjectId,
   pagesDir,
   pagesSnapshot,
@@ -331,6 +335,236 @@ test("generatePages：项目不存在/记忆为空时显式拒绝", async () => 
       generatePages({ storageRoot: root, projectId: "project-8469841b416be31b", callLlm: async () => ({ text: "{}" }) }),
       (error) => error.code === "E_PROJECT_NOT_FOUND",
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 跨进程写锁（pages.lock）----
+// 本仓不保证 storageRoot 独占（web + desktop 可共用），进程内单飞挡不住跨进程交错：
+// 两个两阶段提交交错时，后失败者会把对方刚写好的页当旧版还原回去。
+
+/** 锁文件是 storageRoot 下的 pages.lock（不是 pages/<project>/ 里，也不是 extract.lock）。 */
+function lockPath(root) {
+  return join(root, PAGES_LOCK_FILENAME);
+}
+
+/** 一次成功写入的页集合；summary 带前缀便于区分新旧。 */
+function pagesWith(prefix) {
+  return PAGE_DEFS.map((def, i) => ({ id: def.id, title: def.title, summary: `${prefix}-s${i}`, content: `${prefix} ${i}` }));
+}
+
+test("writePages：锁被占时显式失败 E_PAGES_BUSY，正式文件零改动（读路径不受影响）", () => {
+  const { root, projectId } = freshProject();
+  try {
+    const oldAt = "2026-03-03T00:00:00.000Z";
+    writePages(root, projectId, pagesWith("old"), { generatedAt: oldAt });
+    const dir = pagesDir(root, projectId);
+    const before = PAGE_DEFS.map((def) => readFileSync(join(dir, `${def.id}.md`), "utf8"));
+    const manifestBefore = readFileSync(join(dir, "manifest.json"), "utf8");
+
+    // 模拟另一个实例正持锁：新鲜 at（未 stale）的锁文件
+    writeFileSync(lockPath(root), JSON.stringify({ pid: process.pid === 1 ? 2 : 1, at: Date.now(), token: "other-instance" }) + "\n", "utf8");
+
+    assert.throws(
+      () => writePages(root, projectId, pagesWith("new"), { generatedAt: "2026-04-04T00:00:00.000Z" }),
+      (error) => {
+        assert.equal(error.code, "E_PAGES_BUSY", "并发被拒必须有可分流错误码，不能静默跳过");
+        assert.match(error.message, /未写入/, "消息必须说明这次没写");
+        return true;
+      },
+    );
+
+    // 正式文件零改动（既不能写新内容，也不能因为「没抢到锁」而清掉别人的现场）
+    for (const [i, def] of PAGE_DEFS.entries()) {
+      assert.equal(readFileSync(join(dir, `${def.id}.md`), "utf8"), before[i], `${def.id} 必须零改动`);
+    }
+    assert.equal(readFileSync(join(dir, "manifest.json"), "utf8"), manifestBefore, "manifest 必须零改动");
+    // 别人的锁不能被我们拆掉（否则下一个实例就能趁隙进入写段）
+    assert.equal(JSON.parse(readFileSync(lockPath(root), "utf8")).token, "other-instance", "失败路径不得释放他人的锁");
+    // 读路径不被写锁阻塞
+    assert.equal(readPages(root, projectId).pages.length, 5, "持锁期间读取必须照常可用");
+    assert.match(pagesSummaryTexts(root, projectId).full, /Project knowledge pages/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// release 必须只拆自己的锁：按 stale 接管后锁已换主，误删新主的锁会让两个实例同时进入写段。
+test("acquirePagesLock：release 只拆 token 匹配的锁", () => {
+  const { root } = freshProject();
+  try {
+    const mine = acquirePagesLock(root);
+    assert.equal(mine.acquired, true);
+    assert.equal(existsSync(lockPath(root)), true);
+    // 模拟：我的锁被判 stale 后由他人重抢（token 已换）
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 4242, at: Date.now(), token: "someone-else" }) + "\n", "utf8");
+    mine.release();
+    assert.equal(existsSync(lockPath(root)), true, "不得拆掉新主的锁");
+    assert.equal(JSON.parse(readFileSync(lockPath(root), "utf8")).token, "someone-else");
+    // 自己的锁则正常释放
+    const again = acquirePagesLock(root);
+    again.release();
+    rmSync(lockPath(root), { force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writePages：成功后锁不残留", () => {
+  const { root, projectId } = freshProject();
+  try {
+    writePages(root, projectId, pagesWith("ok"), { generatedAt: "2026-03-03T00:00:00.000Z" });
+    assert.equal(existsSync(lockPath(root)), false, "成功路径必须释放锁，否则下一次写入永远 E_PAGES_BUSY");
+    // 释放的实证：紧接着还能再写一次
+    writePages(root, projectId, pagesWith("again"), { generatedAt: "2026-03-04T00:00:00.000Z" });
+    assert.equal(readPagesManifest(root, projectId).generatedAt, "2026-03-04T00:00:00.000Z");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("writePages：落盘失败也释放锁（一次失败不能永久锁死后续写入）", () => {
+  const { root, projectId } = freshProject();
+  try {
+    writePages(root, projectId, pagesWith("old"), { generatedAt: "2026-03-03T00:00:00.000Z" });
+    const dir = pagesDir(root, projectId);
+    // 用目录占住最后一页目标：换入阶段必然失败（既有测试同款手法）
+    const lastPath = join(dir, `${PAGE_DEFS[PAGE_DEFS.length - 1].id}.md`);
+    rmSync(lastPath, { force: true });
+    mkdirSync(lastPath);
+
+    assert.throws(() => writePages(root, projectId, pagesWith("new"), { generatedAt: "2026-04-04T00:00:00.000Z" }));
+    assert.equal(existsSync(lockPath(root)), false, "失败路径必须释放锁（finally）");
+
+    // 关键：清掉障碍后必须还能写进去——锁若残留，这里会抛 E_PAGES_BUSY
+    rmSync(lastPath, { recursive: true, force: true });
+    writePages(root, projectId, pagesWith("next"), { generatedAt: "2026-05-05T00:00:00.000Z" });
+    assert.equal(readPagesManifest(root, projectId).generatedAt, "2026-05-05T00:00:00.000Z");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 崩溃留下的陈锁必须能被抢掉，否则一次崩溃 = 知识页永久不可写。
+// 同时把两条可能的时间判据都做成「很旧」：锁内容里的 at（当前实现用它）与文件 mtime。
+// 判据换成 mtime 时这条测试仍然成立，不会因为实现口径变化而假绿/假红。
+test("writePages：陈锁可被抢（内容 at 与 mtime 双旧）", () => {
+  const { root, projectId } = freshProject();
+  try {
+    const staleAt = Date.now() - PAGES_LOCK_STALE_MS - 60_000;
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 999999, at: staleAt, token: "dead-owner" }) + "\n", "utf8");
+    const old = new Date(staleAt);
+    utimesSync(lockPath(root), old, old);
+
+    const manifest = writePages(root, projectId, pagesWith("stale"), { generatedAt: "2026-06-06T00:00:00.000Z" });
+    assert.equal(manifest.generatedAt, "2026-06-06T00:00:00.000Z", "陈锁必须被抢过来并完成写入");
+    assert.equal(readPages(root, projectId).pages.length, 5);
+    assert.equal(existsSync(lockPath(root)), false, "抢到的新锁在完成后同样要释放");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 回滚备份（.tmp-old-*）必须用「诞生时刻」计时，不能继承被备份页的 mtime。
+// Windows 上 copyFileSync 会继承源 mtime，于是「隔了一小时以上重新生成」的备份
+// 一落地就是「到龄孤儿」；另一实例此刻跑启动清扫会删掉还没用完的回滚材料，
+// 换入失败时回滚直接 ENOENT，留下半新半旧 + 旧 manifest（两阶段提交要消灭的混合态）。
+//
+// 直接从原语层验证：备份的正常窗口只有毫秒级（整次写入实测 21~48ms），
+// 从外部等不到；且 writePages 是同步的，单进程内并发清扫根本跑不起来（事件循环被占）。
+// 所以钉住 makeRollbackBackup 的产出，再用真正的清扫器当裁判。
+test("makeRollbackBackup：备份 mtime 是诞生时刻，清扫器不会把它当到龄孤儿", async () => {
+  const { makeRollbackBackup } = await import("../lib/pages.js");
+  const { sweepTmpOrphans } = await import("../lib/global-store.js");
+  const { root, projectId } = freshProject();
+  try {
+    const dir = pagesDir(root, projectId);
+    mkdirSync(dir, { recursive: true });
+    const src = join(dir, "component-map.md");
+    writeFileSync(src, "# 旧页\n\n八天前生成的。\n");
+    const ancient = new Date(Date.now() - 8 * 24 * 3600_000);
+    utimesSync(src, ancient, ancient);
+
+    // 前提确认：源文件确实很旧（否则下面的断言不成立）
+    assert.ok(Date.now() - statSync(src).mtimeMs > 3600_000, "前提：源文件 mtime 已超清扫到龄阈值");
+
+    const backup = join(dir, `component-map.md.tmp-old-${process.pid}-${Date.now()}`);
+    makeRollbackBackup(src, backup);
+
+    // 核心：备份的 mtime 必须是「刚才」，不是源文件的 8 天前
+    const age = Date.now() - statSync(backup).mtimeMs;
+    assert.ok(age < 60_000, `备份 mtime 必须是诞生时刻，实际 ${(age / 3600_000).toFixed(1)} 小时前`);
+
+    // 用真正的清扫器裁决：新鲜的备份不该被清
+    sweepTmpOrphans(root);
+    assert.ok(existsSync(backup), "刚建的备份不得被清扫器清掉（否则失败回滚会 ENOENT）");
+
+    // 反向对照：不钉 mtime 的同类文件会被清掉——证明上面那条不是空验
+    const inherited = join(dir, `core-concepts.md.tmp-old-${process.pid}-${Date.now() + 1}`);
+    copyFileSync(src, inherited);
+    utimesSync(inherited, ancient, ancient);
+    sweepTmpOrphans(root);
+    assert.equal(existsSync(inherited), false, "继承旧 mtime 的备份会被清扫掉——这正是要避免的情形");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 抢锁前预检：另一个实例在写时直接拒绝，不白烧一次 LLM 调用。
+// 预检只负责省调用，不承担互斥（真正的闸在 writePages 的锁）——
+// 所以 TOCTOU 无害：预检过了但写入前被别人抢到，退化成「烧一次调用后被告知忙」。
+test("generatePages：锁被占时在调 LLM 之前就拒绝（不白烧模型调用）", async () => {
+  const { root, projectId } = freshProject();
+  try {
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 424242, at: Date.now(), token: "other" }) + "\n", "utf8");
+    let calls = 0;
+    let caught = null;
+    try {
+      await generatePages({
+        storageRoot: root,
+        projectId,
+        callLlm: async () => { calls += 1; return { text: "{}" }; },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught !== null, "锁被占时必须抛错");
+    assert.equal(caught.code, "E_PAGES_BUSY");
+    assert.equal(calls, 0, "预检必须在调用 LLM 之前生效——否则每次撞锁都白烧一次模型调用");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("isPagesWriteBusy：只把「新鲜的锁」当成占用（陈锁/未来时间戳/坏文件都不算）", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-busy-"));
+  try {
+    assert.equal(isPagesWriteBusy(root), false, "没有锁 = 不忙");
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 1, at: Date.now(), token: "t" }) + "\n", "utf8");
+    assert.equal(isPagesWriteBusy(root), true, "新鲜锁 = 忙");
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 1, at: Date.now() - PAGES_LOCK_STALE_MS - 1000, token: "t" }) + "\n", "utf8");
+    assert.equal(isPagesWriteBusy(root), false, "陈锁不算占用（否则崩溃一次就永久拒绝）");
+    writeFileSync(lockPath(root), JSON.stringify({ pid: 1, at: Date.now() + 3600_000, token: "t" }) + "\n", "utf8");
+    assert.equal(isPagesWriteBusy(root), false, "未来时间戳不算占用（时钟漂移不该锁死）");
+    writeFileSync(lockPath(root), "not json", "utf8");
+    assert.equal(isPagesWriteBusy(root), false, "坏锁文件按最旧处理");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// storageRoot 被一个同名文件占住时，mkdirSync 抛 EEXIST——那不是「锁被占」，
+// 而是配置/磁盘错误。报成 E_PAGES_BUSY 会让用户一直重试一个永远不可能成功的操作。
+test("acquirePagesLock：存储根不是目录时不被误报成 E_PAGES_BUSY", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-notdir-"));
+  try {
+    const asFile = join(root, "storage");
+    writeFileSync(asFile, "i am a file", "utf8");
+    assert.throws(() => acquirePagesLock(asFile), (error) => {
+      assert.notEqual(error.code, "E_PAGES_BUSY", "存储根不可用不得说成「稍后重试」");
+      return true;
+    });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -820,3 +820,105 @@ test("sweepTmpOrphans：真实原子写形态（pid-13位ts[-后缀]）能被认
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 临时档清扫：pages/ 派生视图（知识页两阶段落盘残留）----
+// pages/<projectId>/ 下三种中间档：`.tmp-new-*`（阶段一暂存）、`.tmp-old-*`（换入前备份）、
+// `.tmp-<pid>-<ts>`（旧形态）。正常路径自行清理，只有崩溃/异常才留残留。
+
+/** 造一个 pages/<projectId>/ 目录并返回路径（projectId 用 lib/pages.js 认识的形态）。 */
+function pagesProjectDir(root, projectId = "proj-0123456789abcdef") {
+  const dir = join(root, "pages", projectId);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+test("sweepTmpOrphans：pages/ 下三种原子写残留到龄后都被清（根与项目子目录）", () => {
+  const root = freshRoot();
+  try {
+    const dir = pagesProjectDir(root);
+    const aged = [];
+    for (const name of [
+      "component-map.md.tmp-new-1234-1700000000123",
+      "component-map.md.tmp-old-1234-1700000000123",
+      "manifest.json.tmp-new-1234-1700000000123",
+      "core-concepts.md.tmp-1234-1700000000123",
+    ]) {
+      const file = join(dir, name);
+      writeFileSync(file, "半截", "utf8");
+      ageFile(file, 3 * 3600_000);
+      aged.push(file);
+    }
+    // pages/ 根同样在扫描面内（正常不会落文件，崩溃时可能残留）
+    const atPagesRoot = join(root, "pages", "stray.md.tmp-new-1234-1700000000123");
+    writeFileSync(atPagesRoot, "半截", "utf8");
+    ageFile(atPagesRoot, 3 * 3600_000);
+    aged.push(atPagesRoot);
+
+    const removed = sweepTmpOrphans(root);
+    for (const file of aged) assert.equal(existsSync(file), false, `${file} 应被清扫`);
+    assert.equal(removed, aged.length, "只清这些残留");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：pages/ 下未到龄的中间档保留（在途写入绝不能被删）", () => {
+  const root = freshRoot();
+  try {
+    const dir = pagesProjectDir(root);
+    const inflight = [];
+    for (const name of [
+      "key-decisions.md.tmp-new-99999-" + Date.now(),
+      "key-decisions.md.tmp-old-99999-" + Date.now(),
+      "manifest.json.tmp-99999-" + Date.now(),
+    ]) {
+      const file = join(dir, name);
+      writeFileSync(file, "在途内容，不得删除", "utf8");
+      inflight.push(file);
+    }
+    sweepTmpOrphans(root);
+    for (const file of inflight) {
+      assert.equal(existsSync(file), true, `未到龄的 ${file} 不能被清扫`);
+      assert.equal(readFileSync(file, "utf8"), "在途内容，不得删除");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：pages/ 下用户手建的非中间档文件绝不删（即便很老）", () => {
+  const root = freshRoot();
+  try {
+    const dir = pagesProjectDir(root);
+    const keep = [];
+    for (const name of ["notes.tmp-notes.md", "readme.md", "report.tmp-2026-10-22"]) {
+      const file = join(dir, name);
+      writeFileSync(file, "用户手建", "utf8");
+      ageFile(file, 5 * 3600_000);
+      keep.push(file);
+    }
+    sweepTmpOrphans(root);
+    for (const file of keep) assert.equal(existsSync(file), true, `${file} 不是原子写形态，必须保留`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("sweepTmpOrphans：pages/ 下正式文件（页面与 manifest）绝不删", () => {
+  const root = freshRoot();
+  try {
+    const dir = pagesProjectDir(root);
+    const keep = [];
+    for (const name of ["component-map.md", "manifest.json"]) {
+      const file = join(dir, name);
+      writeFileSync(file, "正式产物", "utf8");
+      ageFile(file, 9 * 3600_000); // 派生视图再旧也是正式产物，清扫只认中间档命名
+      keep.push(file);
+    }
+    const removed = sweepTmpOrphans(root);
+    for (const file of keep) assert.equal(existsSync(file), true, `${file} 是正式文件，必须保留`);
+    assert.equal(removed, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

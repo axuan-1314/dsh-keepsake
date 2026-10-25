@@ -65,6 +65,25 @@ test("renderMemoryResult/list：空态给可操作提示，有条目给计数", 
   assert.match(text, /pnpm-rule\.md/);
 });
 
+// 「没列全」有两个不同原因，必须分开说：读失败（条目在但读不出来）
+// 与扫描没扫全（目录条目数超上限）。不说，用户会把缺口当成事实。
+test("renderMemoryResult/list：读失败与扫描截断都要说明（不能只说共 N 条）", () => {
+  const entries = [
+    { title: "A", scope: "global:work-profile", type: "feedback", name: "a.md", description: "d" },
+    { title: "B", scope: "global:work-profile", type: "feedback", name: "b.md", description: "d" },
+  ];
+  const skipped = renderMemoryResult({ kind: "list", entries, total: 4, truncated: false, skipped: 2 });
+  assert.match(skipped, /共 4 条/, "总数照报");
+  assert.match(skipped, /其中 2 条读取失败，未列出/, "读失败必须显式说明");
+
+  const scanned = renderMemoryResult({ kind: "list", entries, total: 2, truncated: false, scanTruncated: true });
+  assert.match(scanned, /超出单次扫描上限/, "扫描没扫全也必须说明");
+
+  // 两者都没有时不得画蛇添足
+  const clean = renderMemoryResult({ kind: "list", entries, total: 2, truncated: false });
+  assert.doesNotMatch(clean, /读取失败|扫描上限/);
+});
+
 test("renderMemoryResult/search：空命中给换词提示，命中给条数与条目", () => {
   const empty = renderMemoryResult({ kind: "search", query: "不存在的东西", results: [] });
   assert.match(empty, /没找到包含「不存在的东西」/);

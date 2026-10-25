@@ -1,8 +1,22 @@
 // search：关键词检索的打分口径与范围过滤（纯函数 + 只读 IO）。
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import fs, {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { listMemoryEntries, scoreEntry, searchMemory, snippetOf, splitQuery, SEARCH_SCAN_MAX_FILES } from "../lib/search.js";
 import { categoryDir } from "../lib/global-store.js";
@@ -262,19 +276,89 @@ test("listMemoryEntries：只读入选的 top-N，不读全量正文", () => {
   }
 });
 
-// 扫描上限是**每目录**的，不是全局：被扫满时要如实说「没扫全」，
-// 不能只说「因 limit 截断」——后者会让用户以为排序覆盖了所有条目。
-test("listMemoryEntries：目录被扫满时如实回报 scanTruncated", () => {
+// 扫描上限是**每目录**的，不是全局：确证还有未收录条目时要如实说「没扫全」。
+// 判据不能是 rels.length >= 上限——恰好装满上限时一条都没丢，长度判会把
+// 「2000 条整」误报成有遗漏。这里 1999/2000/2001 三分支钉住边界：
+// 同一目录先建 2001 个文件，再逐个删到 2000、1999，避免重复建文件的等待。
+test("listMemoryEntries：scanTruncated 只在上限之外真有条目时为真（1999/2000/2001）", () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-scancap-"));
+  const dir = categoryDir(root, "work-profile");
+  const nameOf = (i) => `f${String(i).padStart(5, "0")}.md`;
   try {
-    const dir = categoryDir(root, "work-profile");
     mkdirSync(dir, { recursive: true });
-    for (let i = 0; i < SEARCH_SCAN_MAX_FILES + 5; i += 1) {
-      writeFileSync(join(dir, `f${String(i).padStart(5, "0")}.md`), "---\ntitle: t\n---\nb\n");
+    const total = SEARCH_SCAN_MAX_FILES + 1;
+    for (let i = 0; i < total; i += 1) {
+      writeFileSync(join(dir, nameOf(i)), "---\ntitle: t\n---\nb\n");
     }
-    const out = listMemoryEntries(root, { limit: 10 });
-    assert.equal(out.scanTruncated, true, "目录被扫满必须显式回报");
-    assert.equal(out.truncated, true);
+
+    const exactlyOneMore = listMemoryEntries(root, { limit: 10 });
+    assert.equal(exactlyOneMore.scanTruncated, true, "2001 条：上限外还有 1 条，必须回报没扫全");
+    assert.equal(exactlyOneMore.total, SEARCH_SCAN_MAX_FILES, "只有上限内的条目进入候选");
+
+    rmSync(join(dir, nameOf(total - 1)));
+    const exactlyFull = listMemoryEntries(root, { limit: 10 });
+    assert.equal(exactlyFull.scanTruncated, false, "2000 条恰好装满上限，一条都没丢，不得误报");
+    assert.equal(exactlyFull.total, SEARCH_SCAN_MAX_FILES);
+
+    rmSync(join(dir, nameOf(total - 2)));
+    const belowFull = listMemoryEntries(root, { limit: 10 });
+    assert.equal(belowFull.scanTruncated, false, "1999 条未到上限");
+    assert.equal(belowFull.total, SEARCH_SCAN_MAX_FILES - 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 入选 top-N 后读正文失败（读取期间被删/权限/坏路径）不能编造成空条目，
+// 但也不能悄悄消失让 total 与 entries 自相矛盾：必须单独计数并给出可断言的不变量。
+// 这里拦截 readFileSync 制造读失败：Windows 上 chmod 挡不住读取，目录占位则连 isFile 都过不了。
+test("listMemoryEntries：读正文失败只计入 skipped，不编造条目也不静默吞掉", () => {
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-skip-"));
+  const dir = categoryDir(root, "work-profile");
+  const original = fs.readFileSync;
+  const withReadFailure = (fn) => {
+    fs.readFileSync = function patched(target, ...rest) {
+      if (String(target).endsWith("b.md")) {
+        const error = new Error("模拟读取失败");
+        error.code = "EACCES";
+        throw error;
+      }
+      return original.call(fs, target, ...rest);
+    };
+    syncBuiltinESMExports(); // ESM 具名导入是快照，改了 fs 必须同步才生效
+    try {
+      return fn();
+    } finally {
+      fs.readFileSync = original;
+      syncBuiltinESMExports();
+    }
+  };
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of ["a.md", "b.md", "c.md", "d.md"]) {
+      entryFile(dir, name, { title: name.replace(/\.md$/, ""), body: "正文" });
+    }
+    // 让 b.md 成为最新条目：limit=2 时它必然入选，才能验证「截断 + 读失败」并存。
+    // 时间戳必须明显晚于其它条目——同一毫秒内写入的 mtime 有小数差，+1ms 仍可能排不上。
+    const newest = new Date(Date.now() + 60_000);
+    utimesSync(join(dir, "b.md"), newest, newest);
+
+    const out = withReadFailure(() => listMemoryEntries(root, { limit: 10 }));
+    assert.equal(out.total, 4, "total 是扫描到的候选数，读失败不改变它");
+    assert.equal(out.entries.length, 3);
+    assert.equal(out.skipped, 1, "读失败的那条必须显式计数");
+    assert.equal(out.entries.length + out.skipped, out.total, "不变量：列出的 + 跳过的 = 被选中的");
+    assert.ok(out.entries.every((e) => e.name !== "b.md"), "读失败的行不得以空条目形式出现");
+    assert.ok(out.entries.every((e) => e.title.length > 0), "不得为对齐数字编造空标题");
+    assert.equal(out.truncated, false, "读失败不是 limit 截断，两个事实不能混为一谈");
+    assert.equal(out.scanTruncated, false);
+
+    // limit 截断与读失败并存：picked = [b.md, 次新]，b.md 读失败 → 1 条 + skip 1 条
+    const capped = withReadFailure(() => listMemoryEntries(root, { limit: 2 }));
+    assert.equal(capped.truncated, true);
+    assert.equal(capped.skipped, 1);
+    assert.equal(capped.entries.length + capped.skipped, 2, "不变量对 picked 成立，与 limit 无关");
+    assert.equal(capped.entries.length, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -282,25 +366,141 @@ test("listMemoryEntries：目录被扫满时如实回报 scanTruncated", () => {
 
 // 符号链接目录不得被跟随：跨平台分发时 Linux/macOS 的 symlink 目录
 // isDirectory() 为 true，会递归到 storageRoot 之外。
+//
+// 三个平台事实决定了这条测试怎么写（本机逐一实测）：
+//   1. Windows 非管理员建不了 symlink（symlinkSync 抛 EPERM），故优先走 junction；
+//   2. junction 的 Dirent 是 isSymbolicLink=true **但 isDirectory=false**——
+//      也就是说在 Windows 上即使删掉守卫，walkMarkdown 也递归不进去，
+//      光靠 junction 无法区分「守卫生效」与「守卫不存在」；
+//   3. Linux/macOS 的真实 symlink 目录 isDirectory=true，守卫失效时会真越界。
+// 所以本测试分两层：真实链接（symlink 优先、退 junction）证明「不越界」；
+// 再用 readdirSync 补丁把 junction 按 POSIX 口径重分类为目录，模拟 3 的场景，
+// 让「守卫被删」在本机也一定变红。两层都失败才 skip。
 test("searchMemory：符号链接目录不跟随（防越界读）", (t) => {
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-symlink-"));
   const outside = mkdtempSync(join(tmpdir(), "dsh-keepsake-outside-"));
-  try {
-    entryFile(outside, "leak.md", { title: "外部", description: "机密", body: "TOPSECRETSYMLINK" });
-    const dir = categoryDir(root, "work-profile");
-    mkdirSync(dir, { recursive: true });
-    entryFile(dir, "ok.md", { title: "正常", body: "普通内容" });
+  const probeName = "leak.md";
+  const probePath = join(outside, probeName);
+  const dir = categoryDir(root, "work-profile");
+  const linkPath = join(dir, "linkdir");
+
+  // 清理顺序有讲究：Windows 上 rmSync(link, {recursive:true}) 对 junction 有删穿风险，
+  // 一旦删穿就会把 outside 里的探针文件一起带走，于是「负向断言」下次跑直接假绿。
+  // 这里先只摘链接本身（unlink 对 junction 是安全的，实测不碰目标），
+  // 摘不掉再退 rmdir；确认探针文件还在之后才删 outside。
+  const removeLink = () => {
+    if (!existsSync(linkPath)) return;
     try {
-      symlinkSync(outside, join(dir, "linkdir"), "dir");
-    } catch (error) {
-      // Windows 无权限建 symlink 时跳过（CI/受限环境），不算失败
-      t.skip(`本环境无法创建符号链接：${error.code}`);
-      return;
+      unlinkSync(linkPath);
+    } catch {
+      try {
+        rmdirSync(linkPath);
+      } catch {
+        // 实在摘不掉：至少别用 recursive 去冒删穿目标的险，留给 root 清理
+      }
     }
-    const out = searchMemory(root, "TOPSECRETSYMLINK");
-    assert.equal(out.total, 0, "storageRoot 外的文件不得被检索到");
-  } finally {
+  };
+  const cleanup = () => {
+    removeLink();
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  };
+
+  try {
+    entryFile(outside, probeName, { title: "外部", description: "机密", body: "TOPSECRETSYMLINK" });
+    mkdirSync(dir, { recursive: true });
+    entryFile(dir, "ok.md", { title: "正常", body: "普通内容" });
+
+    // 建链接：symlink（POSIX/有权限的 Windows）→ junction（Windows 非管理员）。
+    // 两者都还要经 linkIsLive 验证真的建成：只看返回值会把「命令没报错但链接
+    // 没落地」当成功，那样负向断言就变成了假绿。
+    let linked = false;
+    try {
+      symlinkSync(outside, linkPath, "dir");
+      linked = true;
+    } catch {
+      // 落到 junction
+    }
+    if (!linked && process.platform === "win32") {
+      // Git Bash 下 cmd 的 / 参数会被 MSYS 转义成路径，故显式传数组 + windowsVerbatimArguments，
+      // 并给两侧路径都加引号以容纳空格。
+      const made = spawnSync(
+        process.env.ComSpec || "cmd.exe",
+        ["/d", "/s", "/c", `mklink /J "${linkPath}" "${outside}"`],
+        { windowsVerbatimArguments: true, encoding: "utf8" },
+      );
+      linked = made.status === 0;
+    }
+
+    // 验证链接确实存在且真指向 outside：链接没建成时负向断言会假绿，必须在这里拦住。
+    const linkIsLive = () => {
+      try {
+        if (!lstatSync(linkPath).isSymbolicLink()) return false;
+        // 能被 readdir 读到，且读到的正是外部探针——证明链接真的指向 outside 而不是空目录
+        return readdirSync(linkPath).includes(probeName);
+      } catch {
+        return false;
+      }
+    };
+
+    if (!linkIsLive()) {
+      removeLink();
+      t.skip(`本环境无法创建可用的符号链接/junction（symlink EPERM，junction 未建成或被拒）`);
+      return;
+    }
+
+    // 第一层：真实链接下的负向断言——storageRoot 外的文件绝不能被检索到。
+    const out = searchMemory(root, "TOPSECRETSYMLINK");
+    assert.equal(out.total, 0, "storageRoot 外的文件不得被检索到");
+    // 正向对照：同一个查询直接作用在 outside 上必须命中。
+    // 没有这条，「0 命中」也可能只是因为查询/解析本身失效，而不是守卫生效。
+    assert.equal(
+      searchMemory(outside, "TOPSECRETSYMLINK", { projectMemoryDir: outside }).total,
+      1,
+      "正向对照：同一查询直接检索 outside 必须命中（证明是守卫生效，不是查询失效）",
+    );
+
+    // 第二层：把链接按 POSIX 口径重分类成「真目录」，逼出守卫的作用。
+    // Windows junction 的 dirent 本来 isDirectory=false（见文件头注释），
+    // 不重分类的话删掉 lib/search.js 里的守卫这条测试依然绿——等于没有回归保护。
+    const realReaddir = fs.readdirSync;
+    const posixView = function patched(target, options) {
+      const dirents = realReaddir.call(fs, target, options);
+      if (!options || options.withFileTypes !== true) return dirents;
+      if (resolve(String(target)) !== resolve(dir)) return dirents;
+      return dirents.map((entry) => {
+        if (entry.name !== "linkdir") return entry;
+        // 伪装成「Linux 上被跟随的 symlink 目录」：isDirectory 真、isSymbolicLink 仍真。
+        // 守卫（先判 isSymbolicLink）在时会被 continue 掉；守卫没了就会递归进 outside。
+        return new Proxy(entry, {
+          get(obj, prop) {
+            if (prop === "isDirectory") return () => true;
+            if (prop === "isFile") return () => false;
+            const value = Reflect.get(obj, prop);
+            return typeof value === "function" ? value.bind(obj) : value;
+          },
+        });
+      });
+    };
+    fs.readdirSync = posixView;
+    syncBuiltinESMExports(); // ESM 具名导入是快照，改了 fs 必须同步才生效
+    try {
+      const asPosix = searchMemory(root, "TOPSECRETSYMLINK");
+      assert.equal(
+        asPosix.total,
+        0,
+        "守卫失效：symlink 目录被当成普通目录递归，读到了 storageRoot 之外的文件",
+      );
+    } finally {
+      fs.readdirSync = realReaddir;
+      syncBuiltinESMExports();
+    }
+
+    // 先按安全方式摘掉链接，再确认没有删穿到目标目录。
+    // 这条断言放在 try 体内而非 finally：否则它会顶替掉上面真正的失败原因。
+    removeLink();
+    assert.ok(existsSync(probePath), "摘除链接不得删穿到目标目录（outside 探针文件必须还在）");
+  } finally {
+    cleanup(); // 幂等：链接已摘时只回收两个临时根
   }
 });

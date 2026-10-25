@@ -325,3 +325,171 @@ test("/state 带 corrections 面（含 recent 数组），旧形兼容", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 批量纠错 + 按条目归组（P1 增补批） ----
+test("API 批量纠错：两条真实落盘 + 按条目归组能读回", async () => {
+  resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-batch-"));
+  try {
+    const { memoryDir, projectId } = seedProject(root);
+    const { createHash } = await import("node:crypto");
+    const before = readFileSync(join(memoryDir, "deploy.md"), "utf8");
+    const short = createHash("sha1").update(before, "utf8").digest("hex").slice(0, 8);
+    writeFileSync(join(memoryDir, "extra.md"), [
+      "---", 'name: "extra"', 'description: "额外条目"', "metadata:", "  type: project", "---", "", "旧内容。",
+    ].join("\n"));
+    const before2 = readFileSync(join(memoryDir, "extra.md"), "utf8");
+    const short2 = createHash("sha1").update(before2, "utf8").digest("hex").slice(0, 8);
+
+    let callSeq = 0;
+    async function* stream() {
+      const which = callSeq++;
+      const target = which === 0 ? "deploy.md" : "extra.md";
+      const sha = which === 0 ? short : short2;
+      const body = which === 0 ? "开发环境端口 8080。" : "新内容。";
+      yield {
+        type: "text-delta",
+        text: JSON.stringify({
+          ops: [{ action: "write", name: target, scope: "project", type: "project", title: "T", description: "d", sha1: sha, content: body }],
+        }),
+      };
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+    const { ctx, handlers, webRoutes } = fakeCtx({ stream });
+    apply(ctx, { enabled: true, storageRoot: root });
+    captureRoute(handlers, root);
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+
+    const out = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/corrections/correct-batch`,
+      body: {
+        items: [
+          { target: "deploy.md", reason: "端口现在是 8080", scope: "project", projectId },
+          { target: "extra.md", reason: "内容已更新", scope: "project", projectId },
+        ],
+      },
+    });
+    assert.equal(out.status, 200, JSON.stringify(out.json));
+    assert.equal(out.json.outcome, "applied");
+    assert.equal(out.json.writes, 2);
+    assert.equal(out.json.results.length, 2);
+
+    // 两条都真落盘了
+    assert.match(readFileSync(join(memoryDir, "deploy.md"), "utf8"), /8080/);
+    assert.match(readFileSync(join(memoryDir, "extra.md"), "utf8"), /新内容/);
+
+    // 按条目归组：每个 target 一组、各 1 次
+    const grouped = await call(apiRoute.handler, { method: "GET", path: `${API_PATH}/corrections/by-target` });
+    assert.equal(grouped.status, 200);
+    assert.equal(grouped.json.total, 2, "两条 target 各成一组");
+    assert.equal(grouped.json.entries, 2);
+    const deploy = grouped.json.groups.find((g) => g.target === "deploy.md");
+    assert.ok(deploy, "deploy.md 应有归组");
+    assert.equal(deploy.count, 1);
+    assert.equal(deploy.writes, 1);
+
+    // 按单条 target 过滤
+    const one = await call(apiRoute.handler, {
+      method: "GET",
+      path: `${API_PATH}/corrections/by-target?target=${encodeURIComponent("extra.md")}`,
+    });
+    assert.equal(one.status, 200);
+    assert.equal(one.json.total, 1);
+    assert.equal(one.json.groups[0].target, "extra.md");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("API 批量纠错：超上限 400 且一次模型都不调（不许静默截前 N 条）", async () => {
+  resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-batchcap-"));
+  try {
+    seedProject(root);
+    let called = 0;
+    async function* stream() {
+      called += 1;
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+    const { ctx, handlers, webRoutes } = fakeCtx({ stream });
+    apply(ctx, { enabled: true, storageRoot: root });
+    captureRoute(handlers, root);
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+
+    const items = Array.from({ length: 11 }, (_, i) => ({ target: `f${i}.md`, reason: "改" }));
+    const out = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/corrections/correct-batch`,
+      body: { items },
+    });
+    assert.equal(out.status, 400);
+    assert.equal(out.json.code, "E_TOO_MANY");
+    assert.equal(called, 0, "超上限不该跑任何一条");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("API 批量纠错：items 为空/非数组 → 400；单条缺 target/reason → 400", async () => {
+  resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-batch400-"));
+  try {
+    seedProject(root);
+    const { ctx, handlers, webRoutes } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root });
+    captureRoute(handlers, root);
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+
+    const empty = await call(apiRoute.handler, {
+      method: "POST", path: `${API_PATH}/corrections/correct-batch`, body: { items: [] },
+    });
+    assert.equal(empty.status, 400);
+    assert.equal(empty.json.code, "E_EMPTY_BATCH");
+
+    const noItems = await call(apiRoute.handler, {
+      method: "POST", path: `${API_PATH}/corrections/correct-batch`, body: {},
+    });
+    assert.equal(noItems.status, 400);
+
+    const noReason = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/corrections/correct-batch`,
+      body: { items: [{ target: "deploy.md" }] },
+    });
+    assert.equal(noReason.status, 400);
+    assert.equal(noReason.json.code, "E_EMPTY_REASON");
+
+    const noTarget = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/corrections/correct-batch`,
+      body: { items: [{ reason: "改" }] },
+    });
+    assert.equal(noTarget.status, 400);
+    assert.equal(noTarget.json.code, "E_INVALID_TARGET");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("API corrections/by-target：maxGroups 非法 → 400；空库 → 空组", async () => {
+  resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-group400-"));
+  try {
+    seedProject(root);
+    const { ctx, handlers, webRoutes } = fakeCtx();
+    apply(ctx, { enabled: true, storageRoot: root });
+    captureRoute(handlers, root);
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+
+    const bad = await call(apiRoute.handler, { method: "GET", path: `${API_PATH}/corrections/by-target?maxGroups=0` });
+    assert.equal(bad.status, 400);
+
+    const empty = await call(apiRoute.handler, { method: "GET", path: `${API_PATH}/corrections/by-target` });
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.json.groups, []);
+    assert.equal(empty.json.total, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

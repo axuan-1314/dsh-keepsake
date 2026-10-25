@@ -2083,14 +2083,20 @@ async function renderActivityPage() {
     </div>
 
     <div class="card">
-      <h3>纠错记录 <span class="badge">最近 20 条</span></h3>
+      <h3>纠错记录 <span class="badge" id="actLedgerMode">最近 20 条</span></h3>
       <div class="meta" style="margin-bottom:6px">每条纠错都会留快照；改名或删除都可在「快照」「回收站」页找回。</div>
-      ${ledgerRows.length === 0
-        ? '<div class="empty">还没有纠错过。在下面的检索结果里点「纠正这条」，或在对话里用 /memory fix。</div>'
-        : `<div class="tableScroll"><table class="preview">
-            <tr><th style="width:96px">时间</th><th style="width:24%">条目</th><th style="width:88px">原因</th><th>结果</th></tr>
-            ${ledgerRows.map((r) => `<tr><td class="meta">${esc(r.atText)}</td><td><code class="k">${esc(r.target)}</code></td><td class="meta">${esc(r.kindText)}</td><td class="meta">${esc(r.resultText)}</td></tr>`).join("")}
-          </table></div>`}
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button class="btn sm" id="actLedgerFlat" aria-pressed="true">按时间</button>
+        <button class="btn sm" id="actLedgerGrouped" aria-pressed="false">按条目</button>
+      </div>
+      <div id="actLedgerHost">
+        ${ledgerRows.length === 0
+          ? '<div class="empty">还没有纠错过。在下面的检索结果里点「纠正这条」，或在对话里用 /memory fix。</div>'
+          : `<div class="tableScroll"><table class="preview">
+              <tr><th style="width:96px">时间</th><th style="width:24%">条目</th><th style="width:88px">原因</th><th>结果</th></tr>
+              ${ledgerRows.map((r) => `<tr><td class="meta">${esc(r.atText)}</td><td><code class="k">${esc(r.target)}</code></td><td class="meta">${esc(r.kindText)}</td><td class="meta">${esc(r.resultText)}</td></tr>`).join("")}
+            </table></div>`}
+      </div>
     </div>`;
 
   const windowSel = page.querySelector("#actWindow");
@@ -2102,6 +2108,61 @@ async function renderActivityPage() {
   }
   const refreshBtn = page.querySelector("#actRefresh");
   if (refreshBtn) refreshBtn.addEventListener("click", () => renderActivityPage());
+
+  // 记录双视图：按时间（默认，答"最近改了什么"）/ 按条目（答"这条改过几次"）
+  const ledgerHost = page.querySelector("#actLedgerHost");
+  const flatBtn = page.querySelector("#actLedgerFlat");
+  const groupBtn = page.querySelector("#actLedgerGrouped");
+  const modeBadge = page.querySelector("#actLedgerMode");
+  const renderFlat = () => {
+    flatBtn.setAttribute("aria-pressed", "true");
+    groupBtn.setAttribute("aria-pressed", "false");
+    modeBadge.textContent = "最近 20 条";
+    ledgerHost.innerHTML = ledgerRows.length === 0
+      ? '<div class="empty">还没有纠错过。在下面的检索结果里点「纠正这条」，或在对话里用 /memory fix。</div>'
+      : `<div class="tableScroll"><table class="preview">
+          <tr><th style="width:96px">时间</th><th style="width:24%">条目</th><th style="width:88px">原因</th><th>结果</th></tr>
+          ${ledgerRows.map((r) => `<tr><td class="meta">${esc(r.atText)}</td><td><code class="k">${esc(r.target)}</code></td><td class="meta">${esc(r.kindText)}</td><td class="meta">${esc(r.resultText)}</td></tr>`).join("")}
+        </table></div>`;
+  };
+  const renderGrouped = async () => {
+    flatBtn.setAttribute("aria-pressed", "false");
+    groupBtn.setAttribute("aria-pressed", "true");
+    modeBadge.textContent = "按条目归组";
+    ledgerHost.innerHTML = '<div class="meta">读取中…</div>';
+    let out;
+    try {
+      out = await api("corrections/by-target?maxGroups=50");
+    } catch (err) {
+      ledgerHost.innerHTML = `<div class="meta">读取失败：${esc(err.message)}</div>`;
+      return;
+    }
+    const groups = Array.isArray(out.groups) ? out.groups : [];
+    if (groups.length === 0) {
+      ledgerHost.innerHTML = '<div class="empty">还没有纠错记录。</div>';
+      return;
+    }
+    ledgerHost.innerHTML = `
+      <div class="meta" style="margin-bottom:6px">${groups.length} 个条目被改过，共 ${Number(out.entries ?? 0)} 次${out.truncated ? "（只显示前 50 个条目）" : ""}。点「看历史」展开这一条每次改了什么。</div>
+      <div class="tableScroll"><table class="preview">
+        <tr><th style="width:26%">条目</th><th style="width:64px">次数</th><th style="width:120px">最近改动</th><th>原因</th><th style="width:72px"></th></tr>
+        ${groups.map((g, i) => `<tr>
+          <td><code class="k">${esc(g.target)}</code><div class="meta">${esc(scopeLabelOf(g.scope))}</div></td>
+          <td>${esc(String(g.count ?? 0))}</td>
+          <td class="meta">${esc(L.relativeTimeOf(g.lastAt))} · 改 ${esc(String(g.writes ?? 0))} / 删 ${esc(String(g.deletes ?? 0))}</td>
+          <td class="meta">${esc((g.kinds || []).join("、"))}</td>
+          <td><button class="btn sm" data-hist="${i}">看历史</button></td>
+        </tr>`).join("")}
+      </table></div>`;
+    for (const btn of Array.from(ledgerHost.querySelectorAll("[data-hist]"))) {
+      btn.addEventListener("click", () => {
+        const g = groups[Number(btn.getAttribute("data-hist"))];
+        openCorrectionHistoryDialog(g);
+      });
+    }
+  };
+  if (flatBtn) flatBtn.addEventListener("click", renderFlat);
+  if (groupBtn) groupBtn.addEventListener("click", renderGrouped);
 
   const queryInput = page.querySelector("#actQuery");
   const resultsHost = page.querySelector("#actResults");
@@ -2125,10 +2186,16 @@ async function renderActivityPage() {
       return;
     }
     resultsHost.innerHTML = `
-      <div class="meta" style="margin:8px 0 4px">找到 ${Number(out.total ?? hits.length)} 条${out.truncated ? `，显示前 ${hits.length} 条` : ""}</div>
+      <div class="meta" style="margin:8px 0 4px">找到 ${Number(out.total ?? hits.length)} 条${out.truncated ? `，显示前 ${hits.length} 条` : ""}。</div>
+      <div class="row" style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <button class="btn sm" id="actBatchClear">清空选择</button>
+        <span class="meta" id="actBatchCount">已选 0 条</span>
+        <button class="btn sm primary" id="actBatchFix" disabled>批量纠正</button>
+      </div>
       <div class="tableScroll"><table class="preview">
-        <tr><th style="width:26%">标题</th><th style="width:14%">位置</th><th>摘要</th><th style="width:96px"></th></tr>
+        <tr><th style="width:36px"></th><th style="width:24%">标题</th><th style="width:14%">位置</th><th>摘要</th><th style="width:96px"></th></tr>
         ${hits.map((h, i) => `<tr>
+          <td><input type="checkbox" data-pick="${i}" aria-label="选择 ${esc(h.title)}"></td>
           <td>${esc(h.title)}<div class="meta"><code class="k">${esc(h.name)}</code></div></td>
           <td class="meta">${esc(scopeLabelOf(h.scope))}</td>
           <td class="meta">${esc(h.description || h.snippet || "")}</td>
@@ -2141,6 +2208,24 @@ async function renderActivityPage() {
         openCorrectionDialog(hit, () => renderActivityPage());
       });
     }
+    // 批量纠错：勾选多条后一次提交。上限 10 条与服务端同口径——
+    // 客户端先挡，免得用户填完 20 条诉求才被服务端 400 弹回。
+    const batchBtn = resultsHost.querySelector("#actBatchFix");
+    const countLabel = resultsHost.querySelector("#actBatchCount");
+    const pickBoxes = Array.from(resultsHost.querySelectorAll("[data-pick]"));
+    const selected = () => pickBoxes.filter((b) => b.checked).map((b) => hits[Number(b.getAttribute("data-pick"))]).filter(Boolean);
+    const syncBatch = () => {
+      const n = selected().length;
+      countLabel.textContent = `已选 ${n} 条${n > CORRECTION_BATCH_MAX ? `（上限 ${CORRECTION_BATCH_MAX} 条）` : ""}`;
+      batchBtn.disabled = n === 0 || n > CORRECTION_BATCH_MAX;
+    };
+    for (const box of pickBoxes) box.addEventListener("change", syncBatch);
+    const clearBtn = resultsHost.querySelector("#actBatchClear");
+    if (clearBtn) clearBtn.addEventListener("click", () => { for (const box of pickBoxes) box.checked = false; syncBatch(); });
+    batchBtn.addEventListener("click", () => {
+      openBatchCorrectionDialog(selected(), () => renderActivityPage());
+    });
+    syncBatch();
   };
   const searchBtn = page.querySelector("#actSearch");
   if (searchBtn) searchBtn.addEventListener("click", doSearch);
@@ -2165,7 +2250,7 @@ function scopeLabelOf(scope) {
   return labels[s] ?? (s.startsWith("global:") ? s.slice(7) : s || "—");
 }
 
-/** 纠错对话框：诉求必填（空诉求后端会直接拒，这里先挡住不白烧一次调用）。
+/** 单条纠错对话框：诉求必填（空诉求后端会直接拒，这里先挡住不白烧一次调用）。
  *  结构沿用面板既有 mask/dialog + trapFocus（键盘可达、Esc 可退），不另造一层。 */
 function openCorrectionDialog(hit, onDone) {
   const kinds = L.correctionKindOptions();
@@ -2240,6 +2325,158 @@ function openCorrectionDialog(hit, onDone) {
       go.textContent = "提交纠正";
     }
   });
+}
+
+/** 批量纠错使用的上限（与服务端 CORRECTION_MAX_BATCH 同口径；客户端先挡免得填完才被 400）。 */
+const CORRECTION_BATCH_MAX = 10;
+
+/**
+ * 批量纠错对话框：每条一个诉求框，一次提交多条。
+ * 逐条结局必须逐条展示——「3 条成功 1 条失败」报成整批失败或整批成功都是谎报。
+ */
+function openBatchCorrectionDialog(hits, onDone) {
+  const list = Array.isArray(hits) ? hits.filter((h) => h && typeof h.name === "string") : [];
+  if (list.length === 0) return;
+  if (list.length > CORRECTION_BATCH_MAX) {
+    toast(`单批最多 ${CORRECTION_BATCH_MAX} 条（已选 ${list.length} 条）`, "err");
+    return;
+  }
+  const kinds = L.correctionKindOptions();
+  const layer = document.createElement("div");
+  layer.innerHTML = `
+    <div class="mask">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(720px,96vw)">
+        <h2>批量纠正 ${list.length} 条记忆</h2>
+        <div class="meta">每条一次模型调用，逐条独立成败。诉求写清正确值；留空的条目会被跳过（不扣调用）。改动都会留快照。</div>
+        <div style="max-height:52vh;overflow:auto;margin-top:8px">
+          ${list.map((h, i) => `
+            <div style="border-top:1px solid var(--dsw-alias-border-l2, #3333);padding:8px 0">
+              <div style="display:flex;gap:8px;align-items:center">
+                <code class="k">${esc(h.name)}</code>
+                <span class="meta">${esc(scopeLabelOf(h.scope))}</span>
+                <span class="meta">${esc(h.title || "")}</span>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <select class="inp" data-bkind="${i}" style="width:auto">
+                  ${kinds.map((k) => `<option value="${esc(k.value)}">${esc(k.label)}</option>`).join("")}
+                </select>
+                <input class="inp" data-breason="${i}" style="flex:1" placeholder="这条哪里不对（留空 = 跳过这条）">
+              </div>
+            </div>`).join("")}
+        </div>
+        <div class="meta" id="batchStatus"></div>
+        <div class="foot">
+          <button class="btn" data-cancel>取消</button>
+          <button class="btn primary" data-go>提交批量纠正</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.appendChild(layer);
+  const close = () => {
+    offFocus();
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const offFocus = L.trapFocus(layer, close);
+  layer.querySelector(".mask").addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("mask")) close();
+  });
+  layer.querySelector("[data-cancel]").addEventListener("click", close);
+  const go = layer.querySelector("[data-go]");
+  const status = layer.querySelector("#batchStatus");
+  go.addEventListener("click", async () => {
+    const items = [];
+    for (let i = 0; i < list.length; i += 1) {
+      const reason = (layer.querySelector(`[data-breason="${i}"]`).value ?? "").trim();
+      if (reason.length === 0) continue; // 留空 = 跳过该条（不扣调用）
+      items.push({
+        target: list[i].name,
+        reason,
+        kind: layer.querySelector(`[data-bkind="${i}"]`).value,
+        scope: list[i].scope,
+        projectId: list[i].projectId || undefined,
+      });
+    }
+    if (items.length === 0) {
+      status.textContent = "没有填写任何诉求——至少填一条再提交。";
+      return;
+    }
+    go.disabled = true;
+    go.textContent = "纠正中…";
+    status.textContent = `正在逐条纠正 ${items.length} 条（每条一次调用）…`;
+    let out;
+    try {
+      out = await apiPost("corrections/correct-batch", { items });
+    } catch (err) {
+      status.textContent = "批量纠正失败：" + err.message + "（未提交成功的条目记忆未改动）";
+      go.disabled = false;
+      go.textContent = "提交批量纠正";
+      return;
+    }
+    // 逐条结局逐条展示：不得把 partial 说成成功或失败
+    const results = Array.isArray(out.results) ? out.results : [];
+    const lines = results.map((r) => {
+      const target = r.target || "（未指名）";
+      if (r.outcome === "applied") return `✓ ${target}：改 ${r.writes ?? 0} / 删 ${r.deletes ?? 0}`;
+      if (r.outcome === "needs-input") return `– ${target}：说明不够具体，未改动`;
+      if (r.outcome === "nothing") return `– ${target}：判断无需改动`;
+      return `✗ ${target}：${r.error || "失败"}`;
+    });
+    const head = out.outcome === "applied" ? "全部成功"
+      : out.outcome === "partial" ? "部分成功"
+        : "全部失败";
+    status.innerHTML = `${esc(head)}（${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除 / ${out.failed ?? 0} 条失败）<br>${lines.map(esc).join("<br>")}`;
+    go.disabled = false;
+    go.textContent = "提交批量纠正";
+    if (out.outcome !== "error") {
+      toast(`批量纠正：${head}（${out.writes ?? 0} 改 / ${out.deletes ?? 0} 删）`, out.outcome === "partial" ? "err" : "ok");
+      if (typeof onDone === "function") onDone();
+    }
+  });
+}
+
+/** 单条目的纠错历史（按条目视图点「看历史」）：按时间列出这一条的每次改动。 */
+function openCorrectionHistoryDialog(group) {
+  const g = group && typeof group === "object" ? group : {};
+  const rows = Array.isArray(g.rows) ? g.rows : [];
+  const kinds = L.correctionKindOptions();
+  const kindLabel = (v) => kinds.find((k) => k.value === v)?.label ?? (v || "—");
+  const layer = document.createElement("div");
+  layer.innerHTML = `
+    <div class="mask">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(640px,94vw)">
+        <h2>纠错历史：${esc(g.target || "—")}</h2>
+        <div class="meta">位置 ${esc(scopeLabelOf(g.scope))} · 共改过 ${esc(String(g.count ?? 0))} 次（累计改写 ${esc(String(g.writes ?? 0))} / 删除 ${esc(String(g.deletes ?? 0))}）</div>
+        ${rows.length === 0
+          ? '<div class="empty">没有可展示的历史明细。</div>'
+          : `<div class="tableScroll"><table class="preview">
+              <tr><th style="width:110px">时间</th><th style="width:100px">原因</th><th style="width:120px">改动</th><th>校验失败</th></tr>
+              ${rows.map((r) => `<tr>
+                <td class="meta">${esc(L.relativeTimeOf(r.at))}</td>
+                <td class="meta">${esc(kindLabel(r.kind))}</td>
+                <td class="meta">改 ${esc(String(r.writes ?? 0))} / 删 ${esc(String(r.deletes ?? 0))}</td>
+                <td class="meta">${esc(String(r.verifyFailed ?? 0))}</td>
+              </tr>`).join("")}
+            </table></div>`}
+        <div class="meta">改正本身已落进条目；原始旧文在「快照」页，删除的条目在「回收站」页。</div>
+        <div class="foot"><button class="btn" data-close>关闭</button></div>
+      </div>
+    </div>`;
+  dialogHost.appendChild(layer);
+  const close = () => {
+    offFocus();
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const offFocus = L.trapFocus(layer, close);
+  layer.querySelector(".mask").addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("mask")) close();
+  });
+  layer.querySelector("[data-close]").addEventListener("click", close);
 }
 
 // ============ 页面：快照（批前快照：列表 + 整快照恢复 / 单文件恢复） ============

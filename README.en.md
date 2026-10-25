@@ -9,7 +9,7 @@
 
 > A cross-session memory plugin for DSH (DeepSeek Harness): things you discussed are remembered automatically and carried into your next conversation — no need to re-explain context every time. Ships with a local memory-management panel where you can see and edit everything that was recorded.
 
-- **Version**: 0.6.4 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
+- **Version**: 0.7.1 (see `package.json` for the source of truth; see [CHANGELOG.md](CHANGELOG.md) for the change history)
 - **Host**: DSH 0.2.0-rc.2 (installable on the `web` / `headless` / `desktop` profiles); `package.json` declares the DSH peer range, so the host runs a version-compatibility check at install/startup and asks for explicit confirmation before installing a mismatched build
 - **Distribution**: GitHub repo tag tarball (plus local clone for development); upgrading is covered in [Upgrade](#upgrade) (DSH plugins do not auto-update)
 - **Data location**: everything stays local under `~/.dsh/memory/`; nothing is uploaded. The API and panel are loopback-only.
@@ -191,7 +191,7 @@ Extraction and idle review can only write or delete — the model has no way to 
 Extraction, injection, idle review and correction used to be observable in four separate places, so answering "what did the last turn actually do" meant bouncing around the panel. The panel's Activity page merges them into one timeline ordered by time.
 
 - **Attribution stays honest**: extraction events carry a session id and are matched per session; injection / idle review / correction are process-level or explicit actions and are only placed in the window — **no causal story is invented** (it never claims "because X was injected, Y was written").
-- **Window**: 30 minutes by default, switchable to 10 minutes / 1 hour / 3 hours / 1 day; requests longer than a week are clamped and the effective window is reported.
+- **Window**: 30 minutes by default, switchable to 10 minutes / 30 minutes / 1 hour / 3 hours / 1 day; requests longer than a week are clamped and the effective window is reported.
 - **Empty states are distinguishable**: "host provides no activity data" (old version / not wired) reads differently from "no activity in the last N minutes" — identical wording for both would be the most misleading option.
 - **Failures stand out**: failed events are flagged, not blended in with successes.
 - Keyword search and the correction ledger live on the same page — they are the two halves of the same "find it, then fix it" flow.

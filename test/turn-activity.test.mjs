@@ -1,7 +1,7 @@
 // turn-activity：四面观测按会话与时间窗归并的派生视图（纯函数）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collectEvents, turnActivity, turnEventLine, turnWindowText, TURN_WINDOW_MS } from "../lib/turn-activity.js";
+import { collectEvents, turnActivity, TURN_WINDOW_MS } from "../lib/turn-activity.js";
 
 const NOW = Date.parse("2026-10-25T12:00:00.000Z");
 const MIN = 60 * 1000;
@@ -96,19 +96,38 @@ test("turnActivity：limit 生效且 truncated 如实", () => {
   assert.equal(out.total, 5);
 });
 
-test("turnEventLine：时分秒 + 标签 + 文本；坏输入不炸", () => {
-  const line = turnEventLine({ at: NOW, title: "提取", detail: "已写 1 条" });
-  assert.match(line.time, /^\d{2}:\d{2}:\d{2}$/);
-  assert.equal(line.label, "提取");
-  assert.equal(line.text, "已写 1 条");
-  assert.doesNotThrow(() => turnEventLine(null));
-  assert.doesNotThrow(() => turnEventLine({}));
+// 越界时间戳：数字型 8.64e15+1 / 1e17 原先一路走到 new Date().toISOString() 才抛
+// RangeError，把整个「最近活动」页打成 500。msOf 现在做范围夹取。
+test("collectEvents：越界数字时间戳不炸（RangeError 曾整页 500）", () => {
+  assert.doesNotThrow(() => collectEvents({
+    extractionLog: { runs: [{ at: 8.64e15 + 1, sessionId: "s", outcome: "ok" }] },
+    now: NOW,
+  }));
+  assert.doesNotThrow(() => collectEvents({ injection: { count: 1, lastAt: 1e17, lastChars: 1 }, now: NOW }));
+  assert.doesNotThrow(() => collectEvents({ idleReview: { lastAt: 1e17, runs: 1 }, now: NOW }));
+  // 越界事件被跳过，不是被悄悄夹到边界、编成一条假事件
+  const out = collectEvents({ extractionLog: { runs: [{ at: 8.64e15 + 1, sessionId: "s" }] }, now: NOW });
+  assert.equal(out.length, 0, "越界时间戳的事件应被丢弃，不编造归属时间");
 });
 
-test("turnWindowText：分钟/小时/天人话", () => {
-  assert.equal(turnWindowText({ since: NOW - 30 * MIN, until: NOW }), "最近 30 分钟的活动");
-  assert.equal(turnWindowText({ since: NOW - 120 * MIN, until: NOW }), "最近 2 小时的活动");
-  assert.equal(turnWindowText({ since: NOW - 3 * 24 * 60 * MIN, until: NOW }), "最近 3 天的活动");
-  assert.equal(turnWindowText(null), "最近一段时间的活动");
-  assert.equal(turnWindowText({ since: "x" }), "最近一段时间的活动");
+test("collectEvents：合法但久远的数字时间戳仍然保留（别把夹取写成一律丢弃）", () => {
+  const out = collectEvents({ injection: { count: 1, lastAt: NOW - MIN, lastChars: 10 }, now: NOW });
+  assert.equal(out.length, 1);
+  assert.equal(out[0].at, NOW - MIN);
+});
+
+// 非法窗口：since > until 原先回报负宽度，面板算成「最近 0 分钟」，
+// 看起来像刚看过、没事发生。
+test("turnActivity：since > until 钳到 until，不回报负宽度窗口", () => {
+  const out = turnActivity(snapshots(), { since: NOW + 60 * MIN, until: NOW });
+  assert.equal(out.window.until, NOW);
+  assert.equal(out.window.since, NOW, "非法窗口钳成零宽");
+  assert.ok(out.window.until - out.window.since >= 0, "窗口宽度不得为负");
+  assert.equal(out.total, 0);
+});
+
+test("turnActivity：越界 since（1e308）不产生负宽度窗口", () => {
+  const out = turnActivity(snapshots(), { since: 1e308, until: NOW });
+  assert.ok(out.window.until - out.window.since >= 0, "1e308 也要钳住");
+  assert.equal(out.window.since, NOW);
 });

@@ -1439,6 +1439,39 @@ test("correctionsSummary：零值/null 不装饰，成功与失败各自可见",
   assert.equal(L.correctionsSummary({ failed: 1 }), "未生效 1 次");
 });
 
+// 写后校验回滚的改动原先埋在 applied 里：界面只说「已纠正 N 次（改写 X）»，
+// 用户以为全改成了，实际有一处被打回。
+test("correctionsSummary：verifyFailed 必须单独露面，不能被成功吞掉", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const line = L.correctionsSummary({ applied: 1, writes: 2, deletes: 0, verifyFailed: 1 });
+  assert.match(line, /已纠正 1 次/, "成功部分照常报");
+  assert.match(line, /校验回滚 1 处/, "被打回的改动必须可见");
+  assert.doesNotMatch(L.correctionsSummary({ applied: 1, writes: 2, deletes: 0, verifyFailed: 0 }), /校验回滚/, "零值不装饰");
+});
+
+test("idleReviewSummary：零值/null 不装饰；挡回必须带原因可见", async () => {
+  const L = await import("../lib/panel-logic.js");
+  assert.equal(L.idleReviewSummary(undefined), null);
+  assert.equal(L.idleReviewSummary({}), null, "全零不印 0 装饰");
+  assert.match(L.idleReviewSummary({ runs: 2, written: 1, deletes: 1, skipped: 1 }), /整理 2 次/);
+  // 只被挡回、一次都没跑：这正是「开关开着却毫无动静」的现场，必须说清原因
+  const blocked = L.idleReviewSummary({ rejected: 3, lastRejectReason: "in-flight" });
+  assert.match(blocked, /挡回 3 次/);
+  assert.match(blocked, /另一个会话的整理正在跑/);
+});
+
+test("pagesGenerationSummary：生成与失败都可见，零值不装饰", async () => {
+  const L = await import("../lib/panel-logic.js");
+  assert.equal(L.pagesGenerationSummary(undefined), null);
+  assert.equal(L.pagesGenerationSummary({}), null);
+  assert.equal(L.pagesGenerationSummary({ generations: 2, lastChars: 5000 }), "生成 2 次 · 最近 5000 字");
+  const withError = L.pagesGenerationSummary({ generations: 1, errors: 2, lastError: "模型超时" });
+  assert.match(withError, /生成 1 次/);
+  assert.match(withError, /失败 2 次（模型超时）/);
+  // 只有失败没有成功也要显示（页从来没生成成功 = 最该知道的情况）
+  assert.equal(L.pagesGenerationSummary({ errors: 1, lastError: "路由缺失" }), "失败 1 次（路由缺失）");
+});
+
 test("correctionRows：四种结局人话化，坏行跳过，相对时间容错", async () => {
   const L = await import("../lib/panel-logic.js");
   const rows = L.correctionRows([
@@ -1464,6 +1497,20 @@ test("correctionKindOptions：五种类型全部给中英对照", async () => {
   assert.equal(opts.length, 5);
   assert.deepEqual(opts.map((o) => o.value).sort(), ["duplicate", "other", "outdated", "wrong-fact", "wrong-scope"]);
   assert.ok(opts.every((o) => typeof o.label === "string" && o.label.length > 0));
+});
+
+// 结构校验：面板的中文映射键集必须 ⊇ 纠错模块的权威枚举集。
+// 原先只有硬编码的「五个值都在」测试——往 CORRECTION_KINDS 里加第六种类型时，
+// 面板不会红，英文枚举会在界面上露出来（82c5bfc 修的就是这类漂移的复发路径）。
+test("结构校验：CORRECTION_KIND_TEXT 键集 ⊇ CORRECTION_KINDS（加新类型必须同时给中文）", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const C = await import("../lib/corrections.js");
+  const mapped = new Set(L.correctionKindOptions().map((o) => o.value));
+  const missing = C.CORRECTION_KINDS.filter((kind) => !mapped.has(kind));
+  assert.deepEqual(missing, [], `面板缺这些类型的中文映射：${missing.join(", ")}`);
+  for (const kind of C.CORRECTION_KINDS) {
+    assert.notEqual(L.correctionKindText(kind), kind, `${kind} 未翻译，界面上会露出英文枚举`);
+  }
 });
 
 test("turnActivityRows：失败事件涂红标记，坏行跳过，时间格式化", async () => {

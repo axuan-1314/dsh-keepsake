@@ -9,6 +9,7 @@ import {
   buildIdleReviewPayload,
   idleReviewSnapshot,
   parseIdleReviewOutput,
+  recordIdleReviewRejected,
   runIdleReview,
 } from "../lib/idle-review.js";
 import { projectMemoryPaths } from "../lib/paths.js";
@@ -160,3 +161,47 @@ test("runIdleReview：LLM/解析/落盘失败都记 error，不抛出", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// 被调度层挡回（另一个会话的整理在跑 / 插件在卸载）原先完全静默：
+// 用户只看到「开关开着、一次都没跑」，原因在界面上根本不存在。
+test("recordIdleReviewRejected：挡回单独计数，不混进 runs", () => {
+  __resetIdleReviewStateForTest();
+  assert.equal(idleReviewSnapshot().rejected, 0);
+  assert.equal(idleReviewSnapshot().lastRejectReason, null);
+
+  recordIdleReviewRejected("in-flight");
+  recordIdleReviewRejected("in-flight");
+  recordIdleReviewRejected("aborted");
+  const after = idleReviewSnapshot();
+  assert.equal(after.rejected, 3);
+  assert.equal(after.lastRejectReason, "aborted", "记最近一次原因");
+  assert.equal(after.runs, 0, "挡回不是一次运行，不得污染 runs");
+  __resetIdleReviewStateForTest();
+});
+
+// 挡回原因记的是「最近一次挡回」这件历史事实，跑过之后也保留——
+// 清空会让面板落到兜底文案，把 aborted（插件在卸载）说成「上一轮未结束」（编原因）。
+// 「现在是否仍被挡」由时间戳在渲染层判断，见 panel-logic 的 idleReviewSummary。
+test("runIdleReview：跑过之后保留最近挡回原因（历史事实，不清空）", async () => {
+  __resetIdleReviewStateForTest();
+  const { root, memoryDir } = freshMemory(1);
+  try {
+    recordIdleReviewRejected("aborted");
+    assert.equal(idleReviewSnapshot().lastRejectReason, "aborted");
+    const out = await runIdleReview({
+      storageRoot: root,
+      memoryDir,
+      callLlm: async () => ({ text: "{}" }),
+      applyOps: () => ({ writes: 0, deletes: 0 }),
+    });
+    assert.equal(out.outcome, "skipped");
+    assert.equal(idleReviewSnapshot().lastRejectReason, "aborted", "原因作为历史事实保留");
+    assert.equal(idleReviewSnapshot().rejected, 1);
+    // 但「仍被挡」的时间判据必须已经翻篇（最近运行晚于最近挡回）
+    assert.ok(idleReviewSnapshot().lastAt >= idleReviewSnapshot().lastRejectAt, "时间戳要能区分「现在仍被挡」");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    __resetIdleReviewStateForTest();
+  }
+});
+

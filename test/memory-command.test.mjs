@@ -100,6 +100,12 @@ test("renderCorrectionOutcome：三种结局各自的人话（needs-input 不是
   assert.match(applied, /已纠正 deploy\.md/);
   assert.match(applied, /1 处改写/);
   assert.match(applied, /快照/);
+  assert.doesNotMatch(applied, /校验失败/, "没有 verifyFailed 时不凭空提校验");
+
+  // 有一处改动被写后校验打回：只报「已纠正 X 处改写」等于告诉用户全改成了。
+  const partial = renderCorrectionOutcome({ outcome: "applied", writes: 1, deletes: 0, verifyFailed: 2 }, { target: "deploy.md" });
+  assert.match(partial, /已纠正 deploy\.md/);
+  assert.match(partial, /另有 2 处改动写后校验失败/, "被打回的改动必须明说");
 
   const needs = renderCorrectionOutcome({ outcome: "needs-input", reason: "wrong-fact" }, { target: "a.md", complaint: "感觉不对" });
   assert.match(needs, /不足以确定怎么改/);

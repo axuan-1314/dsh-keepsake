@@ -1604,6 +1604,13 @@ function buildPipeHealthCard(data) {
   // 纠错面一行（已纠正次数 + 未生效次数）——/state.corrections 缺失（旧版宿主）→ null 不渲染。
   const correctionsLine = L.correctionsSummary(data.corrections);
   if (correctionsLine) parts.push(`<div class="meta" style="margin:4px 0 0">纠正：${esc(correctionsLine)}</div>`);
+  // 空闲整理一行（运行/合并/挡回）——/state.idleReview 缺失（旧版宿主）→ null 不渲染。
+  // 挡回必须可见：否则用户只看到「开关开着、一次都没跑」，原因在界面上不存在。
+  const idleLine = L.idleReviewSummary(data.idleReview);
+  if (idleLine) parts.push(`<div class="meta" style="margin:4px 0 0">整理：${esc(idleLine)}</div>`);
+  // 知识页生成面一行（生成次数 + 失败次数）——此前这些计数只记账、面板零消费。
+  const pagesLine = L.pagesGenerationSummary(data.pages);
+  if (pagesLine) parts.push(`<div class="meta" style="margin:4px 0 0">知识页：${esc(pagesLine)}</div>`);
   // 思考档降级摘要（该路由不支持所配档位 → 已按模型默认档重发 N 次）——
   // 只进 journal/log.warn 的话用户既不知道发生了、也无从判断要不要换档位。
   // 零值/旧宿主（无 reasoningDegraded 字段）→ null 不渲染（不印 0 装饰）。
@@ -2310,8 +2317,10 @@ function openCorrectionDialog(hit, onDone) {
       });
       const outcome = String(out.outcome ?? "");
       if (outcome === "applied") {
+        const vf = Number(out.verifyFailed ?? 0);
+        const lost = Number.isFinite(vf) && vf > 0 ? `；另有 ${Math.floor(vf)} 处校验回滚` : "";
         close();
-        toast(`已纠正 ${hit.name}：${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除`);
+        toast(`已纠正 ${hit.name}：${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除${lost}`, Number.isFinite(vf) && vf > 0 ? "err" : "ok");
         if (typeof onDone === "function") onDone();
       } else if (outcome === "needs-input") {
         status.textContent = "说明不够具体，模型没有改动任何记忆。请写清正确的值再试。";
@@ -2319,7 +2328,14 @@ function openCorrectionDialog(hit, onDone) {
         status.textContent = "模型判断这条不需要改动，记忆未变。";
       }
     } catch (err) {
-      status.textContent = "纠正失败：" + err.message + "（记忆未改动）";
+      // 422 no-op-applied 最常见的原因是「写后校验把改动打回了」，服务端会把
+      // verifyFailed 一起回给前端；只显示「纠错未生效」用户不知道该怎么办。
+      const vf = Number(err?.details?.verifyFailed ?? 0);
+      if (Number.isFinite(vf) && vf > 0) {
+        status.textContent = `纠正失败：${Math.floor(vf)} 处改动写后校验没通过、已回滚原样，记忆未改动。可以再试一次，或换一种说法指出正确的值。`;
+      } else {
+        status.textContent = "纠正失败：" + err.message + "（记忆未改动）";
+      }
     } finally {
       go.disabled = false;
       go.textContent = "提交纠正";
@@ -2419,19 +2435,31 @@ function openBatchCorrectionDialog(hits, onDone) {
     const results = Array.isArray(out.results) ? out.results : [];
     const lines = results.map((r) => {
       const target = r.target || "（未指名）";
-      if (r.outcome === "applied") return `✓ ${target}：改 ${r.writes ?? 0} / 删 ${r.deletes ?? 0}`;
+      // 写后校验被打回的处数要跟着走：只写「改 N」会让用户以为这条全改成了。
+      const vf = Number(r.verifyFailed ?? 0);
+      const lost = Number.isFinite(vf) && vf > 0 ? ` · 校验回滚 ${Math.floor(vf)}` : "";
+      if (r.outcome === "applied") return `✓ ${target}：改 ${r.writes ?? 0} / 删 ${r.deletes ?? 0}${lost}`;
       if (r.outcome === "needs-input") return `– ${target}：说明不够具体，未改动`;
       if (r.outcome === "nothing") return `– ${target}：判断无需改动`;
+      // error 分支不把内部英文码直接摊给用户（面板不出现英文枚举是既有规矩）
+      if (Number.isFinite(vf) && vf > 0) return `✗ ${target}：${Math.floor(vf)} 处改动写后校验没通过、已回滚`;
+      if (String(r.error || "") === "no-op-applied") return `✗ ${target}：改动没落在盘上（被闸门拦下）`;
       return `✗ ${target}：${r.error || "失败"}`;
     });
+    // no-change = 全部 needs-input/nothing（模型明确拒绝改动或判断无需改动），
+    // 不是失败——与单条路径 needs-input「仍报 success」同口径。
     const head = out.outcome === "applied" ? "全部成功"
-      : out.outcome === "partial" ? "部分成功"
-        : "全部失败";
-    status.innerHTML = `${esc(head)}（${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除 / ${out.failed ?? 0} 条失败）<br>${lines.map(esc).join("<br>")}`;
+      : out.outcome === "no-change" ? "没有改动"
+        : out.outcome === "partial" ? "部分成功"
+          : "全部失败";
+    const totalVf = Number(out.verifyFailed ?? 0);
+    const vfHead = Number.isFinite(totalVf) && totalVf > 0 ? ` / ${Math.floor(totalVf)} 处校验回滚` : "";
+    status.innerHTML = `${esc(head)}（${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除 / ${out.failed ?? 0} 条失败${esc(vfHead)}）<br>${lines.map(esc).join("<br>")}`;
     go.disabled = false;
     go.textContent = "提交批量纠正";
     if (out.outcome !== "error") {
-      toast(`批量纠正：${head}（${out.writes ?? 0} 改 / ${out.deletes ?? 0} 删）`, out.outcome === "partial" ? "err" : "ok");
+      const vfToast = Number.isFinite(totalVf) && totalVf > 0 ? `，${Math.floor(totalVf)} 处校验回滚` : "";
+      toast(`批量纠正：${head}（${out.writes ?? 0} 改 / ${out.deletes ?? 0} 删${vfToast}）`, out.outcome === "partial" || vfToast ? "err" : "ok");
       if (typeof onDone === "function") onDone();
     }
   });

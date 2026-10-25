@@ -120,6 +120,33 @@ test("applyCorrection：applied 时落记录 + 记账（写/删如实）", async
   }
 });
 
+// 一处改动落成、另一处被写后校验打回：writes>0 故仍判 applied，
+// 但被打回的那处必须出现在回报、ledger、累计计数三处——否则用户以为全改成了。
+test("applyCorrection：verifyFailed>0 时回报/ledger/累计计数三处都带着它", async () => {
+  __resetCorrectionsForTest();
+  const root = newRoot();
+  try {
+    const out = await applyCorrection({
+      storageRoot: root,
+      target: "deploy.md",
+      currentBody: "端口 3000",
+      reason: "现在是 8080",
+      kind: "wrong-fact",
+      parseOps: parseExtractionOutput,
+      applyOps: stubApply({ writes: 1, deletes: 0, verifyFailed: 2 }),
+      callLlm: async () => ({
+        text: JSON.stringify({ ops: [{ action: "write", name: "deploy.md", type: "project", title: "部署端口", content: "端口 8080" }] }),
+      }),
+    });
+    assert.equal(out.outcome, "applied");
+    assert.equal(out.verifyFailed, 2, "回报必须带 verifyFailed");
+    assert.equal(readCorrectionLedger(root)[0].verifyFailed, 2, "ledger 行必须带 verifyFailed");
+    assert.equal(correctionsSnapshot().verifyFailed, 2, "累计计数要能让面板/命令读到");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("applyCorrection：ops 全被闸拦下（writes/deletes 皆 0）→ 判失败，不谎报 applied、不写记录", async () => {
   __resetCorrectionsForTest();
   const root = newRoot();
@@ -140,6 +167,10 @@ test("applyCorrection：ops 全被闸拦下（writes/deletes 皆 0）→ 判失�
     assert.equal(readCorrectionLedger(root).length, 0, "未生效不得留 applied 记录");
     assert.equal(correctionsSnapshot().applied, 0);
     assert.equal(correctionsSnapshot().failed, 1);
+    // 这里的成因就是「写后校验把唯一的改动打回了」——原因必须跟着走，
+    // 否则用户只看到内部码 no-op-applied，不知道是校验问题。
+    assert.equal(out.verifyFailed, 1, "no-op 路径也要带 verifyFailed");
+    assert.equal(correctionsSnapshot().verifyFailed, 1, "累计计数要吃到，面板才说得清");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -422,6 +453,41 @@ test("applyCorrections：全成 → applied；部分成 → partial；全败 →
     });
     assert.equal(none.outcome, "error");
     assert.equal(none.failed, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 批量顶部必须汇总 verifyFailed（= 逐条之和）：面板结果头与 toast 都消费它，
+// 汇总漏了的话「某一条里有一处被打回」在批量视图上完全看不见。
+test("applyCorrections：顶部 verifyFailed 等于逐条之和", async () => {
+  __resetCorrectionsForTest();
+  const root = newRoot();
+  try {
+    const okText = (name) => JSON.stringify({ ops: [{ action: "write", name, type: "project", title: "T", content: "体" }] });
+    const out = await applyCorrections({
+      storageRoot: root,
+      items: [
+        { target: "a.md", reason: "改 A" },
+        { target: "b.md", reason: "改 B" },
+        { target: "c.md", reason: "改 C" },
+      ],
+      parseOps: parseExtractionOutput,
+      applyOps: (() => {
+        let n = 0;
+        return (roots, ops) => {
+          n += 1;
+          // 第 1 条 vf=3、第 2 条 vf=4、第 3 条干净
+          return n === 1 ? { writes: 1, deletes: 0, verifyFailed: 3 }
+            : n === 2 ? { writes: 1, deletes: 0, verifyFailed: 4 }
+              : { writes: 1, deletes: 0, verifyFailed: 0 };
+        };
+      })(),
+      callLlm: async ({ user }) => ({ text: okText(/a\.md/.test(user) ? "a.md" : /b\.md/.test(user) ? "b.md" : "c.md") }),
+    });
+    assert.equal(out.outcome, "applied");
+    assert.deepEqual(out.results.map((r) => r.verifyFailed), [3, 4, 0], "逐条各自的 verifyFailed");
+    assert.equal(out.verifyFailed, 7, "顶部必须是逐条之和");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

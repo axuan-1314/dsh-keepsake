@@ -18,6 +18,54 @@
 
 - **注入预算紧凑索引兜底**：索引段（`globalIndex` / `projectIndex`）整段放不下时，先降级为紧凑索引（分类计数 + 最新 N 行 + 完整索引路径），仍装不下才整段丢弃；不再出现「runtime 开着时全局索引与项目索引同时被挤掉、模型看不到记忆目录」的情况。实现：`buildMemoryContext` 新增惰性 `fallbacks`（可丢段专用，锁定段永不替换；fallback 生成失败按无兜底处理），`/state.injection` 新增 `compactedSegments`（紧凑降级累计，区别于 `droppedSegments`），面板健康卡摘要同步显示「紧凑降级 N」。测试：`inject-channel` 6 条 fallback 单测 + 接线级项目索引 compact 测试（40 条索引超预算 → 注入 `40 entries; showing latest 8` 并记账 `compactedSegments=1`，`droppedSegments=0`）。无新增配置键、无数据迁移。
 
+## [0.7.1] - 2026-10-25
+
+**全面检查后的修复批：2 条 P0 + 4 条 P1 + 8 条 P2/P3 + 一项测试债务。** 对 0.7.0 之后四个提交（组织层三件套 / 纠错闭环与检索命令 / 纠错增强 / 面板枚举翻译）做了四路独立审查，每条发现都用隔离探针复现过；随后又做了两轮独立对抗式审查，抓出的问题（片段定位线性漂移、422 丢掉原因、两阶段落盘的备份空窗与静默回滚失败、安全闸被放宽、两处假绿测试）已在本批内修完。无新增开关、无配置键变更、无数据迁移；测试 1253 → 1286（+33）。
+
+### 修复
+
+- **批量纠错的「逐条失败隔离」原来不成立（P0）**：`applyCorrections` 的循环体没有兜住逐条定位（`resolveBody` / `resolveNeighbors` 会抛 `E_INVALID_SCOPE` / `E_INVALID_PROJECT` / `E_NO_PROJECT`），异常直接冲出整批 → API 报 400 且**响应里没有 `results[]`**。此时前面已成功的条目**已经改了盘、已经花掉 LLM 调用**，用户看到的是「整批没执行」，重试还会让成功的那条再跑一次。现在只把定位层包进 try/catch（`applyCorrection` 内部对 LLM/解析/落盘的失败另有判 error 语义，外层不接管它的返回值），任一条定位失败只废该条并如实进 `results[]`。
+- **纠错读取能读到记忆目录之外的文件（P0）**：`resolveCorrectionBody` 的 project 分支用 `join(memoryDir, target).startsWith(memoryDir)` 判包含性，而这是**字符串前缀**比对——`../memory-extra/secret.md` 规范化后是 `<memDir>-extra/secret.md`，天然以 `memDir` 开头，于是兄弟目录的文件被原样读出、当成 `currentBody` 塞进提示词发给模型（已实测复现）。改为与落盘侧完全同一把尺子 `resolveSafeMemoryTarget`（sanitize + 绝对路径包含性双闸）。
+- **轮次活动条遇越界时间戳整页 500（P1）**：`msOf` 对数字型时间戳无条件放行，`8.64e15+1` / `1e17` 这类值一路走到 `new Date().toISOString()` 才抛 `RangeError`，被 API 接成 500 `E_TURN_ACTIVITY`，把提取/注入/整理/纠错四面本来可看的数据一起打掉。现在 `msOf` 做 Date 可表示范围夹取，越界值返 `null`（各调用点已正确处理 = 跳过该事件，不编造归属时间）。顺带修掉 `since > until` 时回报**负宽度窗口**（面板会算成「最近 0 分钟」，看起来像刚看过、没事发生）——非法窗口钳到 `until`。
+- **全批 `needs-input` / `nothing` 被报成失败（P1）**：批量 `outcome` 原先只看 `applied` 数量，`applied === 0` 一律判 `error`，于是两条都返回「说明不够具体」时面板显示「全部失败（0 条失败）」，同屏逐条却写着「未改动」——三处信息互相矛盾，且 `onDone()` 不触发、列表不刷新。单条路径一直把 `needs-input` 当非失败（命令侧仍报 success），批量现在对齐：新增 `no-change` 档（一条都没成但也没有失败），`error` 只留给「全败」。面板 head 与 toast 同步。
+- **按条目看历史会「改过却说没有」（P1）**：`groupCorrectionsByTarget` 读取窗口被 `maxGroups*4` 卡死（默认 200 行），超过窗口的历史记录查出来是「0 组」——用户据此判断要不要再纠一次。改为扫全量（文件本身有 1000 行轮转上限，全量读有界）。
+- **`/memory` 列表给的不是「最近」（P1）**：`listMemoryEntries` 在每个分类目录内先到先得地灌满 `cap`，而 `CATEGORY_IDS` 顺序固定，于是 `work-profile` 满 10 条后，用户在 `user-profile` 刚写入的条目**永远不出现在列表**里。改为全量收集后按 mtime 排序再截断（总量上界仍由 `SEARCH_SCAN_MAX_FILES` 保证）。
+
+### 修复（P2/P3 收尾，同一次检查的剩余项）
+
+- **检索不认全角与 NFC/NFD 变体（P2）**：正文写 `ＰＮＰＭ`、用户查 `pnpm` 命中 0 条；`café` 的两种 Unicode 规范化形态互查也是 0 条。字面检索的承诺就是「打出来就找得到」，现在正文与查询两侧统一做 NFKC + 小写折叠。片段仍从**原文**切（折叠会把全角标点也改写，直接显示折叠串等于替用户改正文），用「组合簇 → 原文下标」映射换回位置。
+- **写后校验回滚的改动在界面上不存在（P2）**：`verifyFailed` 埋在 `applyResult` 里，命令只说「已纠正 X：1 处改写」、面板只说「已纠正 N 次（改写 X）」。一处改动被打回、另一处落成时，用户会以为全改成了。现在回报、ledger 行、进程计数、命令文案、面板健康卡五处都带着它。
+- **知识页 stale 判定漏标（P2）**：指纹是 `mtimeMs:size`，同长度改写 + mtime 复原（备份还原、跨设备复制、编辑器保留时间戳）时完全不变，`[stale]` 永远不出现。改为索引文件内容哈希（只读单个文件，有界）。
+- **知识页落盘会留半新半旧（P2）**：原先逐页 `atomicWrite` + 最后写 manifest，末页失败就留下「4 张新页 + 旧 manifest」——manifest 的承诺字面成立，但用户读到的页和注入摘要里的标题/摘要对不上。改为两阶段：先全部写 `.tmp-new`（失败只清临时文件、现场零改动），再统一换入；换入阶段失败按 `.tmp-old` 备份整体回滚到旧版。顺带补一个真实隐患：目标路径被目录占用时显式报错（Windows 上 `rename` 对「目录 → 文件路径」是允许的，会把用户目录静默挪走再删掉）。
+- **空闲整理被单飞挡回时完全静默（P2）**：另一个会话的整理在跑时直接 `return`，`count`/`lastAt` 都不动，形成「每次提取都白等 60s、次次被挡」的循环，面板上没有任何解释。现在单独计数 `rejected` + 记最近原因，并把 `lastAt` 推后让 min-interval 闸接管；面板健康卡新增「整理」一行。
+- **知识页生成失败在用户面不可见（P2）**：`/state.pages` 一直在记账（generations / errors / lastError），面板零消费——注释还自称「面板通过 /state.pages 消费」。现在健康卡新增「知识页」一行，生成次数与失败次数（附最近错误）都露出来。
+- **符号链接目录会被检索跟随（P2，跨平台潜在越界读）**：`walkMarkdown` 用 `entry.isDirectory()` 判断递归，而 Linux/macOS 上 symlink 目录该值为 true，会递归到 `storageRoot` 之外并把外部文件读进检索结果。改为符号链接一律不跟随。
+- **删掉两个死导出（P2）**：`turnEventLine` / `turnWindowText` 全仓仅测试引用，与 `panel-logic.js` 的 `turnActivityRows` / `turnActivityNote` 口径已漂移（47 小时 vs 2 天的边界不同）。按「删除优于兼容」删掉，测试同步移除。
+- **P3 文档漂移**：`corrections.js` 头部字段注释写的是 `action` / `reason`，实际落盘是 `outcome` / `scope`；README / README.en 的窗口档位漏列默认的 30 分钟。
+
+### 修复（对抗式审查发现，同批收口）
+
+- **片段定位会线性漂移（P1）**：检索折叠用整串 NFKC（会把相邻字素**合并**：韩文兼容字母 `ㄱ`+`ㅏ`→`가`），而位置映射按字素铺开——每次合并偏差累加一格。段内 2000 次重复后命中，片段窗口落在正文第 1 个字符处，命中词根本不在片段里（等于没定位）。改为在前缀折叠长度上**二分**回推原串下标（前缀折叠长度对字素边界单调）；快路径（直查映射命中）保持零额外开销。
+- **单条纠错的 422 丢掉真正原因（P1）**：写后校验把唯一改动打回时，`/api/corrections/correct` 只回 `{error, code:"no-op-applied"}`，`verifyFailed` 被丢在服务端——面板单条路径因此只能说「纠错未生效」。现在 422 响应带上 `verifyFailed`，面板据此说清「N 处写后校验没通过、已回滚」；`no-op-applied` 路径也进累计计数（原先只有 applied 计）。
+- **两阶段落盘的两个新问题（P1/P2）**：① 备份原用 `rename` 挪走目标文件，在「挪走→换入」之间目标**短暂不存在**，此刻崩溃即永久丢页（比原混合态更糟）；改为 `copyFileSync` 备份 + 原子 `rename` 覆盖（已用崩溃打点验证任何时刻 `missing=0`）。② 回滚失败被 `catch {}` 静默吞掉，盘上可能停在混合态而调用方毫不知情；现在收集失败项并挂到抛出的 error 上（`error.rollbackFailures` + 日志）。
+- **安全闸被放宽（P2）**：为读回「名字不经 sanitize 的真实条目」，精确匹配分支一度只看词法包含性，于是 `.git/config`、`node_modules/**`、索引 `MEMORY.md`、`.env`（含明文密码/密钥）都能被当记忆正文喂进提示词。现在该分支复刻落盘侧的段级闸（只收 `.md`、拒索引名、拒黑名单段、拒 Windows 设备名），并用 `realpath` 再判一次根内（挡 symlink/junction 指向外部）。
+- **闲置整理的原因语义（P2）**：先前在「跑成功」时清空 `lastRejectReason`，面板会落到兜底文案「上一轮未结束」——那是编出来的原因（`aborted` = 插件在卸载也会被这么说）。现在原因作为历史事实保留，另记 `lastRejectAt`，渲染层按时间戳区分「现在仍被挡」与「曾挡回」；未知原因如实显示，不编。
+- **批量 verifyFailed 无汇总（P2）**：逐条 `results[].verifyFailed` 有值但顶部不汇总，面板结果头与 toast 都消费 `out.verifyFailed`——汇总一漏，批量视图上「某条里有一处被打回」完全不可见。现在顶部汇总逐条之和，面板逐条行与标题都显示。
+- **`listMemoryEntries` 性能与上限口径（P2）**：改为「先 stat 排序、只读入选的 top-N 正文」（原先全量读正文，7500 条约 5 秒）；同时把「每目录扫描上限」与「因 limit 截断」分开，新增 `scanTruncated` 如实回报（原注释声称总量上界是全局的，实际是每目录）。
+- **两处假绿测试（P2）**：①「阶段一失败零残留」实际只跑了重复 id 预检，从未触发阶段一失败——删掉清理循环全仓仍全绿；改为钉住 `Date.now` 精确占住临时文件路径，真正触发 `EISDIR`。②「同长度改写 + mtime 复原」的 size 前提断言拿同一个字符串比字节数，是恒真式（换成等字符数但不等字节的中文就退化成假绿）；改为与**生成时记下的真实 size** 比。
+
+### 测试（1253 → 1286，+33）
+
+- **新增 `test/corrections-wiring.test.mjs`（11 条，全走真实 `apply()`）**：补的正是「文档承诺了、实现是对的、但没有任何回归保护」的四项——并发第二次纠错 409 `E_BUSY`（单条 + 批量互斥各一条）、开关关 409 `E_DISABLED` 且零 LLM 调用、ops 全被闸拦下 422 `no-op-applied`、`recent` 与盘上 ledger 行数对账；外加两条 P0 回归（批量定位失败时的逐条隔离与「已落盘条目必须留在 results 里」、越界读取不得把目录外内容喂进提示词）、一条 `no-change` 口径，以及安全闸的两个反向约束（目录内非规范化真实文件名**必须**能读到 / 目录内的索引、黑名单段、非 `.md` 文件**不得**读到）。
+- **`test/turn-activity.test.mjs` +4**：越界数字时间戳不炸、合法但久远的时间戳仍保留（防夹取写成一律丢弃）、`since > until` 不产生负宽度、`since=1e308` 同样钳住。
+- **`test/search.test.mjs` +8**：跨分类按 mtime 取最近、符号链接目录不跟随（Windows 建不了 symlink 时自动 skip）、全角正文与半角查询互通且片段保留原文、NFD 正文与 NFC 查询互通、相邻字素被 NFKC 合并时片段仍能定位（韩文兼容字母 2000 次重复的线性漂移回归）、任意 max（含负数）不产生孤立代理、只读 top-N 的性能校验、扫描上限 `scanTruncated` 如实回报。
+- **`test/pages.test.mjs` +5**：同长度改写 + mtime 精确复原后仍标 stale（含「mtime 与 size 必须真的一模一样」三条前提断言）、旧格式 `mtimeMs:size` 的 indexStamp 不产生升级假 stale、单页落盘失败时不留下半新半旧、阶段一失败零残留（钉住时钟真正触发 `EISDIR`）、重复 id 显式拒绝。
+- **`test/panel-logic.test.mjs` +4**：`verifyFailed` 必须单独露面、`idleReviewSummary` 的挡回带原因（且区分「仍被挡」与「曾挡回」、未知原因不编）、`pagesGenerationSummary` 的成功与失败各自可见、**结构校验**「`CORRECTION_KIND_TEXT` 键集 ⊇ `CORRECTION_KINDS`」（原先只有硬编码的"五值都在"测试，加第六种类型时面板不会红）。
+- **`test/corrections.test.mjs` +3**：verifyFailed 三处链路（回报/ledger/累计计数）、`no-op-applied` 路径也要带并累计 verifyFailed、批量顶部汇总等于逐条之和。
+- **`test/memory-command.test.mjs` +1 / `test/idle-review.test.mjs` +2**：命令文案里被打回的改动必须明说（含 default 分支的校验回滚文案）；挡回单独计数且不污染 `runs`、挡回原因作为历史事实保留而「仍被挡」由时间戳判定。
+- **变异验证（12 处）**：折叠退回纯小写、指纹退回 `mtimeMs:size`、移除回滚循环、删掉阶段一清理、`verifyFailed` 恒 0、命令文案恒空、`recordIdleReviewRejected` 空实现、`pagesGenerationSummary` 恒 null、往 `CORRECTION_KINDS` 塞没中文的类型、`listMemoryEntries` 退化成全量读正文、删掉精确匹配分支、`isInsideRoot` 换成 `startsWith`——每处都让对应测试变红，恢复后转绿。**其中两个测试第一版是假绿，都已修**：① Windows/NTFS 时间戳精度 100ns 而 Node 的 Date 只有 ms，直接写回原 `mtime` 会差出亚毫秒，指纹「其实变了」所以照样标 stale（改为钉整秒 + 三条前提断言）；②「阶段一失败零残留」从未真正触发阶段一失败（改为钉住 `Date.now` 用目录占住临时路径，触发 `EISDIR`）。
+
+
 ## [0.7.0] - 2026-10-24
 
 **召回端点故障可见化 + 硬事实守护指路 + 在途中止分类 + 零正文失败路径。** 本批由三个模块并行开发、随后经三路独立检查（测试有效性 / 自伤路径 / 终端用户视角）发现 2 条实现 P0、2 条检查 P0 与若干 P1，逐条修复后收口。先交代三件对账事实，防止后续翻案：

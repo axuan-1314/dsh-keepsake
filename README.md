@@ -36,6 +36,9 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
   - [语义召回（可选）](#语义召回可选)
   - [项目知识页（手动生成，默认不自动跑）](#项目知识页手动生成默认不自动跑)
   - [空闲整理（idle review，默认关）](#空闲整理idle-review默认关)
+  - [纠错闭环：把「这条记错了」变成一次可回滚的修正](#纠错闭环把这条记错了变成一次可回滚的修正)
+  - [最近活动（turn bar）：一眼看到「刚才那轮做了什么」](#最近活动turn-bar一眼看到刚才那轮做了什么)
+  - [记忆检索（memory-命令与面板搜索）](#记忆检索memory-命令与面板搜索)
   - [记忆管理面板](#记忆管理面板)
   - [管道健康卡与「立即重试提取」](#管道健康卡与立即重试提取)
   - [提取运行日志与跨重启续提](#提取运行日志与跨重启续提)
@@ -169,6 +172,36 @@ DSH 每次新会话都是从零开始：你的工作背景、这个项目的决�
 - **产出**：一次 LLM 调用最多 3 个 project-scope op（write / delete），提示词要求合并近重复、更新过期、清理已废弃；**不碰全局记忆**。落盘仍走 `applyScopedOps` 的批锁、快照、sha1 覆盖闸与写后校验，`delete` 进回收站，不是硬删。
 - **模型只提案、host 落盘**：解析失败 / 调用失败 / 落盘失败只记 `/state.idleReview` 与日志，不中断提取主链路；写成功后索引与 runtime 缓存失效，下一次注入可见。
 - **开关**：面板「设置」页「空闲整理（自动合并/清理）」；写在 `settings.json` 的 `idleReviewEnabled`（缺省 false，只有显式 true 才开）。
+
+### 纠错闭环：把「这条记错了」变成一次可回滚的修正
+
+提取与空闲整理只会写/删，模型无法表达「这条记错了，正确的事实是 X」。错误事实于是只能靠下一轮提取碰巧覆盖，实际常留下两条互相矛盾的记忆。纠错闭环补的就是这条通道。
+
+- **两个入口，同一条通路**：对话里 `/memory fix <关键词> | <诉求>`，或面板「最近活动」页检索后点「纠正这条」。两者都走 `lib/corrections.js` → `applyScopedOps`。
+- **只改被指名的那条**：提示词明确禁止「顺手整理」无关条目；邻域只给同 scope 的索引（用于识别「和哪条重复」），不给别的正文。
+- **三种结局都如实回报**：`applied`（已改，附改写/删除条数）、`needs-input`（诉求不够具体，模型明确拒绝改动，记忆一字未变）、`nothing`（模型判断无需改）。`needs-input` **不是失败**——用户什么都没做错，只是话没说到位。
+- **不谎报**：ops 全被闸拦下（sha1 不符 / 锁冲突 / 写后校验失败）时判失败，绝不写「已纠正」记录。
+- **可回滚**：落盘走与自动提取完全相同的安全面（批锁 / 手术式快照 / sha1 覆盖闸 / 写后校验），`delete` 进回收站。
+- **记录**：`<storageRoot>/correction-ledger.jsonl`，每次应用一行（时间 / 目标 / 原因 / 改写数 / 校验失败数）。坏行跳过，不因一条脏行挡住整份记录。
+- **成本**：只在你显式提交时调用一次模型，不增加每轮成本。空诉求在调模型前就被拒。
+
+### 最近活动（turn bar）：一眼看到「刚才那轮做了什么」
+
+提取、注入、整理、纠错的观测此前分散在四个地方，回答「刚才到底做了什么」得来回翻面板。面板「最近活动」页把它们按**时间窗**归并成一条时间线。
+
+- **归并口径如实**：提取事件自带会话号，按会话精确匹配；注入 / 整理 / 纠错是进程级或显式动作，**只按时间窗落进流里，不编造因果**（不会说「因为注入了 X 所以写了 Y」）。
+- **窗口**：默认最近 30 分钟，可切 10 分钟 / 1 小时 / 3 小时 / 1 天；请求超过一周会被钳到一周并如实回报实际窗口。
+- **空态区分两种**：「宿主未提供活动数据」（旧版 / 未接线）与「最近 N 分钟内没有活动」措辞不同——两者长得一样最误导人。
+- **失败可见**：失败事件带红标，不与成功事件混同。
+- 同一页还放了关键词检索与纠错记录（它们是同一条「找到 → 改掉」链路的前后两步）。
+
+### 记忆检索（`/memory` 命令与面板搜索）
+
+- **对话内**：`/memory`（列最近条目）、`/memory <关键词>`（检索）、`/memory why <关键词>`（附带命中位置与相关度）、`/memory fix`、`/memory forget`。
+- **面板内**：「最近活动」页的检索框，结果每条带「纠正这条」按钮。
+- **打分口径简单可解释**：名字完全相等 100 > 名字包含 60 > 标题 45 > 摘要 30 > 正文 15；多关键词 **AND** 语义（每个词都要命中）。故意不做 tf-idf——用户问「我记得那条叫什么」时，需要一个能讲清楚为什么排第一的规则。
+- **索引文件不参与检索**：`MEMORY.md` 不是条目，混进来会让每次查询都命中它。
+- **命令是可选能力**：宿主没有 commands 服务时记忆功能照常，只是没有这条命令；这种情况会留一条 warn，不静默跳过。
 
 ### 记忆管理面板
 
@@ -489,6 +522,10 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **运行时记忆层**（可选，`runtimeEnabled`，默认关）：注入前按 `runtime.json.sourceHash` 比对候选池（路径 + mtimeMs + size + 配额 + 算法版本），一致用缓存、不一致懒编译。编译 = 选条（pinned 优先 → 权重/mtime 装填）→ 排序 → 渲染（`- 【关键|普通】[Title](相对路径) — 钩子`）→ 按字节配额裁剪 → 登记淘汰候选（产物末尾留 `[runtime evicted: N …]` 提示），产物原子写（tmp+rename）到 `runtime/<scope>/`。开启且产物 `status=ok` 时，`user-profile` / `work-profile` / `current-focus` 三分类**在「该分类条目全部进了产物」时**才退出全局索引渲染（有任一条被配额淘汰则该分类继续渲染，避免条目两头不可见）；项目条目同理按「已进产物」剔出项目索引行；`long-term` 则**无条件**退出注入索引（不依赖开关或产物状态），仅提取 prompt 例外。候选池读取失败（权限/IO，非"目录不存在"）按编译失败处理：`status=error` + 保留上一版产物，绝不当成"分类空了"覆盖掉。失效面：写盘 / 删除 / 归档执行 / pin 变更 → 受影响 scope 缓存失效，下次注入或面板打开时重编（runtime 端点自己已完成失效重编，不再二次全清）；格式只读闸生效时不编译（有缓存用缓存、无缓存跳过 runtime 段并记 `[runtime readOnly]`）。
 - **语义召回**（可选，`recallEnabled`）：开启后每轮以当前用户消息为查询，对记忆条目做嵌入余弦 top-k（`recallTopK`/`recallMinScore`/`recallMaxTokens`），命中的条目以 `<memory-recall>` 块经消息通道注入；条目向量增量缓存于 `<storageRoot>/embeddings.json`（仅新/改条目重嵌），**查询每轮嵌入一次**。端点超时/失败 → 本轮不召回（**显式降级**，`/state.recall` 可观测 + 面板红条）；端点**未配置/配不全** → 插件照常加载、召回显式关闭、面板红条指路（不 fail-open）；记忆文本会发往 `embeddingBaseUrl`（默认关＝不配置就不出本机，指向本地端点即不出本机）。
 - **skip 双条件**：无 ≥3 词用户散文；本轮已有对记忆目录的直写（write/edit 工具落 memoryRoot）。skip 也推进 cursor。此外还有三道成本闸门（打分门 / 空闲延迟合并 / 每会话上限，见[「提取触发门槛」](#提取触发门槛打分门空闲延迟与每会话上限)），不过闸的区间同样记 skip 并推进 cursor。
+- **纠错闭环**（`lib/corrections.js`）：给定一条被判有误的条目 → 一次 LLM 调用产出最小修正 → 落盘走 `applyScopedOps`（与自动提取同一条安全通路）。提示词只喂「目标条目 + 同 scope 索引」，明令禁止改写无关条目；`NEEDS_USER_INPUT` 是一等公民结局（诉求说不清就不改，不硬凑 edit）；ops 全被闸拦下判失败、不写记录——不谎报 applied。记录 `<storageRoot>/correction-ledger.jsonl` 是审计面，非记忆真源。
+- **记忆检索**（`lib/search.js`）：关键词 AND 打分（名字 100/60 > 标题 45 > 摘要 30 > 正文 15），索引文件与派生目录（pages/runtime/backups/trash/snapshots）不参与检索。**与语义召回是两条线**：召回按对话语义喂模型，检索按字面关键词喂人。
+- **轮次活动条**（`lib/turn-activity.js`）：纯派生视图，零新增落盘。把提取（有会话号，按会话匹配）、注入/整理/纠错（进程级或显式动作，只按时间窗落流）归并成时间线；**刻意不编造因果**。窗口上限一周，超限钳制并如实回报。
+- **`/memory` 命令**（`lib/memory-command.js`）：经 `ctx.inject(["commands"])` 挂载，不进 `inject` 硬声明——宿主无 commands 服务时记忆功能照常，只是没这条命令（留 warn，不静默）。
 - **模块清单**：`lib/redact.js`（脱敏纯函数，7 类固定模式，线性正则防回溯）、`lib/extract-gate.js`（打分门纯函数：`score = userWords + 2*toolKinds + 2*turns`）、`lib/tokens.js`（CJK 感知 token 估算）。
 - **cursor 推进纪律**：run 结算 'ok'（成功或 skip）推进到快照边界；'error' / abort 不推进，下轮合并重提。cursor 随提取运行日志持久化（每次结算落一行，重启时同步重放重建），DSH 重启后重开旧会话从上次边界**续提**；但插件中途挂载的新会话或从没提取过的会话只提取存活期间新完成的轮次，不回扫历史。
 - **关停纪律**：插件卸载时先有界 drain 在途提取（headless one-shot 依赖这段在退出前把记忆写完），超时才 abort 兜底。
@@ -508,6 +545,10 @@ cordis entry config（见 `cordis.patch.yml`）：
 - **运行时记忆面（v0.6.0）**：`GET /dsh-keepsake/api/runtime/<scope>`（`scope` = `global` 或 `projects/<slug>-<hash16>`；返回产物文本 / 字节 / 配额 / `status` / 淘汰候选）、`POST /api/runtime/<scope>/compile`、`POST /api/runtime/compile-all`、`POST /api/runtime/<scope>/pin`、`POST /api/runtime/<scope>/evict`、`POST /api/runtime/global/archive/restore`；观测文件是 `runtime/compile-journal.jsonl`（每次编译一行）与 `evict-audit.jsonl`（每次执行归档一行）。scope 不存在 404、参数非法 400、锁被占 409、编译失败 500（保留上一版产物）。
 - **知识页面（手动生成）**：`GET /dsh-keepsake/api/pages/read?projectId=<slug>-<hash16>`（`available=false` = 未生成；返回 manifest + 五页正文）、`POST /api/pages/generate`（body `{projectId}`，同步一次 LLM 调用；非法 id 400 / 开关关或并发 409 / 无路由 503 / 解析或调用失败 502 / 落盘失败 500）、`/state.pages`（`generations` / `errors` / `lastAt` / `lastError` / `lastScope` / `lastChars`）。生成失败保留上一版 manifest。
 - **空闲整理面**：`/state.idleReview`（`runs` / `written` / `deletes` / `skipped` / `errors` / `lastAt` / `lastOutcome` / `lastWrites` / `lastDeletes` / `lastError`）。默认关；只在提取写入新条目后调度，每会话最小间隔 10 分钟、最多 5 次，全局单飞。
+- **纠错面**：`/state.corrections`（`runs` / `applied` / `writes` / `deletes` / `failed` / `lastAt` / `lastOutcome` / `lastTarget` / `lastReason` / `recent[20]`）；端点 `GET /api/corrections/recent?limit=`（`entries` 记录 + `state` 快照）、`POST /api/corrections/correct`（body `{target, reason, kind?, scope?, projectId?}`；`outcome` ∈ `applied` / `needs-input` / `nothing`；参数不全 400 / 开关关或并发 409 / 无路由或无项目 503 / ops 全被闸拦下 422 / 其余 502）。记录文件 `<storageRoot>/correction-ledger.jsonl`（1000 行轮转留尾 500，原子写，写失败只 warn 不拖垮已成功的纠错）。
+- **检索面**：`GET /api/search?q=<关键词>&projectId=&limit=`（`q` 空 → 400，不退化成"返回全部"）、`GET /api/search/list?projectId=&limit=`（按 mtime 倒序；`truncated` 如实）。
+- **轮次活动面**：`GET /api/turn-activity?sessionId=&sinceMs=&untilMs=&limit=` → `{ events, total, truncated, window: {since, until}, sessionId }`。`window` 字段只在 provider 真被调用时出现——它是「接线活着」的判据。
+- **`/memory` 命令**：`memory`（`recordInput: false`，命令输入不进会话日志）。子命令与文案见上文；宿主无 `commands` 服务时不挂载并留 warn。
 - **召回面**：`/state` 的 `recall` 字段（`hits` 命中注入次数 / `items` 累计条目 / `chars` 累计字符 / `misses` 无命中 / `errors` 嵌入或检索异常 / `lastAt`）。
 - **失败落盘日志**：每次提取失败追加 `<storageRoot>/extraction-errors.log`（只记摘要：时间/pid/原因/路由/错误摘要，不含会话内容；>512KB 轮转两档）。不依赖 `DSH_KEEPSAKE_DEBUG`，常开——上游限流停摆场景里运行态零痕迹的补丁。单进程单写者前提；跨进程共享 storageRoot 不保证 interleave 安全。
 - **手动补提**：`POST /dsh-keepsake/api/extract/retry`（面板「立即重试提取」按钮）→ 202 已触发 + 经 `/state` 观测结果；在途 409；10s 最小间隔（进程内计时，重启插件重置）。复用 scheduler 单飞，无并发双跑。

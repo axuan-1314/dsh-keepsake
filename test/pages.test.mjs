@@ -118,12 +118,12 @@ test("collectPageSources：进 prompt 前脱敏（旧条目里的密钥不会复
       'node_type: "memory"',
       "---",
       "",
-      "token: sk-example-not-a-real-key-000",
+      "token: sk-FAKE0000000000000000",
     ].join("\n"));
     const { manifest, bodies } = collectPageSources(memoryDir);
-    assert.ok(!bodies.includes("sk-example-not-a-real-key-000"), "正文里的密钥应被脱敏");
+    assert.ok(!bodies.includes("sk-FAKE0000000000000000"), "正文里的密钥应被脱敏");
     assert.match(bodies, /\[redacted\]/);
-    assert.ok(!manifest.includes("sk-example-not-a-real-key-000"));
+    assert.ok(!manifest.includes("sk-FAKE0000000000000000"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

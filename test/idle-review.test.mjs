@@ -82,7 +82,7 @@ test("runIdleReview：执行 op 前脱敏，成功记账；不足两条直接跳
           type: "project",
           title: "合并",
           description: "合并结果",
-          content: "token: sk-example-not-a-real-key-000",
+          content: "token: sk-FAKE0000000000000000",
         }]),
       }),
       applyOps: (_roots, ops) => {
@@ -93,7 +93,7 @@ test("runIdleReview：执行 op 前脱敏，成功记账；不足两条直接跳
     assert.equal(out.outcome, "written");
     assert.equal(out.writes, 1);
     assert.ok(applied !== null && applied.length === 1);
-    assert.ok(!applied[0].content.includes("sk-example-not-a-real-key-000"), "落盘前必须脱敏");
+    assert.ok(!applied[0].content.includes("sk-FAKE0000000000000000"), "落盘前必须脱敏");
     assert.match(applied[0].content, /\[redacted\]/);
     assert.equal(idleReviewSnapshot().written, 1);
   } finally {

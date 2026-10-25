@@ -1426,3 +1426,79 @@ test("runtimeEnabledOf：后端字段优先 → 本会话回填 → 缺省关（
   assert.equal(runtimeEnabledOf(null, "yes"), false, "脏回填不冒充布尔");
   assert.equal(runtimeEnabledOf({ runtimeEnabled: 1 }, null), false, "非布尔真值不当 true（口径是 === true）");
 });
+
+// ---- P1：纠错面 + 轮次活动条（纯函数容错与口径） ----
+test("correctionsSummary：零值/null 不装饰，成功与失败各自可见", async () => {
+  const L = await import("../lib/panel-logic.js");
+  assert.equal(L.correctionsSummary(undefined), null);
+  assert.equal(L.correctionsSummary(null), null);
+  assert.equal(L.correctionsSummary({}), null, "全零不印 0 装饰");
+  assert.equal(L.correctionsSummary({ applied: 2, writes: 3, deletes: 1 }), "已纠正 2 次（改写 3 / 删除 1）");
+  // 失败不能被成功掩盖：两者并置
+  assert.match(L.correctionsSummary({ applied: 1, writes: 1, deletes: 0, failed: 2 }), /未生效 2 次/);
+  assert.equal(L.correctionsSummary({ failed: 1 }), "未生效 1 次");
+});
+
+test("correctionRows：四种结局人话化，坏行跳过，相对时间容错", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const rows = L.correctionRows([
+    { at: new Date().toISOString(), target: "a.md", kind: "wrong-fact", outcome: "applied", writes: 1, deletes: 0 },
+    { at: new Date().toISOString(), target: "b.md", kind: "outdated", outcome: "needs-input" },
+    { at: new Date().toISOString(), target: "c.md", kind: "duplicate", outcome: "nothing" },
+    { at: new Date().toISOString(), target: "d.md", kind: "unknown-kind", outcome: "error" },
+    null,
+  ]);
+  assert.equal(rows.length, 4, "坏行（null）跳过");
+  assert.equal(rows[0].kindText, "记错事实");
+  assert.match(rows[0].resultText, /改了 1 条/);
+  assert.equal(rows[1].resultText, "需补充说明（未改）");
+  assert.equal(rows[2].resultText, "无需改动");
+  assert.equal(rows[3].resultText, "失败");
+  assert.equal(rows[3].kindText, "unknown-kind", "未知类型原样显示，不编");
+  assert.deepEqual(L.correctionRows(undefined), []);
+});
+
+test("correctionKindOptions：五种类型全部给中英对照", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const opts = L.correctionKindOptions();
+  assert.equal(opts.length, 5);
+  assert.deepEqual(opts.map((o) => o.value).sort(), ["duplicate", "other", "outdated", "wrong-fact", "wrong-scope"]);
+  assert.ok(opts.every((o) => typeof o.label === "string" && o.label.length > 0));
+});
+
+test("turnActivityRows：失败事件涂红标记，坏行跳过，时间格式化", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const rows = L.turnActivityRows([
+    { at: Date.parse("2026-10-25T10:20:30Z"), kind: "extraction", detail: "已写 2 条", outcome: "written" },
+    { at: Date.parse("2026-10-25T10:21:00Z"), kind: "extraction", detail: "失败：模型调用失败", outcome: "failed" },
+    { at: Date.parse("2026-10-25T10:22:00Z"), kind: "weird", detail: "未知面" },
+    null,
+  ]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].kindText, "提取");
+  assert.equal(rows[0].isBad, false);
+  assert.equal(rows[1].isBad, true, "失败事件必须可被涂红");
+  assert.equal(rows[2].kindText, "其它", "未知类型不硬编");
+  assert.match(rows[0].time, /^\d{2}:\d{2}:\d{2}$/);
+  assert.deepEqual(L.turnActivityRows(null), []);
+});
+
+test("turnActivityNote：区分『没接上』与『这段时间确实没活动』", async () => {
+  const L = await import("../lib/panel-logic.js");
+  const now = Date.parse("2026-10-25T12:00:00Z");
+  assert.match(L.turnActivityNote(null), /未提供活动数据/);
+  assert.match(L.turnActivityNote({ events: [] }), /未提供活动数据/, "window 缺失 = 旧宿主/未接线");
+  assert.match(
+    L.turnActivityNote({ window: { since: now - 30 * 60000, until: now }, total: 0 }),
+    /最近 30 分钟内没有提取\/注入活动/,
+    "接上了但确实没活动 —— 措辞必须与『没接上』不同",
+  );
+  assert.match(
+    L.turnActivityNote({ window: { since: now - 120 * 60000, until: now }, total: 7 }),
+    /最近 2 小时内共 7 条活动/,
+  );
+  assert.match(
+    L.turnActivityNote({ window: { since: now - 60 * 60000, until: now }, total: 30, truncated: true }),
+    /只显示最新的部分/,
+  );
+});

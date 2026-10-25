@@ -36,6 +36,9 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
   - [Semantic recall (optional)](#semantic-recall-optional)
   - [Project knowledge pages (manual, never automatic)](#project-knowledge-pages-manual-never-automatic)
   - [Idle review (off by default)](#idle-review-off-by-default)
+  - [Correction loop: turn "this memory is wrong" into a revertible fix](#correction-loop-turn-this-memory-is-wrong-into-a-revertible-fix)
+  - [Activity timeline: what just happened in one place](#activity-timeline-what-just-happened-in-one-place)
+  - [Memory search (/memory and panel search)](#memory-search-memory-and-panel-search)
   - [Memory management panel](#memory-management-panel)
   - [Pipeline health card and "retry extraction now"](#pipeline-health-card-and-retry-extraction-now)
   - [Extraction run log and cross-restart resume](#extraction-run-log-and-cross-restart-resume)
@@ -168,6 +171,36 @@ After an extraction actually writes new project entries, the plugin can ask the 
 - **Output**: one LLM call, at most 3 project-scope ops (write/delete), aimed at merging near-duplicates, updating stale entries and removing obsolete ones; never global scopes. Landing still goes through `applyScopedOps` (lock, snapshots, sha1 guard, read-back verification); deletes go to trash.
 - **Model proposes, host commits**: parse/LLM/write failures only increment `/state.idleReview` and logs, never break the extraction pipeline. Successful writes invalidate the index/runtime caches for the next injection.
 - **Switch**: Settings → "空闲整理（自动合并/清理）"; stored as `idleReviewEnabled` in `settings.json` (false unless explicitly true).
+
+### Correction loop: turn "this memory is wrong" into a revertible fix
+
+Extraction and idle review can only write or delete — the model has no way to express "this entry is wrong, the correct fact is X". Wrong facts therefore had to wait for a later extraction to happen to overwrite them, which in practice leaves two contradictory memories behind. The correction loop is that missing channel.
+
+- **Two entry points, one path**: `/memory fix <keywords> | <complaint>` in a conversation, or search then "纠正这条" in the panel's Activity page. Both go through `lib/corrections.js` → `applyScopedOps`.
+- **Only the named entry changes**: the prompt forbids tidying up unrelated entries; context is limited to the same scope's index (enough to spot duplication), never other bodies.
+- **Three outcomes, reported honestly**: `applied` (with write/delete counts), `needs-input` (the complaint was too vague; the model refused to change anything and memory is untouched), `nothing` (model judged no change needed). `needs-input` is **not a failure** — the user did nothing wrong, the request was just underspecified.
+- **No false success**: if every op is blocked by a guard (stale sha1 / lock contention / read-back verification), the run is reported as failed and nothing is written to the ledger.
+- **Revertible**: landing uses the exact same safety surface as automatic extraction (batch lock, surgical snapshot, sha1 overwrite guard, read-back verification); `delete` goes to trash and name changes can be restored by hand from a snapshot.
+- **Ledger**: `<storageRoot>/correction-ledger.jsonl`, one line per applied correction (time / target / reason / write count / verification failures). Bad lines are skipped so one corrupt line cannot block the whole file.
+- **Cost**: exactly one model call, only when you explicitly submit. Empty complaints are rejected before any call.
+
+### Activity timeline: what just happened in one place
+
+Extraction, injection, idle review and correction used to be observable in four separate places, so answering "what did the last turn actually do" meant bouncing around the panel. The panel's Activity page merges them into one timeline ordered by time.
+
+- **Attribution stays honest**: extraction events carry a session id and are matched per session; injection / idle review / correction are process-level or explicit actions and are only placed in the window — **no causal story is invented** (it never claims "because X was injected, Y was written").
+- **Window**: 30 minutes by default, switchable to 10 minutes / 1 hour / 3 hours / 1 day; requests longer than a week are clamped and the effective window is reported.
+- **Empty states are distinguishable**: "host provides no activity data" (old version / not wired) reads differently from "no activity in the last N minutes" — identical wording for both would be the most misleading option.
+- **Failures stand out**: failed events are flagged, not blended in with successes.
+- Keyword search and the correction ledger live on the same page — they are the two halves of the same "find it, then fix it" flow.
+
+### Memory search (`/memory` and panel search)
+
+- **In conversation**: `/memory` (recent entries), `/memory <keywords>` (search), `/memory why <keywords>` (with hit locations and score), `/memory fix`, `/memory forget`.
+- **In the panel**: the search box on the Activity page; every result has a "纠正这条" button.
+- **Scoring is simple and explainable**: exact name 100 > name contains 60 > title 45 > description 30 > body 15; multiple keywords are **AND** (each must hit). Deliberately no tf-idf — when a user asks "what was that entry called", they need a rule that explains why something ranks first.
+- **Index files never match**: `MEMORY.md` is not an entry; including it would make every query hit it.
+- **The command is optional**: on a host without the `commands` service everything else keeps working, there is just no command — and that case logs a warning instead of being silently skipped.
 
 ### Memory management panel
 

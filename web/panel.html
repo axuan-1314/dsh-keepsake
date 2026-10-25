@@ -131,6 +131,7 @@
     <a href="#/persona" data-route="persona">人设</a>
     <a href="#/addressing" data-route="addressing">称呼</a>
     <a href="#/projects" data-route="projects">项目记忆 <span class="cnt" data-cnt="projects"></span></a>
+    <a href="#/activity" data-route="activity">最近活动</a>
     <div class="group">可逆性</div>
     <a href="#/trash" data-route="trash">回收站 <span class="cnt" data-cnt="trash"></span></a>
     <a href="#/snapshots" data-route="snapshots">快照 <span class="cnt" data-cnt="snapshots"></span></a>
@@ -1600,6 +1601,9 @@ function buildPipeHealthCard(data) {
   //   /state.safety 缺失（旧版宿主）→ safetySummaryText 返回 null，不渲染（tolerant 消费）。
   const safetyLine = L.safetySummaryText(data.safety);
   if (safetyLine) parts.push(`<div class="meta" style="margin:4px 0 0">${esc(safetyLine)}</div>`);
+  // 纠错面一行（已纠正次数 + 未生效次数）——/state.corrections 缺失（旧版宿主）→ null 不渲染。
+  const correctionsLine = L.correctionsSummary(data.corrections);
+  if (correctionsLine) parts.push(`<div class="meta" style="margin:4px 0 0">纠正：${esc(correctionsLine)}</div>`);
   // 思考档降级摘要（该路由不支持所配档位 → 已按模型默认档重发 N 次）——
   // 只进 journal/log.warn 的话用户既不知道发生了、也无从判断要不要换档位。
   // 零值/旧宿主（无 reasoningDegraded 字段）→ null 不渲染（不印 0 装饰）。
@@ -2012,6 +2016,229 @@ async function renderTrashPage() {
         finally { purgeAllBtn.disabled = false; purgeAllBtn.textContent = "清空回收站"; }
       },
     });
+  });
+}
+
+// ============ 页面：最近活动（轮次活动条 + 检索 + 纠错记录） ============
+// 端点：GET turn-activity / GET search / GET corrections/recent / POST corrections/correct
+// 设计意图：这是「刚才那轮到底做了什么」的唯一入口——把提取/注入/整理/纠错四面
+// 按时间窗归并成一条流；检索与纠错记录放同页，因为它们是同一条「记忆有错→改掉」链路的
+// 前两步（先找到，再改），分成两个页签只会让人来回跳。
+let activityWindowMinutes = 30;
+
+async function renderActivityPage() {
+  const seq = ++pageRenderSeq;
+  pageTitle.textContent = "最近活动";
+  pageSub.textContent = "提取 / 注入 / 整理 / 纠错的合并时间线；同页可检索记忆、提交纠错";
+  page.innerHTML = '<div class="empty">加载中…</div>';
+  stopPipePoll();
+  stopPendingPoll();
+
+  let activity;
+  let ledger;
+  try {
+    const [a, l] = await Promise.all([
+      api(`turn-activity?sinceMs=${Date.now() - activityWindowMinutes * 60000}`),
+      api("corrections/recent?limit=20").catch(() => ({ entries: [] })),
+    ]);
+    activity = a;
+    ledger = l;
+  } catch (err) {
+    if (seq !== pageRenderSeq) return;
+    page.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    return;
+  }
+  if (seq !== pageRenderSeq) return;
+
+  const rows = L.turnActivityRows(activity.events);
+  const note = L.turnActivityNote(activity);
+  const ledgerRows = L.correctionRows(ledger.entries);
+
+  page.innerHTML = `
+    <div class="card">
+      <h3>时间线</h3>
+      <div class="meta" style="margin-bottom:8px">${esc(note)}</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <label class="meta" for="actWindow">时间范围</label>
+        <select class="inp" id="actWindow" style="width:auto">
+          ${[10, 30, 60, 180, 1440].map((m) => `<option value="${m}"${m === activityWindowMinutes ? " selected" : ""}>最近 ${m < 60 ? m + " 分钟" : m < 1440 ? Math.round(m / 60) + " 小时" : "1 天"}</option>`).join("")}
+        </select>
+        <button class="btn sm" id="actRefresh">刷新</button>
+      </div>
+      ${rows.length === 0
+        ? '<div class="empty">这段时间内没有活动。对话几轮后，提取/注入会在这里出现。</div>'
+        : `<div class="tableScroll"><table class="preview">
+            <tr><th style="width:78px">时间</th><th style="width:64px">类型</th><th>内容</th></tr>
+            ${rows.map((r) => `<tr><td class="meta">${esc(r.time)}</td><td><span class="badge${r.isBad ? " alert" : ""}">${esc(r.kindText)}</span></td><td${r.isBad ? ' style="color:var(--danger,#c33)"' : ""}>${esc(r.text)}</td></tr>`).join("")}
+          </table></div>`}
+    </div>
+
+    <div class="card">
+      <h3>检索记忆</h3>
+      <div class="row" style="display:flex;gap:8px">
+        <input class="inp" id="actQuery" placeholder="关键词，多个词用空格分隔（要求全部命中）">
+        <button class="btn primary" id="actSearch">检索</button>
+      </div>
+      <div id="actResults"></div>
+    </div>
+
+    <div class="card">
+      <h3>纠错记录 <span class="badge">最近 20 条</span></h3>
+      <div class="meta" style="margin-bottom:6px">每条纠错都会留快照；改名或删除都可在「快照」「回收站」页找回。</div>
+      ${ledgerRows.length === 0
+        ? '<div class="empty">还没有纠错过。在下面的检索结果里点「纠正这条」，或在对话里用 /memory fix。</div>'
+        : `<div class="tableScroll"><table class="preview">
+            <tr><th style="width:96px">时间</th><th style="width:24%">条目</th><th style="width:88px">原因</th><th>结果</th></tr>
+            ${ledgerRows.map((r) => `<tr><td class="meta">${esc(r.atText)}</td><td><code class="k">${esc(r.target)}</code></td><td class="meta">${esc(r.kindText)}</td><td class="meta">${esc(r.resultText)}</td></tr>`).join("")}
+          </table></div>`}
+    </div>`;
+
+  const windowSel = page.querySelector("#actWindow");
+  if (windowSel) {
+    windowSel.addEventListener("change", () => {
+      activityWindowMinutes = Number(windowSel.value) || 30;
+      renderActivityPage();
+    });
+  }
+  const refreshBtn = page.querySelector("#actRefresh");
+  if (refreshBtn) refreshBtn.addEventListener("click", () => renderActivityPage());
+
+  const queryInput = page.querySelector("#actQuery");
+  const resultsHost = page.querySelector("#actResults");
+  const doSearch = async () => {
+    const q = (queryInput?.value ?? "").trim();
+    if (q.length === 0) {
+      resultsHost.innerHTML = '<div class="meta">先输入关键词。</div>';
+      return;
+    }
+    resultsHost.innerHTML = '<div class="meta">检索中…</div>';
+    let out;
+    try {
+      out = await api(`search?q=${encodeURIComponent(q)}`);
+    } catch (err) {
+      resultsHost.innerHTML = `<div class="meta">检索失败：${esc(err.message)}</div>`;
+      return;
+    }
+    const hits = Array.isArray(out.results) ? out.results : [];
+    if (hits.length === 0) {
+      resultsHost.innerHTML = `<div class="meta">没找到包含「${esc(q)}」的记忆。</div>`;
+      return;
+    }
+    resultsHost.innerHTML = `
+      <div class="meta" style="margin:8px 0 4px">找到 ${Number(out.total ?? hits.length)} 条${out.truncated ? `，显示前 ${hits.length} 条` : ""}</div>
+      <div class="tableScroll"><table class="preview">
+        <tr><th style="width:26%">标题</th><th style="width:14%">位置</th><th>摘要</th><th style="width:96px"></th></tr>
+        ${hits.map((h, i) => `<tr>
+          <td>${esc(h.title)}<div class="meta"><code class="k">${esc(h.name)}</code></div></td>
+          <td class="meta">${esc(scopeLabelOf(h.scope))}</td>
+          <td class="meta">${esc(h.description || h.snippet || "")}</td>
+          <td><button class="btn sm" data-fix="${i}">纠正这条</button></td>
+        </tr>`).join("")}
+      </table></div>`;
+    for (const btn of Array.from(resultsHost.querySelectorAll("[data-fix]"))) {
+      btn.addEventListener("click", () => {
+        const hit = hits[Number(btn.getAttribute("data-fix"))];
+        openCorrectionDialog(hit, () => renderActivityPage());
+      });
+    }
+  };
+  const searchBtn = page.querySelector("#actSearch");
+  if (searchBtn) searchBtn.addEventListener("click", doSearch);
+  if (queryInput) {
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); doSearch(); }
+    });
+  }
+}
+
+/** scope → 人话（与 /memory 命令同口径；这里不 import 命令模块，避免面板侧依赖后端）。 */
+function scopeLabelOf(scope) {
+  const s = String(scope ?? "");
+  if (s === "project") return "项目";
+  const labels = {
+    "global:work-profile": "工作背景",
+    "global:user-profile": "用户背景",
+    "global:current-focus": "当前关注",
+    "global:recent-activity": "近期动态",
+    "global:long-term": "长期",
+  };
+  return labels[s] ?? (s.startsWith("global:") ? s.slice(7) : s || "—");
+}
+
+/** 纠错对话框：诉求必填（空诉求后端会直接拒，这里先挡住不白烧一次调用）。
+ *  结构沿用面板既有 mask/dialog + trapFocus（键盘可达、Esc 可退），不另造一层。 */
+function openCorrectionDialog(hit, onDone) {
+  const kinds = L.correctionKindOptions();
+  const layer = document.createElement("div");
+  layer.innerHTML = `
+    <div class="mask">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(560px,94vw)">
+        <h2>纠正记忆：${esc(hit.title || hit.name)}</h2>
+        <div class="meta">文件 <code class="k">${esc(hit.name)}</code> · 位置 ${esc(scopeLabelOf(hit.scope))}</div>
+        <label class="meta" for="fixKind">哪里不对</label>
+        <select class="inp" id="fixKind">
+          ${kinds.map((k) => `<option value="${esc(k.value)}">${esc(k.label)}</option>`).join("")}
+        </select>
+        <label class="meta" for="fixReason">具体说明（写清正确的值，模型只按你说的改）</label>
+        <textarea class="inp" id="fixReason" rows="4" style="width:100%" placeholder="例如：部署端口现在是 8080，不是 3000"></textarea>
+        <div class="meta" id="fixStatus">改动会留快照，可在「快照」页回退。</div>
+        <div class="foot">
+          <button class="btn" data-cancel>取消</button>
+          <button class="btn primary" data-go>提交纠正</button>
+        </div>
+      </div>
+    </div>`;
+  dialogHost.appendChild(layer);
+  const close = () => {
+    offFocus();
+    document.removeEventListener("keydown", onKey);
+    layer.remove();
+  };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  const offFocus = L.trapFocus(layer, close);
+  layer.querySelector(".mask").addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("mask")) close();
+  });
+  layer.querySelector("[data-cancel]").addEventListener("click", close);
+  const go = layer.querySelector("[data-go]");
+  const status = layer.querySelector("#fixStatus");
+  const reasonInput = layer.querySelector("#fixReason");
+  reasonInput.focus();
+  go.addEventListener("click", async () => {
+    const reason = (reasonInput.value ?? "").trim();
+    const kind = layer.querySelector("#fixKind").value;
+    if (reason.length === 0) {
+      status.textContent = "请先写清哪里不对（空说明会被直接拒绝）。";
+      return;
+    }
+    go.disabled = true;
+    go.textContent = "纠正中…";
+    status.textContent = "模型正在生成修正…（一次调用，通常几秒）";
+    try {
+      const out = await apiPost("corrections/correct", {
+        target: hit.name,
+        reason,
+        kind,
+        scope: hit.scope,
+        projectId: hit.projectId || undefined,
+      });
+      const outcome = String(out.outcome ?? "");
+      if (outcome === "applied") {
+        close();
+        toast(`已纠正 ${hit.name}：${out.writes ?? 0} 处改写 / ${out.deletes ?? 0} 处删除`);
+        if (typeof onDone === "function") onDone();
+      } else if (outcome === "needs-input") {
+        status.textContent = "说明不够具体，模型没有改动任何记忆。请写清正确的值再试。";
+      } else {
+        status.textContent = "模型判断这条不需要改动，记忆未变。";
+      }
+    } catch (err) {
+      status.textContent = "纠正失败：" + err.message + "（记忆未改动）";
+    } finally {
+      go.disabled = false;
+      go.textContent = "提交纠正";
+    }
   });
 }
 
@@ -2556,6 +2783,7 @@ const ROUTES = {
   "persona": { title: "人设" },
   "addressing": { title: "称呼" },
   "projects": { title: "项目记忆" },
+  "activity": { title: "最近活动" },
   "trash": { title: "回收站" },
   "snapshots": { title: "快照" },
   "settings": { title: "设置" },
@@ -2576,6 +2804,7 @@ function render() {
   else if (route === "persona") renderPersonaPage();
   else if (route === "addressing") renderAddressingPage();
   else if (route === "projects") renderProjectsPage();
+  else if (route === "activity") renderActivityPage();
   else if (route === "trash") renderTrashPage();
   else if (route === "snapshots") renderSnapshotsPage();
   else if (route === "settings") renderSettingsPage();

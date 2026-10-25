@@ -132,7 +132,7 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 
 `pinned` 与运行时记忆层编译产物的行前缀（`【关键】`/`【普通】`）**不参与跨 agent 互认**：前者是本插件的可选扩展字段（读不懂时按非 pinned 处理即可），后者只出现在本插件生成的产物里，回退到真源（条目文件 + `MEMORY.md`）即可获得完整语义。
 
-## 七、`backups/`、`trash/`、`runtime/`、`pages/` 是包外非真源目录
+## 七、`backups/`、`trash/`、`runtime/`、`pages/`、`correction-ledger.jsonl` 是包外非真源目录
 
 存储根下有多类**插件自留的非真源目录**，它们**不是记忆真源**：
 
@@ -154,11 +154,12 @@ frontmatter 之后的全部内容即正文（首个 `---` 块之后）。一个�
 │   ├── global/                 # 每个 scope 一份：USER.md / MEMORY.md / runtime.json
 │   ├── projects/<slug>-<hash16>/
 │   └── compile-journal.jsonl   # 编译观测日志（滚动清理）
+├── correction-ledger.jsonl     # 纠错记录（审计面，非真源；1000 行轮转留尾 500）
 └── evict-audit.jsonl           # 淘汰归档审计（持久记录，不随 runtime/ 清理；5000 行轮转留尾 2500）
 ```
 
 - **真源只有 `*.md` 与 `MEMORY.md`**：`global/<category>/*.md` 与 `projects/<slug>-<hash16>/memory/*.md` 才是记忆本身；每目录的 `MEMORY.md` 是导航索引。`settings.json`（开关）、`persona.md`（人设）、`addressing.json`（称呼）也是真源（各自唯一）。
-- **`backups/`、`trash/`、`runtime/`、`evict-audit.jsonl` 都是非真源**：删掉它们**不损失任何当前记忆**——`backups/` 与 `trash/` 是历史副本（用于回滚）；`runtime/` 是编译产物（下次编译自动重建）；`evict-audit.jsonl` 是归档执行审计（删除只丢可追溯性）。`keepsake-format.json` 缺失同理会被补写（见第八节）。
+- **`backups/`、`trash/`、`runtime/`、`evict-audit.jsonl`、`correction-ledger.jsonl` 都是非真源**：删掉它们**不损失任何当前记忆**——`backups/` 与 `trash/` 是历史副本（用于回滚）；`runtime/` 是编译产物（下次编译自动重建）；`evict-audit.jsonl` 是归档执行审计（删除只丢可追溯性）；`correction-ledger.jsonl` 是纠错审计（删除只丢「哪次纠错改了什么」的追溯，纠错本身已落进条目与快照）。`keepsake-format.json` 缺失同理会被补写（见第八节）。
 - **删除的代价是失去后悔药**：清掉 `backups/` 就没有「恢复此备份 / 回滚快照」的入口；清掉 `trash/` 就等于把被删的条目**真正**删除（回收站的语义是"延迟删除"，不是归档）；清掉 `evict-audit.jsonl` 就查不到某条何时、被谁、从哪归档到哪。**面板手动「删除条目」（`DELETE /entry`）与自动提取产生的删除同口径，都移入回收站**（v0.4.1 起；此前是直接删除）。分类重置（`clearCategory`）与近期动态滚动清理（`pruneRecentActivity`）仍是直接删除、不进回收站。
 - **`backups/surgical/`、`backups/evict-*` 与 `trash/` 都有自动清理**：快照按 `settings.surgicalKeep`（默认 30 份）滚动保留最新；归档快照保留最近 10 份；回收站按 `settings.trashKeepDays`（默认 30 天）清过期。三者都由写入/归档路径顺带收口，无需手工维护。
 - **不要手工改 `manifest.json` / `meta.json`**：它们是盘上数据，恢复时按三道闸逐条校验（`name` / `rootKey` 都要过 `sanitizeMemoryName` 与 `rootDirOf`），改坏了最多是该条被跳过并告警——但没必要冒险。

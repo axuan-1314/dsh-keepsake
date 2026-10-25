@@ -456,10 +456,10 @@ test("结构钉：无障碍（侧栏 href / Esc 关窗 / 聚焦首钮 / 状态�
 });
 
 test("结构钉：焦点陷阱抽工具多处复用 + 卸载必调（防 document 监听泄漏）", () => {
-  // 单一实现：trapFocus 在 panel-logic，所有弹窗（含知识页）都经 L.trapFocus 接入
+  // 单一实现：trapFocus 在 panel-logic，所有弹窗（含知识页、纠错）都经 L.trapFocus 接入
   assert.match(panelSrc, /L\.trapFocus\(/, "面板必须经 L.trapFocus 接入焦点陷阱（不复写第二份）");
   const traps = panelSrc.match(/L\.trapFocus\(/g) ?? [];
-  assert.equal(traps.length, 5, "五处弹窗（确认/新增/源码/导入/知识页）必须全部接入焦点陷阱");
+  assert.equal(traps.length, 6, "六处弹窗（确认/新增/源码/导入/知识页/纠错）必须全部接入焦点陷阱");
   // 卸载纪律：每条 trapFocus 的返回值必须被某个 offFocus() 消费（弹窗关闭时摘监听）
   const offs = panelSrc.match(/offFocus\(\)/g) ?? [];
   assert.ok(offs.length >= 8, `每个 trapFocus 至少两处卸载点（取消/成功），当前 ${offs.length} 处`);

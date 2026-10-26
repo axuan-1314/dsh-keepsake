@@ -243,8 +243,92 @@ test("API /corrections/correct：真实落盘并读回新正文，记录留痕",
   }
 });
 
-test("API /corrections/correct：缺 target/reason → 400（不白烧模型调用）", async () => {
+// 真实纠错场景的回归：模型**不带** sha1（这是常态——纠错的提示词与 manifest 都不给它
+// 目标条目自己的哈希，manifest 只列别的条目），覆盖仍必须真的替换旧正文。
+//
+// 修之前的表现：每次覆盖都落进落盘侧的盲写降级分支 → appendDowngradedWrite →
+// 文件里「错的」和「对的」两句并列，纠错的目的（把错的改掉）完全没达成。
+// 修法：纠错层用**盘上原文算出的**短 sha1 给「覆盖目标条目自身」的 write op 兜底
+// （模型自报的哈希不作数），这样覆盖闸拿到的仍是「我知道盘上是什么」的真实证明。
+test("API /corrections/correct：模型不带 sha1 时也必须真替换（不得降级成追加）", async () => {
   resetSettingsCache();
+  const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-nosha-"));
+  try {
+    const { memoryDir, projectId } = seedProject(root);
+
+    // 关键：ops 里**没有** sha1 字段，与真实模型行为一致。
+    async function* stream() {
+      yield {
+        type: "text-delta",
+        text: JSON.stringify({
+          ops: [{
+            action: "write",
+            name: "deploy.md",
+            scope: "project",
+            type: "project",
+            title: "部署端口",
+            description: "部署端口（已更正）",
+            content: "开发环境端口 8080。",
+          }],
+        }),
+      };
+      yield { type: "finish", reason: { kind: "stop" } };
+    }
+    const { ctx, handlers, webRoutes } = fakeCtx({ stream });
+    apply(ctx, { enabled: true, storageRoot: root });
+    captureRoute(handlers, root);
+    const apiRoute = webRoutes.find((route) => route.kind === "prefix");
+
+    const out = await call(apiRoute.handler, {
+      method: "POST",
+      path: `${API_PATH}/corrections/correct`,
+      body: { target: "deploy.md", reason: "端口现在是 8080", scope: "project", projectId },
+    });
+    assert.equal(out.status, 200, JSON.stringify(out.json));
+    assert.equal(out.json.outcome, "applied");
+
+    const after = readFileSync(join(memoryDir, "deploy.md"), "utf8");
+    assert.match(after, /8080/, "盘上正文应换成新值");
+    assert.ok(!/3000/.test(after), "旧值必须被替换掉，不能以「分隔线 + 追加」的方式留在文件里");
+    assert.equal(
+      out.json.applyResult.blindWriteDowngrades,
+      0,
+      "纠错不该落进盲写降级分支（降级 = 归一化成追加，纠错目的落空）",
+    );
+    // frontmatter 只应有一份（追加会把新文再带一份 frontmatter 塞进正文）
+    assert.equal(after.match(/^---$/gm).length, 2, "整份文件应只有一个 frontmatter 块");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// 反向约束：注入的 sha1 只给「目标条目自身」。模型若顺手写别的条目，
+// 那一条仍走原来的保守路径（不带哈希 → 盲写降级），不许被这层顺手放宽。
+test("stampCorrectionSha1：只给目标条目自身补哈希，别的条目不动", async () => {
+  const { stampCorrectionSha1 } = await import("../lib/corrections.js");
+  const ops = [
+    { action: "write", name: "deploy.md", scope: "project", content: "新" },
+    { action: "write", name: "other.md", scope: "project", content: "别的" },
+    { action: "write", name: "progress.md", scope: "global:current-focus", content: "全局" },
+    { action: "delete", name: "deploy.md", scope: "project" },
+  ];
+  const stamped = stampCorrectionSha1(ops, { target: "deploy.md", scopeLabel: "project", targetSha1: "ab12cd34" });
+  assert.equal(stamped[0].sha1, "ab12cd34", "目标条目自身应拿到真哈希");
+  assert.equal(stamped[1].sha1, undefined, "别的条目不得被顺手补哈希");
+  assert.equal(stamped[2].sha1, undefined, "global 侧没有覆盖闸，不塞无用字段");
+  assert.equal(stamped[3].sha1, undefined, "delete 不需要哈希");
+  assert.equal(ops[0].sha1, undefined, "原数组不得被就地修改");
+});
+
+test("stampCorrectionSha1：无哈希 / 名字不合规 / 非数组 → 原样返回", async () => {
+  const { stampCorrectionSha1 } = await import("../lib/corrections.js");
+  const ops = [{ action: "write", name: "deploy.md", scope: "project", content: "新" }];
+  assert.equal(stampCorrectionSha1(ops, { target: "deploy.md", scopeLabel: "project", targetSha1: "" }), ops);
+  assert.equal(stampCorrectionSha1(ops, { target: "../escape.md", scopeLabel: "project", targetSha1: "ab12cd34" }), ops);
+  assert.equal(stampCorrectionSha1(null, { target: "deploy.md", scopeLabel: "project", targetSha1: "ab12cd34" }), null);
+});
+
+test("API /corrections/correct：缺 target/reason → 400（不白烧模型调用）", async () => {  resetSettingsCache();
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-p1-fix400-"));
   try {
     seedProject(root);

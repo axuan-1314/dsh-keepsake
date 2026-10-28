@@ -546,9 +546,12 @@ test("结构钉：细节——tableScroll 滚动容器双处在场 + 长期记�
   assert.ok(wrapped.length >= 2, "导入预览表与失败详情表都必须包 tableScroll 容器");
   assert.match(panelSrc, /没有匹配「\$\{esc\(q\)\}」/, "搜索无命中回显 query（分类页/长期页共用渲染）");
   assert.match(panelSrc, /暂无长期记忆/, "库空态文案（与搜索无命中区分）");
-  assert.match(panelSrc, /\.dot\.green \{ background: #50a05a; \}/, "灯点绿 #50a05a（不引新色值）");
-  assert.match(panelSrc, /\.dot\.yellow \{ background: #c98a3d; \}/, "灯点黄 #c98a3d");
-  assert.match(panelSrc, /\.dot\.red \{ background: #d5564d; \}/, "灯点红 #d5564d");
+  // 三态灯点：2026-10-27 起改走双档语义变量（旧裸值 #50a05a/#c98a3d/#d5564d 在深色档
+  // 只有 4.33/4.77/3.50，绿红双双低于 AA 4.5）。这里钉的是「必须用变量、不许写死裸色」，
+  // 具体取值由 panel-contrast.test.mjs 的对比度检查兜住（含双档）。
+  assert.match(panelSrc, /\.dot\.green \{ background: var\(--fb-ok\); \}/, "灯点绿必须走 --fb-ok 双档变量");
+  assert.match(panelSrc, /\.dot\.yellow \{ background: var\(--fb-warn\); \}/, "灯点黄必须走 --fb-warn");
+  assert.match(panelSrc, /\.dot\.red \{ background: var\(--fb-danger\); \}/, "灯点红必须走 --fb-danger");
 });
 
 // ---- 注入面（消息通道）防漂移 ----

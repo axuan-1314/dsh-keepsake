@@ -5,35 +5,64 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>记忆管理</title>
 <style>
-  body { --fb-bg: #f7f8fa; --fb-panel: #ffffff; --fb-label: #1f2328; --fb-label2: #59636e; --fb-border: rgba(27,31,36,.12); }
-  body.theme-dark { --fb-bg: #17181c; --fb-panel: #1f2126; --fb-label: #e6e8eb; --fb-label2: #9aa2ab; --fb-border: rgba(240,244,248,.14); }
+  /* ===== 面板自持配色（不消费宿主背景色）=====
+     为什么不能沿用 var(--dsw-alias-bg-*)：宿主侧壁纸/玻璃插件会把 bg token 改写成
+     半透明（第三方 dsh-plugin-wallpaper-engine 的玻璃配方即如此）。半透明背景搬进
+     iframe 后白字直接坐在半透明层上——2026-10-27 实测正文对比度 3.10:1（AA 线 4.5）、
+     卡片与正文底 1.00:1 完全同色、弹窗更差到 1.49:1。
+     ⚠️ 「把半透明合成到实色上」在数学上救不了（白 51% 叠任何底，白字都只有 2.76–3.68），
+     所以这里**直接持有不透明实色**：背景归面板，文字/边框/强调色继续跟随宿主主题。
+     深色档取值对齐宿主真实 token：bg=bluish-875 #232324、panel=bluish-850 #2c2c2e。 */
+  html { color-scheme: light dark; }
+  /* 四档必须变量集合完全一致：漏一档会在该档退回上一级继承值。
+     实测过媒体兜底档漏 --fb-hover/--fb-selected 的后果：深色面板上出现近白色选中条（1.03:1）。
+     校验断言四档的变量名集合 deepEqual。 */
+  body { --fb-bg: #f7f8fa; --fb-panel: #ffffff; --fb-label: #1f2328; --fb-label2: #59636e; --fb-border: rgba(27,31,36,.12);
+         --fb-danger: #b5342a; --fb-ok: #276d2b; --fb-warn: #7d5200; --fb-accent: #1259a8;
+         --fb-hover: #f2f3f5; --fb-selected: #e4e7eb; }
+  body.theme-dark { --fb-bg: #232324; --fb-panel: #2c2c2e; --fb-label: #e6e8eb; --fb-label2: #a8b0b9; --fb-border: rgba(240,244,248,.14);
+         --fb-danger: #f2968e; --fb-ok: #66c274; --fb-warn: #e5a95c; --fb-accent: #8db4f5;
+         --fb-hover: #33343a; --fb-selected: #3f4046;
+         color-scheme: dark; }
+  /* 系统深色兜底：只在用户没手动选过档时生效（手动档挂 theme-light / theme-dark）。
+     没有这条时，主题桥一旦失败面板就停在浅色白底，深色系统下闪白——也是「刺眼」的一种。 */
+  @media (prefers-color-scheme: dark) {
+    body:not(.theme-light) { --fb-bg: #232324; --fb-panel: #2c2c2e; --fb-label: #e6e8eb; --fb-label2: #a8b0b9; --fb-border: rgba(240,244,248,.14);
+         --fb-danger: #f2968e; --fb-ok: #66c274; --fb-warn: #e5a95c; --fb-accent: #8db4f5;
+         --fb-hover: #33343a; --fb-selected: #3f4046;
+         color-scheme: dark; }
+  }
+  body.theme-light { --fb-bg: #f7f8fa; --fb-panel: #ffffff; --fb-label: #1f2328; --fb-label2: #59636e; --fb-border: rgba(27,31,36,.12);
+         --fb-danger: #b5342a; --fb-ok: #276d2b; --fb-warn: #7d5200; --fb-accent: #1259a8;
+         --fb-hover: #f2f3f5; --fb-selected: #e4e7eb;
+         color-scheme: light; }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--dsw-alias-bg-layer-1, var(--fb-bg)); color: var(--dsw-alias-label-primary, var(--fb-label)); display: flex; min-height: 100vh; }
-  aside { width: 200px; flex: none; padding: 18px 12px; border-right: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); display: flex; flex-direction: column; gap: 2px; }
+  body { margin: 0; font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--fb-bg); color: var(--dsw-alias-label-primary, var(--fb-label)); display: flex; min-height: 100vh; }
+  aside { width: 200px; flex: none; padding: 18px 12px; border-right: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--fb-panel); display: flex; flex-direction: column; gap: 2px; }
   aside .brand { font-weight: 700; font-size: 15px; padding: 2px 10px 12px; }
   aside .group { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); padding: 10px 10px 4px; font-weight: 600; }
   aside a { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; user-select: none; color: inherit; text-decoration: none; }
-  aside a:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
-  aside a.on { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.16)); font-weight: 600; }
+  aside a:hover { background: var(--fb-hover); }
+  aside a.on { background: var(--fb-selected); font-weight: 600; }
   aside a .cnt { font-size: 11px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); font-weight: 400; }
   main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: var(--fb-panel); }
   .topbar h1 { font-size: 16px; margin: 0; display: inline; }
   .topbar .sub { font-size: 12px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); margin-left: 8px; }
-  .btn { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
-  .btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+  .btn { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 8px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .btn:hover { background: var(--fb-hover); }
   .btn:disabled { opacity: .45; cursor: default; }
-  .btn.primary { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.2)); font-weight: 600; }
-  .btn.danger { color: #d5564d; border-color: rgba(221,85,85,.5); }
+  .btn.primary { background: var(--fb-selected); font-weight: 600; }
+  .btn.danger { color: var(--fb-danger); border-color: rgba(221,85,85,.5); }
   .btn.sm { padding: 1px 8px; font-size: 11px; }
-  .notice { margin: 12px 20px 0; border-radius: 6px; padding: 6px 10px; font-size: 12px; background: rgba(204,153,102,.16); display: none; }
+  .notice { margin: 12px 20px 0; border-radius: 8px; padding: 6px 10px; font-size: 12px; background: rgba(204,153,102,.16); display: none; }
   .notice.show { display: block; }
   .notice.err { background: rgba(221,85,85,.14); }
   .notice.ok { background: rgba(80,160,90,.14); }
   #page { padding: 18px 20px; overflow: auto; }
   .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .toolbar .spacer { flex: 1; }
-  .card { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 10px; background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); padding: 12px 14px; margin-bottom: 10px; }
+  .card { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 12px; background: var(--fb-panel); padding: 12px 14px; margin-bottom: 10px; }
   .card h3 { margin: 0 0 6px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .card h3 .ops { margin-left: auto; display: flex; gap: 6px; }
   .meta { font-size: 12px; color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
@@ -42,9 +71,9 @@
   .kv { display: flex; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
   .kv b { min-width: 120px; font-weight: 600; }
   .badge { font-size: 11px; border-radius: 4px; padding: 1px 6px; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
-  .badge.warn { color: #c98a3d; border-color: rgba(204,153,102,.55); }
-  .inp, .ta { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 6px; padding: 5px 8px; font-size: 12.5px; font-family: inherit; width: 100%; }
-  .inp:focus, .ta:focus { outline: none; border-color: var(--dsw-alias-state-business-primary, #4176e6); }
+  .badge.warn { color: var(--fb-warn); border-color: rgba(204,153,102,.55); }
+  .inp, .ta { border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); background: transparent; color: inherit; border-radius: 8px; padding: 5px 8px; font-size: 12.5px; font-family: inherit; width: 100%; }
+  .inp:focus, .ta:focus { outline: none; border-color: var(--dsw-alias-state-business-primary, var(--fb-accent)); }
   .ta { min-height: 90px; resize: vertical; font-family: ui-monospace, Consolas, monospace; line-height: 1.5; }
   .ta.tall { min-height: 300px; }
   .field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
@@ -54,16 +83,16 @@
   .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
   .slider { position: absolute; inset: 0; border-radius: 99px; background: rgba(128,128,128,.4); transition: .15s; pointer-events: none; }
   .slider::after { content: ''; position: absolute; top: 2.5px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #c8cdd4; transition: .15s; }
-  .switch input:checked + .slider { background: var(--dsw-alias-state-business-primary, #4176e6); }
+  .switch input:checked + .slider { background: var(--dsw-alias-state-business-primary, var(--fb-accent)); }
   .switch input:checked + .slider::after { left: 17px; background: #fff; }
   .mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .dialog { background: var(--dsw-alias-bg-layer-2, var(--fb-panel)); color: inherit; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); box-shadow: 0 0 16px rgba(0,0,0,.25); border-radius: 10px; padding: 16px; width: min(720px, 94vw); max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+  .dialog { background: var(--fb-panel); color: inherit; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); box-shadow: 0 0 16px rgba(0,0,0,.25); border-radius: 12px; padding: 16px; width: min(720px, 94vw); max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
   .dialog h2 { font-size: 14px; margin: 0; }
   .dialog .foot { display: flex; justify-content: flex-end; gap: 8px; border-top: 1px dashed var(--dsw-alias-border-l2, var(--fb-border)); padding-top: 10px; }
   table.preview { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   table.preview th, table.preview td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); vertical-align: top; }
   table.preview tr.danger td { background: rgba(221,85,85,.1); }
-  table.preview tr.danger td:first-child { border-left: 3px solid #d5564d; }
+  table.preview tr.danger td:first-child { border-left: 3px solid var(--fb-danger); }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
   .mdprev h1, .mdprev h2, .mdprev h3 { margin: 8px 0 4px; }
   .mdprev h1 { font-size: 17px; } .mdprev h2 { font-size: 15px; } .mdprev h3 { font-size: 13.5px; }
@@ -72,39 +101,39 @@
   .mdprev ul { margin: 4px 0; padding-left: 20px; }
   .presetRow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   .pill { display: inline-flex; align-items: center; border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 8px; padding: 4px 12px; font-size: 12.5px; cursor: pointer; user-select: none; background: transparent; color: inherit; }
-  .pill:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
-  .pill.on { background: var(--dsw-alias-button-ghost-active-fill, rgba(128,128,128,.18)); font-weight: 600; }
+  .pill:hover { background: var(--fb-hover); }
+  .pill.on { background: var(--fb-selected); font-weight: 600; }
   .search { max-width: 320px; }
   code.k { font-family: Consolas, monospace; font-size: 12px; background: rgba(128,128,128,.12); border-radius: 4px; padding: 0 4px; }
   /* 窄屏横向滚动容器（导入预览表 + 失败详情表共用，防小窗撑破） */
   .tableScroll { overflow: auto; margin: 8px 0; }
-  /* 三态灯点：绿/黄/红只用既有色值（#50a05a/#c98a3d/#d5564d，不引新值）；
+  /* 三态灯点：绿/黄/红只用既有色值（var(--fb-ok)/var(--fb-warn)/var(--fb-danger)，不引新值）；
      灰=提取在途（闪烁），色取 --dsw-alias-label-secondary 带 fallback */
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
-  .dot.green { background: #50a05a; }
-  .dot.yellow { background: #c98a3d; }
-  .dot.red { background: #d5564d; }
-  .dot.grey { background: var(--dsw-alias-label-secondary, #9aa2ab); animation: dotBlink 1.1s ease-in-out infinite; }
+  .dot.green { background: var(--fb-ok); }
+  .dot.yellow { background: var(--fb-warn); }
+  .dot.red { background: var(--fb-danger); }
+  .dot.grey { background: var(--dsw-alias-label-secondary, var(--fb-label2)); animation: dotBlink 1.1s ease-in-out infinite; }
   @keyframes dotBlink { 50% { opacity: .3; } }
-  /* aside 设置项的提取连击红徽标（与 .cnt 同形，红=#d5564d 既有值） */
-  aside a .cnt.alert { color: #d5564d; font-weight: 600; }
+  /* aside 设置项的提取连击红徽标（与 .cnt 同形，红=var(--fb-danger) 既有值） */
+  aside a .cnt.alert { color: var(--fb-danger); font-weight: 600; }
   /* 提示条（.notice）：错误类延长至 8 秒自动消失 + 最近错误区兜底，关闭按钮贴在文字右侧 */
   #toast .toastClose { margin-left: 10px; vertical-align: middle; }
   /* 「最近错误」回看区（保留最近 5 条，折叠收纳） */
   #recentErrors { margin: 12px 20px 0; }
   #recentErrors summary { cursor: pointer; }
   #recentErrors .errItem { margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
-  /* 运行时记忆页签：用量进度条（越界红显，红=#d5564d 既有值）+ 产物只读预览框（等宽字体滚动区） */
+  /* 运行时记忆页签：用量进度条（越界红显，红=var(--fb-danger) 既有值）+ 产物只读预览框（等宽字体滚动区） */
   .bar { flex: 1; min-width: 120px; height: 8px; border-radius: 99px; background: rgba(128,128,128,.25); overflow: hidden; }
-  .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--dsw-alias-state-business-primary, #4176e6); }
-  .bar.over > i { background: #d5564d; }
+  .bar > i { display: block; height: 100%; border-radius: 99px; background: var(--dsw-alias-state-business-primary, var(--fb-accent)); }
+  .bar.over > i { background: var(--fb-danger); }
   .codeBox { margin: 0; font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; background: rgba(128,128,128,.08); border: 1px solid var(--dsw-alias-border-l2, var(--fb-border)); border-radius: 8px; padding: 8px 10px; max-height: 320px; overflow: auto; }
   /* 三态灯状态词（颜色之外的第二编码，色弱/灰度屏也能读） */
   .statusWord { font-size: 12px; font-weight: 600; }
-  .statusWord.green { color: #50a05a; }
-  .statusWord.yellow { color: #c98a3d; }
-  .statusWord.red { color: #d5564d; }
-  .statusWord.grey { color: var(--dsw-alias-label-secondary, #9aa2ab); }
+  .statusWord.green { color: var(--fb-ok); }
+  .statusWord.yellow { color: var(--fb-warn); }
+  .statusWord.red { color: var(--fb-danger); }
+  .statusWord.grey { color: var(--dsw-alias-label-secondary, var(--fb-label2)); }
   /* 窄屏（≤800px）：侧栏转横排、分栏堆叠单列、顶栏可换行，防小窗破版 */
   @media (max-width: 800px) {
     body { flex-direction: column; }
@@ -115,9 +144,44 @@
     .topbar { flex-wrap: wrap; }
     .split { grid-template-columns: 1fr; }
   }
+  /* ============ 内嵌档（iframe，745×392 设置页门牌）特化 ============
+     全部挂在 body.dsk-embedded 下：独立窗口档拿不到这个 class，上面每一条规则都照旧生效。
+     内嵌下正文撑满 iframe 视口并自己滚，侧栏与顶栏钉死不参与滚动（否则第一屏卡片被腰斩）。
+     实测坑：body{height:100%} 在 iframe 里解析不到高度（html 无 height，100% 无参照），
+     body 会保持内容高度 2503px、iframe 整体滚动、#page 反而不滚——必须用 100vh
+     （iframe 内 vh = iframe 视口高，实测 392px 精准生效）。 */
+  body.dsk-embedded { min-height: 0; height: 100vh; }
+  /* main 兜底滚动：提示区（黄条/toast/计数/展开的最近错误）叠满时，#page 会被 flex 压到
+     几十像素甚至排到 main 盒外——overflow:hidden 会让它彻底不可见且无处可滚。
+     这里按可见滚动处理，顶栏 sticky 钉在 main 顶部不随内容跑。 */
+  body.dsk-embedded main { min-height: 0; overflow-y: auto; }
+  body.dsk-embedded .topbar { position: sticky; top: 0; z-index: 2; }
+  body.dsk-embedded #page { flex: 1; min-height: 0; overflow-y: auto; }
+  /* 提示区高度纪律：最近错误（details）最多占 25vh，展开的 errItem 在框内滚，不吃光正文高度 */
+  body.dsk-embedded #recentErrors { max-height: 25vh; overflow-y: auto; }
+  /* 弹窗高度上限按容器算：mask 是 fixed;inset:0，100% 即 iframe 视口高，多钳一道防撑破 */
+  body.dsk-embedded .dialog { max-height: min(86vh, calc(100% - 24px)); }
+  /* 侧栏横排单行横滚（B1）：745px 内嵌宽下 13 个链接固有宽度约 918px（+ 品牌 95px ≈ 1013px），
+     一行放不下——改成 nowrap + overflow-x:auto 让侧栏自己横滑，分组标签在横排态无指示作用故隐藏。
+     实测坑：光有 nowrap + overflow-x:auto 不够——aside a 默认 flex-shrink:1，745px 下
+     链接会被压缩到 574px（文字折行成两行、行高被挤），既不可读也永远不触发横滚。
+     必须给 a 补 flex:none + white-space:nowrap，让它保持固有宽度溢出后才谈得上横滑。
+     这些规则只在横排态成立：宽内嵌（>800px）下 aside 是 200px 竖排，nowrap 会让长标签
+     溢出成横滚条，故与 media 查询同域包起来。 */
+  @media (max-width: 800px) {
+    body.dsk-embedded aside { flex-wrap: nowrap; overflow-x: auto; }
+    body.dsk-embedded aside .group { display: none; }
+    body.dsk-embedded aside .brand { flex: none; }
+    body.dsk-embedded aside a { flex: none; white-space: nowrap; }
+  }
+  /* 顶栏双键合一（B2）：主题桥未成功跟随时，「手动切换深浅色」从大按钮缩成无文字图标钮，
+     把顶栏横向空间让给页面标题。JS 侧由 EMBEDDED 门控给它加 dsk-iconBtn 并把文字压成 ◐；
+     主题桥成功后该钮被内联 display:none 隐藏（bridgeApply），静态形态只管它活着时长什么样。 */
+  body.dsk-embedded #themeToggle.dsk-iconBtn { padding: 3px 8px; font-size: 14px; line-height: 1.2; letter-spacing: 0; white-space: nowrap; }
 </style>
 </head>
 <body>
+<script>try { if (window.self !== window.top) document.body.classList.add("dsk-embedded"); } catch (e) { document.body.classList.add("dsk-embedded"); }</script>
   <aside id="nav">
     <div class="brand">记忆管理台</div>
     <div class="group">记忆分类</div>
@@ -164,6 +228,27 @@ const pageTitle = $("pageTitle");
 const pageSub = $("pageSub");
 const dialogHost = $("dialogHost");
 
+// ============ 内嵌感知（A2 地基，B1/B2/B3 的前提） ============
+// DSH 设置页的门牌在 window.open 被拦时，会把面板塞进一个 745×392 的 iframe（内嵌模式）。
+// 探测「我在框里」并给 body 打 dsk-embedded：所有内嵌特化样式都挂在该 class 下，
+// 独立窗口档（非 iframe）拿不到这个 class，行为逐字节不变。
+// 跨域取 window.top 会抛 SecurityError——异常时按内嵌处理（保守：宁可按框里裁，不按大窗排版）。
+const EMBEDDED = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
+// body 开头的同步内联脚本已先加好 dsk-embedded（module 要等 import 解析完才执行，早加防闪一帧）；
+// 这里幂等兜底，防止将来有人删掉那个内联脚本。
+if (EMBEDDED) document.body.classList.add("dsk-embedded");
+
+// 弹窗/编辑框高度单位（A3）：内嵌档改用 min(vh, 像素钳位)/容器钳位，独立窗口档沿用原 vh 字面量，
+// 渲染结果逐字节不变。用 EMBEDDED 门控而非 CSS 覆盖，是因为这几处是内联 style（模板串里），挂不上 class。
+// 说明：在 392px 视口下这些 min() 与原 vh 等值（vh 项本就小于像素钳位/容器钳位，如 46vh=180px < 220px），
+// 不产生任何视觉变化。真正生效的场景是 iframe 被撑高时：宿主窗口变高 → 容器 min(70vh,620px) 可到约 589px，
+// 此时 46vh=271px > 220px 钳位开始起作用，作用是防止 textarea/列表吃光弹窗高度、把 foot 按钮推出可视区。
+// （注意：不是「按钮被 iframe 裁掉」——弹窗并未超出 392px，只是在弹窗内部需要滚一下才能看到 foot。）
+const DIALOG_CAP_PAGES = EMBEDDED ? "min(88vh,calc(100% - 24px))" : "88vh";   // 知识页弹窗
+const DIALOG_MIN_SRC = EMBEDDED ? "min(46vh,220px)" : "46vh";                 // 源码模式 textarea
+const DIALOG_MIN_PERSONA = EMBEDDED ? "min(52vh,240px)" : "52vh";             // 人设编辑框 + 预览框
+const DIALOG_CAP_LIST = EMBEDDED ? "min(52vh,320px)" : "52vh";                // 批量纠正列表容器
+
 // ============ 主题桥（定案机制） ============
 const hostWindow = (() => {
   try { if (window.opener && window.opener !== window) return window.opener; } catch (e) {}
@@ -175,9 +260,22 @@ let bridgeLastOk = false; // [已知] 桥曾成功标记：桥再失效（n===0�
 
 function bridgeApply(vars) {
   if (manualTheme) return 0; // 手动档已选即断桥——晚到的成功不得踩死手动选择
-  const n = L.applyThemeVars(document.body.style, vars);
+  // 背景 token 全由面板自持（OWNED_BG_TOKENS），这里只搬文字/边框/强调色。
+  // 宿主的背景可能是半透明的（壁纸/玻璃插件改写），搬过来会让白字坐在半透明层上，
+  // 实测只有 3.10:1；合成也救不了（见 lib/color.js compositeOver 注释）。
+  let r;
+  try {
+    r = L.applyThemeVars(document.body.style, vars, L.OWNED_BG_TOKENS);
+  } catch (e) {
+    // 缺 ownedBgTokens 等编程错误：不许静默退回旧的全量搬运（那等于回到事故行为）。
+    // 文案必须说实话——这里**没有**清掉此前写入的内联 token，不能声称「已回落」。
+    toast("主题桥调用失败（面板自带配色继续生效）：" + String(e && e.message ? e.message : e));
+    return 0;
+  }
+  const n = r.applied;
   if (n > 0) {
     bridgeLastOk = true;
+    syncTierToHost();
     $("bridgeNotice").classList.remove("show");
     $("themeToggle").style.display = "none";
   } else if (bridgeLastOk) {
@@ -189,11 +287,42 @@ function bridgeApply(vars) {
   }
   return n;
 }
+
+/**
+ * 把面板的**背景档位**钉到宿主权威上（宿主 body 的 data-ds-dark-theme）。
+ *
+ * 为什么必须这样做：前景色（--dsw-alias-label-*）是桥从宿主搬来的，天然跟宿主档；
+ * 而背景档若只靠 @media (prefers-color-scheme)，在**独立窗口档（popup）**里跟的是
+ * 操作系统而不是宿主——两者不一致时会出现「宿主深色字 + 面板浅色底」= 白字白底
+ * 1.02:1，比本事故（3.10:1）更糟。iframe 档因为继承宿主 color-scheme 侥幸一致，
+ * 于是同一个偏好设置在两种打开方式下结果相反——这正是档位权威没收敛的表现。
+ *
+ * 拿不到宿主（桥断/跨域）时保持 media 兜底，不强行写 class。
+ */
+function syncTierToHost() {
+  let isDark = null;
+  try {
+    const body = hostWindow && hostWindow.document ? hostWindow.document.body : null;
+    if (body) isDark = body.hasAttribute("data-ds-dark-theme");
+  } catch { /* 跨域拒读：保持 media 兜底 */ }
+  if (isDark === null) return;
+  document.body.classList.toggle("theme-dark", isDark);
+  document.body.classList.toggle("theme-light", !isDark);
+}
+/** 主题桥从未成功的提示分档（B3）：内嵌档 392px 高塞不下常驻黄条，降级为 toast 一次；
+ *  独立窗口档保持常驻黄条（.notice 静态隐藏 + show 才现）。 */
+function bridgeNeverOkNotice() {
+  if (EMBEDDED) {
+    toast("未跟随应用主题，可点右上角 ◐ 手动切换");
+  } else {
+    $("bridgeNotice").classList.add("show");
+  }
+}
 function startThemeBridge() {
-  if (!hostWindow) { $("bridgeNotice").classList.add("show"); return; }
+  if (!hostWindow) { bridgeNeverOkNotice(); return; }
   const vars = L.collectThemeVarsFromDoc(hostWindow.document);
   if (Object.keys(vars).length > 0) bridgeApply(vars);
-  else $("bridgeNotice").classList.add("show");
+  else bridgeNeverOkNotice();
   window.addEventListener("message", (ev) => {
     if (ev && ev.data && ev.data.type === "dsh-keepsake:theme" && ev.data.vars) bridgeApply(ev.data.vars);
   });
@@ -210,21 +339,58 @@ function startThemeBridge() {
   } catch (e) { /* 保留静态变量 */ }
   try { hostWindow.postMessage({ type: "dsh-keepsake:panel-ready" }, "*"); } catch (e) {}
 }
+// B2：内嵌档把「手动切换深浅色」从顶栏大按钮缩成无文字图标钮——745px 宽下顶栏横向紧张，
+// 大按钮（121px）会把页面标题挤成一行渣。只改静态形态（文字/标题/class + CSS 收宽度）；
+// 显隐逻辑仍归 bridgeApply 的内联 style 赋值（成功 display:none / 失效复活），那两个点不动。
+if (EMBEDDED) {
+  const themeToggle = $("themeToggle");
+  themeToggle.textContent = "◐";
+  themeToggle.title = "手动切换深浅色";
+  themeToggle.setAttribute("aria-label", "手动切换深浅色");
+  themeToggle.classList.add("dsk-iconBtn");
+}
 $("themeToggle").addEventListener("click", () => {
   manualTheme = true; // 单向断桥（再点只切换深浅，桥不再接管）
   // 清掉桥写进 body 内联的 --dsw-alias-*（级联优先级高于样式表），
-  // 让 body.theme-dark 的 --fb-* 兜底重新生效——否则手动档被架空、按钮变死键
+  // 让 body.theme-dark / theme-light 的 --fb-* 兜底重新生效——否则手动档被架空、按钮变死键
   const st = document.body.style;
   for (let i = st.length - 1; i >= 0; i -= 1) {
     const name = st[i];
     if (typeof name === "string" && name.startsWith("--dsw-alias-")) st.removeProperty(name);
   }
-  document.body.classList.toggle("theme-dark");
+  // 两档互斥：之前只 toggle theme-dark，于是「系统深色 + 未手动选」的媒体查询兜底
+  // 会在 .theme-light 缺失时继续生效，手动切浅色等于无效。
+  // 判定必须用「实际渲染档」而不是「class 是否含 theme-dark」——
+  // 系统深色 + 未手动选时实际已显示深色（media 生效），若只看 class 会判成浅色，
+  // 于是首次点击写成 theme-dark → 视觉上毫无变化，用户以为按钮坏了。
+  const isDark = currentTierIsDark();
+  document.body.classList.toggle("theme-dark", !isDark);
+  document.body.classList.toggle("theme-light", isDark);
 });
+
+/** 当前**实际渲染**的档位是否为深色（class 优先，其次 media 兜底）。 */
+function currentTierIsDark() {
+  const cls = document.body.classList;
+  if (cls.contains("theme-dark")) return true;
+  if (cls.contains("theme-light")) return false;
+  try {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  } catch {
+    return false;
+  }
+}
 // 「返回设置」分档：popup 关窗 / iframe 通知宿主收起 / 顶层绕开面板内部
 // hash 路由历史一步回设置页（决策纯函数 L.panelBackAction 进检查）
 let backDepth = 0; // 面板内部 hash 路由压栈计数（load 后 hashchange 次数）
 window.addEventListener("hashchange", () => { backDepth += 1; });
+// A4：内嵌档按钮文案分档。内嵌下 L.panelBackAction 给的是 notify-host（通知宿主收起面板），
+// 「← 返回设置」会让人以为能回到设置页，实际只是收起——文案必须说实话（含 title 说明）。
+// 非内嵌档逐字节保持原样（文案恒为「← 返回设置」）。只在初始化时设一次，点击时不再改。
+if (EMBEDDED) {
+  const backBtn = $("backBtn");
+  backBtn.textContent = "收起面板";
+  backBtn.title = "内嵌模式下点击会收起面板，不会离开设置页";
+}
 $("backBtn").addEventListener("click", () => {
   let hasOpener = false;
   let hasParent = false;
@@ -375,7 +541,7 @@ function openPagesDialog(projectId) {
   const layer = document.createElement("div");
   layer.innerHTML = `
     <div class="mask">
-      <div class="dialog" role="dialog" aria-modal="true" style="width:min(900px,96vw);max-height:88vh;display:flex;flex-direction:column">
+      <div class="dialog" role="dialog" aria-modal="true" style="width:min(900px,96vw);max-height:${DIALOG_CAP_PAGES};display:flex;flex-direction:column">
         <h2>知识页 · <code class="k">${esc(projectId)}</code></h2>
         <div class="meta" data-status>加载中…</div>
         <div data-body style="overflow:auto;flex:1;min-height:220px;padding:4px 2px"></div>
@@ -599,7 +765,7 @@ function sourceModeDialog(cat, entries, reload) {
       <div class="dialog" style="width:min(860px,96vw)" role="dialog" aria-modal="true">
         <h2>源码模式——直接编辑整类</h2>
         <div class="meta">每条 = <code class="k">## 标题</code> + 可选 <code class="k">&lt;!-- name: file.md desc: 一行钩子 --&gt;</code> + 正文；条目间用一行 <code class="k">---</code> 分隔（正文中请勿出现单独一行 --- ，会被当分隔符）。保存 = 整类替换（先自动备份再重建，desc 随注释往返不丢）。</div>
-        <textarea class="ta tall" data-src style="min-height:46vh">${esc(original)}</textarea>
+        <textarea class="ta tall" data-src style="min-height:${DIALOG_MIN_SRC}">${esc(original)}</textarea>
         <div class="foot">
           <button class="btn" data-x>取消</button>
           <button class="btn danger" data-s>保存整类（先备份）</button>
@@ -725,7 +891,7 @@ function importDialog(cat, reload) {
       const rows = L.previewRowsOf(out.plans);
       if (rows.length === 0) { $preview.innerHTML = '<div class="empty">没有可导入的条目</div>'; return; }
       $preview.innerHTML = `
-        <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:#d5564d">${rows.filter((r) => r.danger).length} 条与现有内容冲突或批内改名</b>）：</div>
+        <div class="meta" style="margin:8px 0">③ 将要写入 ${rows.length} 条（<b style="color:var(--fb-danger)">${rows.filter((r) => r.danger).length} 条与现有内容冲突或批内改名</b>）：</div>
         <div class="tableScroll"><table class="preview">
           <tr><th style="width:90px">动作</th><th>标题</th><th>文件</th><th style="width:40%">内容预览</th></tr>
           ${rows.map((r) => `<tr class="${r.danger ? "danger" : ""}"><td>${r.action === "rename" ? "改名" : r.danger ? "覆盖" : "新增"}</td><td>${esc(r.title)}</td><td class="meta">${esc(r.name)}</td><td class="meta">${esc(r.preview)}</td></tr>`).join("")}
@@ -1278,8 +1444,8 @@ async function renderPersonaPage() {
   page.innerHTML = `
     <div class="presetRow" data-presets></div>
     <div class="split">
-      <div class="field"><label>编辑（markdown）</label><textarea class="ta tall" data-editor style="min-height:52vh">${esc(data.content)}</textarea></div>
-      <div class="field"><label>预览</label><div class="card mdprev" data-preview style="min-height:52vh;overflow:auto"></div></div>
+      <div class="field"><label>编辑（markdown）</label><textarea class="ta tall" data-editor style="min-height:${DIALOG_MIN_PERSONA}">${esc(data.content)}</textarea></div>
+      <div class="field"><label>预览</label><div class="card mdprev" data-preview style="min-height:${DIALOG_MIN_PERSONA};overflow:auto"></div></div>
     </div>
     <div class="toolbar">
       <span class="meta" data-dirty></span>
@@ -2076,7 +2242,7 @@ async function renderActivityPage() {
         ? '<div class="empty">这段时间内没有活动。对话几轮后，提取/注入会在这里出现。</div>'
         : `<div class="tableScroll"><table class="preview">
             <tr><th style="width:78px">时间</th><th style="width:64px">类型</th><th>内容</th></tr>
-            ${rows.map((r) => `<tr><td class="meta">${esc(r.time)}</td><td><span class="badge${r.isBad ? " alert" : ""}">${esc(r.kindText)}</span></td><td${r.isBad ? ' style="color:var(--danger,#c33)"' : ""}>${esc(r.text)}</td></tr>`).join("")}
+            ${rows.map((r) => `<tr><td class="meta">${esc(r.time)}</td><td><span class="badge${r.isBad ? " alert" : ""}">${esc(r.kindText)}</span></td><td${r.isBad ? ' style="color:var(--fb-danger)"' : ""}>${esc(r.text)}</td></tr>`).join("")}
           </table></div>`}
     </div>
 
@@ -2364,7 +2530,7 @@ function openBatchCorrectionDialog(hits, onDone) {
       <div class="dialog" role="dialog" aria-modal="true" style="width:min(720px,96vw)">
         <h2>批量纠正 ${list.length} 条记忆</h2>
         <div class="meta">每条一次模型调用，逐条独立成败。诉求写清正确值；留空的条目会被跳过（不扣调用）。改动都会留快照。</div>
-        <div style="max-height:52vh;overflow:auto;margin-top:8px">
+        <div style="max-height:${DIALOG_CAP_LIST};overflow:auto;margin-top:8px">
           ${list.map((h, i) => `
             <div style="border-top:1px solid var(--dsw-alias-border-l2, #3333);padding:8px 0">
               <div style="display:flex;gap:8px;align-items:center">
@@ -3100,16 +3266,13 @@ function refreshCounts() {
   }).catch(() => { markCountsError(); }); // 计数失败显式提示态（不静默吞错）
 }
 
-/** 计数拉取失败提示：总开关旁给微弱可见标记（成功时清除）。 */
+/** 计数拉取失败提示：只在 #countsStatus 出文字（不静默吞错）。
+ *  曾同时给 #nav 加 counts-error class，但样式表里从没有对应规则（空闸），已删。 */
 function markCountsError() {
-  const nav = document.getElementById("nav");
-  if (nav) nav.classList.add("counts-error");
   const el = document.getElementById("countsStatus");
   if (el) { el.hidden = false; el.textContent = "计数暂时无法加载"; }
 }
 function clearCountsError() {
-  const nav = document.getElementById("nav");
-  if (nav) nav.classList.remove("counts-error");
   const el = document.getElementById("countsStatus");
   if (el) { el.hidden = true; }
 }

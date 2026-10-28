@@ -6,6 +6,7 @@ import {
   EXTRACTION_BUCKET_KEYS,
   EXTRACTION_REASON_LABELS,
   MAINTENANCE_EMPTY_TEXT,
+  OWNED_BG_TOKENS,
   PAGE_SIZE,
   PERSONA_PRESETS,
   PENDING_EMPTY_TEXT,
@@ -169,12 +170,40 @@ test("collectThemeVarsFromDoc：异常返回空对象（桥失败降级）", () 
   assert.deepEqual(collectThemeVarsFromDoc({}), {});
 });
 
-test("applyThemeVars：只写 --dsw-alias- 前缀，返回应用条数", () => {
+test("applyThemeVars：只写 --dsw-alias- 前缀，返回 {applied, skipped}", () => {
   const written = {};
   const target = { setProperty: (k, v) => { written[k] = v; } };
-  const n = applyThemeVars(target, { "--dsw-alias-a": "1", "--other": "x", "color": "red" });
-  assert.equal(n, 1);
+  const r = applyThemeVars(target, { "--dsw-alias-a": "1", "--other": "x", "color": "red" }, []);
+  assert.deepEqual(r, { applied: 1, skipped: 0 });
   assert.deepEqual(written, { "--dsw-alias-a": "1" });
+});
+
+test("applyThemeVars：自持背景 token 一律跳过（半透明背景搬进来会让白字坐在半透明层上）", () => {
+  const written = {};
+  const target = { setProperty: (k, v) => { written[k] = v; } };
+  const r = applyThemeVars(
+    target,
+    {
+      "--dsw-alias-bg-layer-1": "rgba(255,255,255,0.51)",
+      "--dsw-alias-bg-layer-2": "rgba(255,255,255,0.51)",
+      "--dsw-alias-label-primary": "#f9fafb",
+    },
+    ["--dsw-alias-bg-layer-1", "--dsw-alias-bg-layer-2"],
+  );
+  assert.deepEqual(r, { applied: 1, skipped: 2 });
+  assert.deepEqual(written, { "--dsw-alias-label-primary": "#f9fafb" },
+    "背景 token 必须一个都不落到面板 style 上（否则面板自持实色被半透明覆盖）");
+});
+
+test("applyThemeVars：缺 ownedBgTokens 直接抛（不许静默退回全量搬运）", () => {
+  const target = { setProperty: () => {} };
+  assert.throws(() => applyThemeVars(target, { "--dsw-alias-a": "1" }), TypeError);
+  assert.throws(() => applyThemeVars(target, { "--dsw-alias-a": "1" }, null), TypeError);
+  assert.throws(() => applyThemeVars(target, { "--dsw-alias-a": "1" }, "--dsw-alias-bg-layer-1"), TypeError);
+});
+
+test("OWNED_BG_TOKENS：只含面板真正消费的背景 token（多写一个也算错）", () => {
+  assert.deepEqual([...OWNED_BG_TOKENS].sort(), ["--dsw-alias-bg-layer-1", "--dsw-alias-bg-layer-2"]);
 });
 
 // ---- 档位决策 ----
@@ -1533,7 +1562,7 @@ test("结构校验：CORRECTION_KIND_TEXT 键集 ⊇ CORRECTION_KINDS（加新�
 //
 // 判据用**运行时枚举**而非源码正则：正则版对合法重排（三元改 if/else、变量改名、
 // 字面量抽成常量）会误报，而对「新增一档但写成局部变量再 return」会静默漏报——
-// 漏报恰恰是这道校验唯一要防的东西。运行时枚举天然免疫重排，也能抓到新档位。
+// 漏报恰恰是这道检查唯一要防的东西。运行时枚举天然免疫重排，也能抓到新档位。
 test("结构校验：applyCorrections 的 JSDoc outcome 枚举 ⊇ 运行时实际产出的档位", async () => {
   const { readFileSync } = await import("node:fs");
   const C = await import("../lib/corrections.js");
@@ -1585,7 +1614,7 @@ test("结构校验：applyCorrections 的 JSDoc outcome 枚举 ⊇ 运行时实�
     C.__resetCorrectionsForTest();
   }
 
-  // 先判「实现产出的档位有没有漏写进 JSDoc」——这是校验的主命题，
+  // 先判「实现产出的档位有没有漏写进 JSDoc」——这是检查的主命题，
   // 也是新增档位时最该先看到的错误（放在四档断言之前，否则会被它抢先报「构造失败」）。
   const missing = [...seen].filter((v) => !docSet.has(v));
   assert.deepEqual(missing, [], `实现会产出的档位没有写进 @returns：${missing.join(", ")}`);

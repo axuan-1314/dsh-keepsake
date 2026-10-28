@@ -24,7 +24,7 @@ DSH 每开一个新会话都是从零开始。上周定的接口口径、这个�
 ## 安装
 
 ```bash
-dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.0.tar.gz"
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.1.tar.gz"
 ```
 
 `--profile` 换成 `headless` 或 `desktop` 也行。零运行时依赖，不需要 `npm install`。
@@ -37,7 +37,7 @@ dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive
 
 ## 最近改了什么
 
-v0.7.0 之后（仓库 `main`，尚未打 tag）是一批较大的功能补充和修复：
+v0.7.1 是一批较大的功能补充和修复：
 
 - **纠错闭环**：以前记忆记错了只能等下次提取碰巧覆盖，常留下两条互相矛盾的事实。现在可以说"这条记错了，正确的是 X"——对话里用 `/memory fix`，或在面板检索后点「纠正这条」。改动有快照，能回滚。
 - **`/memory` 命令**：关键词检索记忆，不用开面板。

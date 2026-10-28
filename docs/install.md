@@ -7,7 +7,7 @@
 **从发布 tag 安装（推荐，版本固定）**
 
 ```bash
-dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.0.tar.gz"
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.1.tar.gz"
 ```
 
 可用的 tag 见 [Releases](https://github.com/axuan-1314/dsh-keepsake/tags)。`package.json` 里的版本号可能比最新 tag 高（已开发未打 tag），此时上面这个地址会 404——用下面的 `main` 渠道。

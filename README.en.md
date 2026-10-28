@@ -24,7 +24,7 @@ Memories live as plain Markdown under `~/.dsh/memory/`. Open them in any editor,
 ## Install
 
 ```bash
-dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.0.tar.gz"
+dsh plugin --profile web add "https://github.com/axuan-1314/dsh-keepsake/archive/refs/tags/v0.7.1.tar.gz"
 ```
 
 `--profile` can also be `headless` or `desktop`. Zero runtime dependencies — no `npm install`.
@@ -37,7 +37,7 @@ Detailed install / upgrade / rollback steps are in [docs/install.md](docs/instal
 
 ## What changed recently
 
-Since **v0.7.0** (work on `main`, not yet tagged):
+Since **v0.7.1**:
 
 - **Correction loop** — previously a wrong memory could only be overwritten by chance on the next extraction, often leaving two contradictory facts. Now you can say "this one is wrong, it's actually X" — via `/memory fix` in chat, or by clicking "correct this" on a panel search result. Changes are snapshotted and revertible.
 - **`/memory` command** — keyword search over memories without opening the panel.

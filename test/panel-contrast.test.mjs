@@ -262,7 +262,9 @@ test("背景档位必须钉到宿主权威（popup 档下 media 跟 OS 不跟宿
   assert.match(js[1], /hasAttribute\("data-ds-dark-theme"\)/,
     "syncTierToHost 必须读宿主的 data-ds-dark-theme");
   // 断言 bridgeApply 函数体内确实调用了 syncTierToHost（限定在函数体内找，不跨函数误配）
-  const applyBody = /function bridgeApply\(vars\) \{([\s\S]*?)\n\}\n/.exec(js[1]);
+  // 换行符必须容忍 CRLF：Windows 上 core.autocrlf=true 检出的是 CRLF，而本文件其余正则
+  // 只用 \n 恰好没踩到。曾因这一条 \n\}\n 让 windows runner 三个 Node 版本全红（2026-10-28）。
+  const applyBody = /function bridgeApply\(vars\) \{([\s\S]*?)\r?\n\}\r?\n/.exec(js[1]);
   assert.ok(applyBody, "找不到 bridgeApply 函数体");
   assert.match(applyBody[1], /syncTierToHost\(\)/,
     "桥成功后必须立即同步档位（否则前景翻转而背景不动）");

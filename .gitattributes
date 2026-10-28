@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+# 二进制资源不参与换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.gz binary
+
+# Windows 上直接跑的脚本保留 CRLF 也无所谓，统一 LF 更省事
+*.sh text eol=lf

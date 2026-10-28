@@ -21,7 +21,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, windows-latest ]
+        # 显式钉版本，不用 ubuntu-latest：2026-10-19 起 -latest 正从 24.04 滚动迁到
+        # 26.04（计划 11-19 完成），迁移期内同一分支可能随机落到两个不同的系统上，
+        # 同一个提交今天绿明天红。两个都跑：26.04 是未来，24.04 留作对照——挂了能立刻
+        # 分清是环境变了还是代码坏了。26.04 已于 2026-10-28 实测 4 个 Node 版本全绿。
+        os: [ ubuntu-24.04, ubuntu-26.04, windows-latest ]
         node-version: [ 18, 20, 22, 24 ]
     steps:
       - uses: actions/checkout@v7

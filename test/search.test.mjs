@@ -249,10 +249,28 @@ test("listMemoryEntries：跨分类按 mtime 取最近，不被第一个分类�
   }
 });
 
-// 排序只需要 mtime：不能为了列 20 条去把几千个文件的正文全读一遍。// 判据不用绝对耗时（CI 慢机会抖），而是同一批数据上「列 10 条」必须明显快于
-// 「把全部正文读一遍」——后者用 searchMemory 一个必定命中的查询来近似。
+// 排序只需要 mtime：不能为了列 20 条去把几千个文件的正文全读一遍。
+// 判据是**读文件的次数**，不是耗时：早先这里比的是「列 10 条」与「全量扫描」的毫秒比值，
+// 而 Windows runner 上 800 次的 statSync 本身就要几十毫秒，比值天然拉不开——同一份代码
+// 在 windows/18、22、24 全绿而 20 那一格偶发变红（2026-10-28）。次数是确定性的，与机器快慢无关。
 test("listMemoryEntries：只读入选的 top-N，不读全量正文", () => {
   const root = mkdtempSync(join(tmpdir(), "dsh-keepsake-listperf-"));
+  const original = fs.readFileSync;
+  // 只统计 .md 正文读取：readdirSync/statSync 不计入，它们本来就要对全部候选做一遍。
+  const countBodyReads = (fn) => {
+    let reads = 0;
+    fs.readFileSync = function patched(target, ...rest) {
+      if (/\.md$/i.test(String(target))) reads += 1;
+      return original.call(fs, target, ...rest);
+    };
+    syncBuiltinESMExports(); // ESM 具名导入是快照，改了 fs 必须同步才生效
+    try {
+      return { value: fn(), reads: () => reads };
+    } finally {
+      fs.readFileSync = original;
+      syncBuiltinESMExports();
+    }
+  };
   try {
     const dir = categoryDir(root, "work-profile");
     mkdirSync(dir, { recursive: true });
@@ -260,17 +278,19 @@ test("listMemoryEntries：只读入选的 top-N，不读全量正文", () => {
     for (let i = 0; i < 800; i += 1) {
       entryFile(dir, `e${String(i).padStart(4, "0")}.md`, { title: `条目 ${i}`, description: "d", body });
     }
-    const t0 = Date.now();
-    const out = listMemoryEntries(root, { limit: 10 });
-    const listMs = Date.now() - t0;
-    assert.equal(out.entries.length, 10);
-    assert.equal(out.total, 800, "total 仍是全量条目数");
 
-    const t1 = Date.now();
-    searchMemory(root, "正文", { limit: 10 }); // 必须读全部正文才能打分
-    const fullScanMs = Math.max(1, Date.now() - t1);
-    // 只 stat 的路径应当明显快于全量读正文（留 2 倍余量吸收抖动）。
-    assert.ok(listMs * 2 < fullScanMs, `列 10 条 ${listMs}ms vs 全量扫描 ${fullScanMs}ms——疑似退化成全量读正文`);
+    const listed = countBodyReads(() => listMemoryEntries(root, { limit: 10 }));
+    assert.equal(listed.value.entries.length, 10);
+    assert.equal(listed.value.total, 800, "total 仍是全量条目数");
+    // 只读入选的 top-N：允许少量富余（索引/容错重试），但绝不能接近 800。
+    assert.ok(listed.reads() <= 20,
+      `列 10 条读了 ${listed.reads()} 个正文文件——疑似退化成全量读正文（800 条）`);
+
+    // 对照组：真需要正文的检索必须读到全部候选，证明上面的低读数是「省下来的」而非探针失灵。
+    const searched = countBodyReads(() => searchMemory(root, "正文", { limit: 10 }));
+    assert.equal(searched.value.results.length > 0, true, "检索应命中");
+    assert.ok(searched.reads() > 700,
+      `全量检索只读了 ${searched.reads()} 个正文文件，探针可能没生效（应接近 800）`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
